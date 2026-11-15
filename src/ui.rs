@@ -474,6 +474,16 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     });
     ui.to_entry.add_controller(esc);
 
+    // read state changes (chats read on other devices) don't come through the live stream
+    let w = Rc::downgrade(&ui);
+    glib::timeout_add_seconds_local(60, move || {
+        let Some(u) = w.upgrade() else { return glib::ControlFlow::Break };
+        if u.st.borrow().connected {
+            u.send(Cmd::Chats);
+        }
+        glib::ControlFlow::Continue
+    });
+
     let open = gio::SimpleAction::new("open-chat", Some(glib::VariantTy::INT64));
     let u = ui.clone();
     open.connect_activate(move |_, p| {

@@ -359,6 +359,29 @@ async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
     }
 }
 
+/// imsg counts unread from each message's `is_read` flag, which can stay unset after the chat was
+/// read on another device. Messages itself also honours the chat's `last_read_message_timestamp`,
+/// so count only messages that are unread by both.
+async fn fix_unread(session: &client::Handle<Handler>, chats: &mut [Value]) {
+    let ids: Vec<String> = chats.iter().filter_map(|c| c["id"].as_i64()).map(|i| i.to_string()).collect();
+    if ids.is_empty() {
+        return;
+    }
+    let sql = format!(
+        "select c.ROWID||'|'||(select count(*) from chat_message_join j join message m on m.ROWID=j.message_id \
+         where j.chat_id=c.ROWID and m.is_from_me=0 and m.is_read=0 and m.date > c.last_read_message_timestamp) \
+         from chat c where c.ROWID in ({})",
+        ids.join(",")
+    );
+    let Some(out) = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await else { return };
+    for (id, n) in String::from_utf8_lossy(&out).lines().filter_map(|l| l.split_once('|')) {
+        let (Ok(id), Ok(n)) = (id.parse::<i64>(), n.parse::<i64>()) else { continue };
+        if let Some(c) = chats.iter_mut().find(|c| c["id"].as_i64() == Some(id)) {
+            c["unread_count"] = Value::from(n);
+        }
+    }
+}
+
 /// Longest side of the copy shown in the chat, and of the one fetched for the viewer.
 pub const CHAT_PX: u32 = 1200;
 pub const FULL_PX: u32 = 4096;
@@ -369,7 +392,8 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
     match cmd {
         Cmd::Chats => match rpc.call("chats.list", json!({"limit": 100}), READ).await {
             Ok(r) => {
-                let chats = r.get("chats").and_then(Value::as_array).cloned().unwrap_or_default();
+                let mut chats = r.get("chats").and_then(Value::as_array).cloned().unwrap_or_default();
+                fix_unread(&session, &mut chats).await;
                 let _ = ev.send(Event::Chats(chats));
             }
             Err(e) => {

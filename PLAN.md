@@ -50,7 +50,7 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 
 - New 1:1 conversations: a "new message" button (Ctrl+N) swaps the conversation header for a To field. As you type, it suggests people you already have chats with (picking one opens that chat). Otherwise it takes a phone number or email, and the first message goes out as `send {to, service: "auto"}`; the app opens the new chat once it appears. imsg can't list the Mac's Contacts, so there's no address-book search.
   - New group chats aren't possible: imsg's `chats.create` needs its bridge, which needs SIP off (out of scope).
-- Read state, kept locally. The unread dots mirror the Mac's chat.db (`unread_count`), so a chat read only on the iPhone stays unread until the Mac catches up. Marking read on the Mac isn't possible: imsg's `read` needs SIP off, and Messages has no AppleScript for it. So the app remembers, per chat, the newest message seen in BubbleFairy, and hides the dot until something newer arrives. Nothing goes back to the Mac.
+- Read state, kept locally. Chats read on other devices already clear (see imsg facts: `mac::fix_unread`, with the chat list refreshed every 60 s). Chats read only in BubbleFairy can't be marked read on the Mac: imsg's `read` needs SIP off, and Messages has no AppleScript for it. So the app remembers, per chat, the newest message seen in BubbleFairy, and hides the dot until something newer arrives. Nothing goes back to the Mac.
 - Sending attachments, and other attachment types (video, PDF, audio).
 - Link previews:
   - Use Apple's own rich-link data when imsg exposes it.
@@ -104,6 +104,7 @@ Reactions/tapbacks, search, contact photos, running in the background or in the 
 - `history` returns messages newest first, with `id`, `guid`, `chat_id`, `is_from_me`, `sender`, `text`, `created_at`, `attachments[]`, `reactions[]`.
 - RPC methods: `initialize`, `status`, `chats.list|get|create`, `messages.history|search|after|stats`, `watch.subscribe|unsubscribe` (sends `message`, `edited` and `unsent` events, and a final `watch.overflow`), `send`, `send.tracked`, `message.send_status`. Limits: 128 outstanding requests and 64 subscriptions. The bridge methods (typing indicators, read receipts, edits and so on) need SIP turned off, so they are out of scope.
 - A 1:1 chat's `service` comes from chat.db's `chat.service_name`, which can be stale (Sue's chat says SMS, but its recent messages are all iMessage). The app shows the latest message's service and sends 1:1 messages as `send {to, service: "auto"}` so Messages picks, as on the Mac. VERIFY: the first such send lands in the same conversation.
+- imsg's `unread_count` counts messages with `is_read = 0`, but that flag can stay unset after a chat is read on another device. Messages goes by `chat.last_read_message_timestamp` too, so `mac::fix_unread` counts only messages unread by both. Read-state changes produce no watch event.
 - Every release ships a signed `imsg-macos.zip` plus `SHA256SUMS`.
 - Health on 2026-11-14: 1.4k stars, 199 forks, 15 releases between 2026-09-07 and 2026-11-05, and 100 commits in the 10 weeks before. The bus factor is 1: steipete has 367 commits and the next contributor has 31.
 
