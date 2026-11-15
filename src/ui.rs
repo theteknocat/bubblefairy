@@ -50,6 +50,8 @@ struct State {
     /// chats with a history request in flight (header spinner)
     loading: HashSet<i64>,
     older_loading: bool,
+    /// link previews by message row: None = asked for, or the Mac had none
+    links: HashMap<i64, Option<crate::mac::LinkPreview>>,
     /// files waiting in the composer
     outgoing: Vec<PathBuf>,
     /// chat id -> newest message id seen in BubbleFairy; hides the unread dot the Mac can't clear
@@ -103,6 +105,7 @@ pub struct Ui {
     group: Cell<bool>,
     /// re-lay photo stacks when the chat width changes (rebuilt with the conversation)
     stacks: RefCell<Vec<Rc<dyn Fn()>>>,
+    render_queued: Cell<bool>,
     /// writing a new message (To field showing, no chat selected)
     new_mode: Cell<bool>,
 }
@@ -422,6 +425,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         chats_queued: Cell::new(false),
         group: Cell::new(false),
         stacks: RefCell::default(),
+        render_queued: Cell::new(false),
         new_mode: Cell::new(false),
     });
 
@@ -646,6 +650,16 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     if let Ok(t) = std::env::var("BF_DRAFT") {
         ui.compose.buffer().set_text(&t.replace("\\n", "\n")); // dev aid: prefill the composer
     }
+    if let Some(n) = std::env::var("BF_TOP").ok().and_then(|v| v.parse::<u32>().ok()) {
+        // dev aid: scroll to the top n times, 1.5 s apart (each loads an older page)
+        let (u, left) = (ui.clone(), Cell::new(n));
+        glib::timeout_add_local(Duration::from_millis(1500), move || {
+            u.stick_bottom.set(false);
+            u.scroller.vadjustment().set_value(0.0);
+            left.set(left.get().saturating_sub(1));
+            if left.get() == 0 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+        });
+    }
     if let Ok(t) = std::env::var("BF_ATTACH") {
         // dev aid: put these files (colon-separated) in the composer
         let u = ui.clone();
@@ -829,6 +843,21 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 add_files(u, files); // nor any file that didn't go
             } else if !u.banner_offline.get() {
                 u.banner.set_reveal_child(false);
+            }
+        }
+        Event::Link(row, p) => {
+            u.st.borrow_mut().links.insert(row, p.clone());
+            let shown = {
+                let st = u.st.borrow();
+                p.is_some() && st.sel.and_then(|id| st.hist.get(&id)).is_some_and(|h| h.iter().any(|m| preview_row(m) == Some(row)))
+            };
+            // previews arrive in bursts when a chat opens: one re-render for the lot
+            if shown && !u.render_queued.replace(true) {
+                let u2 = u.clone();
+                glib::idle_add_local_once(move || {
+                    u2.render_queued.set(false);
+                    render_conv(&u2);
+                });
             }
         }
         Event::Image { path, full, bytes } => {
@@ -1596,13 +1625,18 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
         }
     }
     let mut out: Vec<gtk::Widget> = Vec::new();
-    let text = clean_text(m);
+    let link = preview_row(m).and_then(|r| link_for(u, r));
+    let mut text = clean_text(m);
+    if link.as_ref().is_some_and(|l| text.trim().trim_end_matches('/') == l.url.trim_end_matches('/')) {
+        text.clear(); // just the link: the card says it all
+    }
     let has_bubble = !text.is_empty() || !others.is_empty();
     if !photos.is_empty() {
-        out.push(photo_stack(u, &photos, bubble::Look { me, sms, tail: end_of_run && !has_bubble, ..Default::default() }));
+        let tail = end_of_run && !has_bubble && link.is_none();
+        out.push(photo_stack(u, &photos, bubble::Look { me, sms, tail, ..Default::default() }));
     }
     if has_bubble {
-        let b = bubble::Bubble::new(look(join_prev && photos.is_empty()));
+        let b = bubble::Bubble::new(bubble::Look { tail: end_of_run && link.is_none(), ..look(join_prev && photos.is_empty()) });
         for l in others {
             b.add(&l);
         }
@@ -1625,7 +1659,76 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
         }
         out.push(b.upcast());
     }
+    if let Some(l) = link {
+        out.push(link_card(u, &l, bubble::Look { me, sms, tail: end_of_run, join_prev: false, join_next }));
+    }
     out
+}
+
+/// The row holding Apple's preview for this message: folded in by imsg (`url_preview`), or the
+/// message itself when it is the preview row.
+fn preview_row(m: &Value) -> Option<i64> {
+    m["url_preview"]["id"].as_i64().or_else(|| {
+        (m["balloon_bundle_id"].as_str() == Some("com.apple.messages.URLBalloonProvider")).then(|| m["id"].as_i64()).flatten()
+    })
+}
+
+/// The preview if we have it; otherwise ask the Mac once (the card appears when it arrives).
+fn link_for(u: &Ui, row: i64) -> Option<crate::mac::LinkPreview> {
+    if let Some(p) = u.st.borrow().links.get(&row) {
+        return p.clone();
+    }
+    u.st.borrow_mut().links.insert(row, None);
+    u.send(Cmd::Link(row));
+    None
+}
+
+const LINK_W: i32 = 300;
+
+/// A shared link as Apple saved it: the preview image (if any) above a strip with the title and
+/// site. Clicking opens it in the browser.
+fn link_card(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look) -> gtk::Widget {
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    col.add_css_class("link-card");
+    if let Some(img) = &l.image {
+        let p = bubble::Bubble::photo(bubble::Look { tail: false, join_next: true, ..look }, LINK_W, LINK_W * 52 / 100);
+        p.add_css_class("fixed");
+        load_texture(u, &p, img);
+        col.append(&p);
+    }
+    let b = bubble::Bubble::new(bubble::Look { join_prev: l.image.is_some(), ..look });
+    if l.image.is_some() {
+        b.set_size_request(LINK_W + bubble::TAIL as i32, -1);
+    }
+    if !l.title.is_empty() {
+        let t = gtk::Label::new(Some(&l.title));
+        t.add_css_class("link-title");
+        t.set_xalign(0.0);
+        t.set_wrap(true);
+        t.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        t.set_lines(2);
+        t.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        t.set_max_width_chars(34);
+        b.add(&t);
+    }
+    // ponytail: the site's icon (l.icon) isn't drawn; a link glyph stands in
+    let site = gtk::Label::new(Some(&format!("🔗 {}", if l.site.is_empty() { &l.url } else { &l.site })));
+    site.add_css_class("link-site");
+    site.set_xalign(0.0);
+    site.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    site.set_max_width_chars(34);
+    b.add(&site);
+    col.append(&b);
+    col.set_tooltip_text(Some(&l.url));
+    col.set_cursor_from_name(Some("pointer"));
+    let click = gtk::GestureClick::new();
+    let (u2, url) = (u.clone(), l.url.clone());
+    click.connect_released(move |g, _, _, _| {
+        g.set_state(gtk::EventSequenceState::Claimed);
+        gtk::UriLauncher::new(&url).launch(Some(&u2.win), gio::Cancellable::NONE, |_| {});
+    });
+    col.add_controller(click);
+    col.upcast()
 }
 
 const CARD: i32 = 210; // stacked photo card size
@@ -1745,7 +1848,12 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
     });
     p.add_controller(click);
     u.st.borrow_mut().photos.push((path.to_string(), p.clone()));
+    load_texture(u, &p, path);
+    p
+}
 
+/// Give `p` the chat copy of the image at `path`: from memory, the disk cache, or the Mac.
+fn load_texture(u: &Rc<Ui>, p: &bubble::Bubble, path: &str) {
     let in_memory = u.st.borrow().textures.get(path).cloned(); // borrow ends here; or_else below borrows mutably
     let cached = in_memory.or_else(|| {
         let tex = texture(&std::fs::read(cache_path(u, path, false)).ok()?)?;
@@ -1753,7 +1861,7 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
         Some(tex)
     });
     match cached {
-        Some(t) => show_texture(&p, &t),
+        Some(t) => show_texture(p, &t),
         None => {
             let first = {
                 let mut st = u.st.borrow_mut();
@@ -1766,7 +1874,6 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
             }
         }
     }
-    p
 }
 
 fn texture(bytes: &[u8]) -> Option<gdk::Texture> {
@@ -1775,7 +1882,7 @@ fn texture(bytes: &[u8]) -> Option<gdk::Texture> {
 }
 
 fn show_texture(p: &bubble::Bubble, t: &gdk::Texture) {
-    if !p.has_css_class("stacked") {
+    if !p.has_css_class("stacked") && !p.has_css_class("fixed") {
         // a single photo takes its own shape; stacked cards stay square and crop to fill
         let (w, h) = (t.width().max(1) as f64, t.height().max(1) as f64);
         let s = (300.0 / w).min(340.0 / h).min(1.0);

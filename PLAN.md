@@ -55,8 +55,9 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 - Showing other received attachment types (video, PDF, audio) better than a file row.
 - Contact photos as avatars. The Mac's Contacts databases (`~/Library/Application Support/AddressBook/Sources/*/AddressBook-v22.abcddb`) are readable over SSH and hold thumbnails (`ZABCDRECORD.ZTHUMBNAILIMAGEDATA`, 61 contacts on Peter's Mac), matched to handles through the phone and email tables. Photos people share through Messages' Name & Photo (Memoji etc.) live in `~/Library/Messages/NickNameCache` (format not yet checked). Fetch once, cache on disk, fall back to initials.
 - Link previews:
-  - Use Apple's own rich-link data when imsg exposes it.
-  - Otherwise fetch the page from Linux. A setting turns this off.
+  - Built: Apple's own saved preview (title, site, image) is read from chat.db's `payload_data` over SSH (`mac::link_preview`, using the `plist` crate) and drawn as a card; clicking opens the link. The site icon isn't drawn yet.
+  - Not built: links with no saved preview (the sender's device didn't make one) still show as plain text. Fetching the page from Linux would fill that gap, behind a setting.
+  - Never fetch automatically for links from unknown senders, because that reveals the user's IP address to the link's owner.
   - Never fetch automatically for links from unknown senders, because that reveals the user's IP address to the link's owner.
 
 ### Phase 1.2: conversation info
@@ -66,6 +67,10 @@ The connection settings (host, user and imsg path) are entered once in a simple 
   - Tabs to browse the whole chat's Photos, Attachments and Links.
 - imsg has no "messages with attachments only" query, so read chat.db directly over SSH (as `mac::add_services` already does): `attachment` joined through `message_attachment_join` and `chat_message_join` for one chat, newest first, paged. Links come from message text.
 - The photo viewer can then walk every photo in the chat, not only the ones loaded in the conversation (for now it stops at the earliest loaded photo).
+
+### App icon (before the first release)
+
+A chat bubble with a cartoon magic wand: a stick with a five-point star on the end, drawn in a cartoon style with a few little sparkles around the star. Peter will generate options with Draw Things on his Mac; Claude writes the prompt (a bold, simple, flat-colour sticker look that still reads at 16 px) and later turns the chosen picture into the Flatpak icon set (scalable SVG plus a symbolic version). Needs to be done before Flathub submission.
 
 ### Phase 2: setup wizard (no terminal)
 

@@ -32,6 +32,8 @@ pub enum Cmd {
     Send { chat_id: i64, to: Option<String>, text: String, files: Vec<PathBuf> },
     /// `full`: the viewer wants the big version (up to 4096 px) instead of the 1200 px chat copy
     Image { path: String, full: bool },
+    /// Apple's link preview stored on this message row
+    Link(i64),
 }
 
 pub enum Event {
@@ -52,6 +54,7 @@ pub enum Event {
     Sent { text: String, files: Vec<PathBuf>, err: Option<String> },
     SendSlow,
     Image { path: String, full: bool, bytes: Option<Vec<u8>> },
+    Link(i64, Option<LinkPreview>),
 }
 
 pub struct Paths {
@@ -327,12 +330,20 @@ async fn exec(session: &client::Handle<Handler>, cmd: String) -> Option<Vec<u8>>
 /// Fetch an image from the Mac, shrunk and converted to JPEG there (handles HEIC, saves bandwidth).
 async fn fetch_image(session: &client::Handle<Handler>, path: &str, max: u32) -> Option<Vec<u8>> {
     // ponytail: animated GIFs arrive as a still frame; keep them as-is when animation matters
+    // link-preview payloads are plain PNG/JPEG/ICO, and Quick Look hangs on their unknown extension
+    let ql = !path.ends_with(".pluginPayloadAttachment");
     let path = path.strip_prefix("~/").map(|p| format!("\"$HOME\"/{}", sh_quote(p))).unwrap_or_else(|| sh_quote(path));
+    let ql = if ql {
+        // Quick Look applies the photo's rotation (HEIC `irot`), which sips ignores; sips is the fallback.
+        // The watchdog stops a stuck qlmanage from holding this channel forever.
+        format!("qlmanage -t -s {max} -o \"$d\" {path} >/dev/null 2>&1 & q=$!; (sleep 8; kill $q 2>/dev/null) & w=$!; wait $q; kill $w 2>/dev/null;")
+    } else {
+        String::new()
+    };
     exec(
         session,
         format!(
-            // Quick Look applies the photo's rotation (HEIC `irot`), which sips ignores; sips is the fallback.
-            "d=$(mktemp -d) || exit 1; qlmanage -t -s {max} -o \"$d\" {path} >/dev/null 2>&1; \
+            "d=$(mktemp -d) || exit 1; {ql} \
              f=$(ls \"$d\"/*.png 2>/dev/null | head -n 1); [ -n \"$f\" ] || f={path}; \
              sips -s format jpeg -s formatOptions 85 -Z {max} \"$f\" --out \"$d/i.jpg\" >/dev/null 2>&1 && cat \"$d/i.jpg\"; rm -rf \"$d\""
         ),
@@ -359,6 +370,68 @@ async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
             m["service"] = Value::String(svc.clone());
         }
     }
+}
+
+/// What Messages saved about a shared link. `image` / `icon` are payload files on the Mac.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LinkPreview {
+    pub url: String,
+    pub title: String,
+    pub site: String,
+    pub image: Option<String>,
+    pub icon: Option<String>,
+}
+
+/// The preview row's `payload_data` (an NSKeyedArchiver plist) plus its payload files, in the order
+/// the archive's image indexes refer to.
+async fn link_preview(session: &client::Handle<Handler>, rowid: i64) -> Option<LinkPreview> {
+    let sql = format!(
+        "select hex(payload_data) from message where ROWID={rowid}; \
+         select a.filename from attachment a join message_attachment_join j on j.attachment_id=a.ROWID \
+         where j.message_id={rowid} order by j.ROWID;"
+    );
+    let out = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await?;
+    let text = String::from_utf8_lossy(&out);
+    let mut lines = text.lines();
+    let bytes = hex(lines.next()?)?;
+    let files: Vec<String> = lines.map(String::from).collect();
+    parse_link(&bytes, &files)
+}
+
+fn hex(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim();
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+}
+
+pub fn parse_link(bytes: &[u8], files: &[String]) -> Option<LinkPreview> {
+    use plist::Value;
+    let v = Value::from_reader(std::io::Cursor::new(bytes)).ok()?;
+    let objs = v.as_dictionary()?.get("$objects")?.as_array()?;
+    // archive references are UIDs (binary) or {CF$UID: n} dictionaries (XML)
+    let get = |v: &Value| -> Option<Value> {
+        let i = match v {
+            Value::Uid(u) => u.get(),
+            Value::Dictionary(d) if d.len() == 1 => d.get("CF$UID")?.as_unsigned_integer()?,
+            other => return Some(other.clone()),
+        };
+        objs.get(i as usize).cloned()
+    };
+    let meta = objs.iter().find_map(|o| o.as_dictionary()?.get("richLinkMetadata").and_then(get))?;
+    let meta = meta.as_dictionary()?;
+    let text = |k: &str| -> Option<String> {
+        match get(meta.get(k)?)? {
+            Value::String(s) => Some(s),
+            Value::Dictionary(d) => get(d.get("NS.relative")?)?.as_string().map(String::from), // NSURL
+            _ => None,
+        }
+    };
+    let file = |k: &str| -> Option<String> {
+        let i = get(meta.get(k)?)?.as_dictionary()?.get("richLinkImageAttachmentSubstituteIndex")?.as_unsigned_integer()?;
+        files.get(i as usize).cloned()
+    };
+    let url = text("originalURL").or_else(|| text("URL"))?; // original = what was typed
+    let site = text("siteName").unwrap_or_else(|| url.split('/').nth(2).unwrap_or("").trim_start_matches("www.").to_string());
+    Some(LinkPreview { title: text("title").unwrap_or_default(), site, image: file("image"), icon: file("icon"), url })
 }
 
 /// One `send` call: `target` plus `key` = `value` (a text or a file path on the Mac).
@@ -512,6 +585,9 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let files_left = if err.is_some() { files[sent..].to_vec() } else { Vec::new() };
             let _ = ev.send(Event::Sent { text: if err.is_some() { text_left } else { String::new() }, files: files_left, err });
         }
+        Cmd::Link(rowid) => {
+            let _ = ev.send(Event::Link(rowid, link_preview(&session, rowid).await));
+        }
         Cmd::Image { path, full } => {
             let bytes = fetch_image(&session, &path, if full { FULL_PX } else { CHAT_PX }).await;
             let _ = ev.send(Event::Image { path, full, bytes });
@@ -624,5 +700,32 @@ mod tests {
         assert_eq!(lives.try_recv().unwrap()["id"], 5);
         dispatch(json!({"jsonrpc":"2.0","method":"watch.overflow","params":{}}), &pending, &ev, &live);
         assert!(matches!(evs.try_recv(), Ok(Event::Resync)));
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    #[test]
+    fn link_preview_archive() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>$objects</key><array>
+<string>$null</string>
+<dict><key>richLinkMetadata</key><dict><key>CF$UID</key><integer>2</integer></dict></dict>
+<dict><key>URL</key><dict><key>CF$UID</key><integer>3</integer></dict>
+      <key>title</key><dict><key>CF$UID</key><integer>5</integer></dict>
+      <key>image</key><dict><key>CF$UID</key><integer>6</integer></dict></dict>
+<dict><key>NS.relative</key><dict><key>CF$UID</key><integer>4</integer></dict></dict>
+<string>https://www.example.com/a</string>
+<string>Example</string>
+<dict><key>richLinkImageAttachmentSubstituteIndex</key><integer>1</integer></dict>
+</array></dict></plist>"#;
+        let files = ["icon.png".to_string(), "big.jpg".to_string()];
+        let p = super::parse_link(xml.as_bytes(), &files).unwrap();
+        assert_eq!(p.url, "https://www.example.com/a");
+        assert_eq!(p.title, "Example");
+        assert_eq!(p.site, "example.com");
+        assert_eq!(p.image.as_deref(), Some("big.jpg"));
+        assert_eq!(p.icon, None);
+        assert_eq!(super::hex("0aff"), Some(vec![10, 255]));
     }
 }
