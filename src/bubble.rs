@@ -9,15 +9,12 @@ use gtk::{gdk, glib, graphene, gsk};
 /// Width of the gutter on the tail side, kept on every bubble so a run of bubbles lines up.
 pub const TAIL: f32 = 8.0;
 const R: f32 = 18.0; // corner radius
-const R_JOIN: f32 = 6.0; // corner facing a neighbouring bubble from the same sender
 
 #[derive(Clone, Copy, Default)]
 pub struct Look {
     pub me: bool,
     pub sms: bool,
     pub tail: bool,
-    pub join_prev: bool,
-    pub join_next: bool,
 }
 
 glib::wrapper! {
@@ -137,9 +134,8 @@ pub fn outline(look: Look, w: f32, h: f32) -> gsk::Path {
     let x = |v: f32| if look.me { v } else { w - v };
     let (x0, x1, y0, y1) = (0.0, w - TAIL, 0.0, h);
     let max = (h / 2.0).min((x1 - x0) / 2.0);
-    let rr = |join: bool| if join { R_JOIN.min(max) } else { R.min(max) };
-    // the side facing the bubble's own edge tucks in where it joins its neighbours
-    let (tl, tr, br, bl) = (rr(false), rr(look.join_prev), rr(look.join_next), rr(false));
+    let r = R.min(max); // every corner the same, whatever the neighbours
+    let (tl, tr, br, bl) = (r, r, r, r);
     let p = gsk::PathBuilder::new();
     p.move_to(x(x0 + tl), y0);
     p.line_to(x(x1 - tr), y0);

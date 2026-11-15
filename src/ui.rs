@@ -1497,14 +1497,6 @@ fn render_conv(u: &Rc<Ui>) {
         // a "run" = same sender, close together: shares one name label and one avatar
         let run_prev = !sep && i > 0 && who(&msgs[i - 1]) == who(m) && gap(i - 1, i) < 180;
         let run_next = i + 1 < msgs.len() && who(&msgs[i + 1]) == who(m) && gap(i, i + 1) < 180 && day(times[i]) == day(times[i + 1]);
-        // bubbles only look continuous with bubbles: photos (shown above a message's bubble) break the chain
-        // (a link-preview card is a bubble that never joins: it neither starts nor ends a chain)
-        let join_prev = run_prev && has_bubble(&msgs[i - 1], card_of(u, &msgs[i - 1]).as_ref()) && !has_photos(m) && card_of(u, m).is_none();
-        let join_next = run_next
-            && has_bubble(&msgs[i + 1], card_of(u, &msgs[i + 1]).as_ref())
-            && !has_photos(&msgs[i + 1])
-            && card_of(u, &msgs[i + 1]).is_none();
-
         if group && !me && !run_prev {
             let n = gtk::Label::new(Some(&sender_name(m, &names)));
             n.add_css_class("sender-name");
@@ -1512,14 +1504,14 @@ fn render_conv(u: &Rc<Ui>) {
             u.msgs.append(&n);
         }
         let svc = m["service"].as_str().unwrap_or(&chat_svc);
-        let parts = message_parts(u, m, me, svc != "iMessage", join_prev, join_next, !run_next);
+        let parts = message_parts(u, m, me, svc != "iMessage", !run_next);
         let n = parts.len();
         for (k, part) in parts.into_iter().enumerate() {
             let last = k + 1 == n;
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             line.add_css_class("msg-line");
-            if !last || join_next {
-                line.add_css_class("tight");
+            if !last || run_next {
+                line.add_css_class("tight"); // same sender close together: a smaller gap
             }
             line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
             if group && !me {
@@ -1593,39 +1585,14 @@ fn photo_paths(m: &Value) -> Vec<String> {
         .collect()
 }
 
-fn has_photos(m: &Value) -> bool {
-    !photo_paths(m).is_empty()
-}
-
-/// Whether a message draws a bubble: text, "unsent", or an attachment row (a file, or a photo the
-/// Mac never downloaded). Photo-only messages don't.
-/// Does this message have a text/file bubble (apart from its photos and link card)? `link`: the
-/// message's link-preview card, whose address doesn't count as text.
-fn has_bubble(m: &Value, link: Option<&crate::mac::LinkPreview>) -> bool {
-    let text = match link {
-        Some(l) => without_url(&clean_text(m), l),
-        None => clean_text(m),
-    };
-    if m["unsent_at"].as_str().is_some() || m["type"].as_str() == Some("unsent") || !text.is_empty() {
-        return true;
-    }
-    let atts = m["attachments"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
-    let any_present = atts.iter().any(|a| a["missing"].as_bool() != Some(true));
-    // same filter as message_parts: missing duplicates hide when a present copy exists
-    atts.iter().filter(|a| !any_present || a["missing"].as_bool() != Some(true)).any(|a| {
-        let path = a["original_path"].as_str().unwrap_or("");
-        a["missing"].as_bool() == Some(true) || path.is_empty() || !is_image(a["mime_type"].as_str().unwrap_or(""), path)
-    })
-}
-
 /// One message as display rows: its photos (as cards, outside any bubble), then a bubble with the
 /// text and any other attachments. Only the bubble of the last message in a run gets a tail.
 /// `end_of_run`: this message is the sender's last in the run, so its last item (bubble or photo)
 /// carries the tail. Nothing else does.
-fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, join_next: bool, end_of_run: bool) -> Vec<gtk::Widget> {
-    let look = |join_prev| bubble::Look { me, sms, tail: end_of_run, join_prev, join_next };
+fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -> Vec<gtk::Widget> {
+    let look = bubble::Look { me, sms, tail: end_of_run };
     if m["unsent_at"].as_str().is_some() || m["type"].as_str() == Some("unsent") {
-        let b = bubble::Bubble::new(look(join_prev));
+        let b = bubble::Bubble::new(look);
         let l = gtk::Label::new(Some("Message unsent"));
         l.add_css_class("unsent");
         b.add(&l);
@@ -1669,15 +1636,13 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
     let has_bubble = !text.is_empty() || !others.is_empty();
     if !photos.is_empty() {
         let tail = end_of_run && !has_bubble && link.is_none();
-        out.push(photo_stack(u, &photos, bubble::Look { me, sms, tail, ..Default::default() }));
+        out.push(photo_stack(u, &photos, bubble::Look { me, sms, tail }));
     }
     if let Some(l) = &link {
-        // a card keeps its own full corners: it never joins a neighbouring bubble
-        let card = bubble::Look { me, sms, tail: end_of_run && !has_bubble, join_prev: false, join_next: false };
-        out.push(link_card(u, l, card));
+        out.push(link_card(u, l, bubble::Look { me, sms, tail: end_of_run && !has_bubble }));
     }
     if has_bubble {
-        let b = bubble::Bubble::new(look(join_prev && photos.is_empty() && link.is_none()));
+        let b = bubble::Bubble::new(look);
         for l in others {
             b.add(&l);
         }
@@ -1719,11 +1684,6 @@ fn without_url(text: &str, l: &crate::mac::LinkPreview) -> String {
     }
     let t = out.trim();
     if t.chars().all(|c| c == '/') { String::new() } else { t.to_string() }
-}
-
-/// The saved preview for a message, if it has arrived.
-fn card_of(u: &Ui, m: &Value) -> Option<crate::mac::LinkPreview> {
-    preview_row(m).and_then(|r| u.st.borrow().links.get(&r).cloned().flatten())
 }
 
 /// The row holding Apple's preview for this message: folded in by imsg (`url_preview`), or the
