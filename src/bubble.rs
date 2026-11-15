@@ -254,6 +254,12 @@ mod imp {
                 s.restore();
                 s.pop();
                 s.append_stroke(&path, &gsk::Stroke::new(1.0), &gdk::RGBA::new(1.0, 1.0, 1.0, 0.22));
+                // the loading spinner (see ui::load_texture) is the only child
+                let mut c = w.first_child();
+                while let Some(ch) = c {
+                    w.snapshot_child(&ch, s);
+                    c = ch.next_sibling();
+                }
                 return;
             }
             if width > TAIL && height > 0.0 {

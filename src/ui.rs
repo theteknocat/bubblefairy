@@ -56,6 +56,8 @@ struct State {
     sel: Option<i64>,
     textures: HashMap<String, gdk::Texture>,
     waiting: HashMap<String, Vec<bubble::Bubble>>,
+    /// pictures to ask the Mac for, oldest first; sent newest-first once the chat has been built
+    fetch_q: Vec<String>,
     /// photo widgets of the open chat in display order (the viewer cycles through these)
     photos: Vec<(String, bubble::Bubble)>,
     /// full-size viewer fetches in flight
@@ -967,6 +969,8 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                     show_texture(&p, &tex);
                 }
                 u.st.borrow_mut().textures.insert(path, tex);
+            } else {
+                pics.iter().for_each(stop_spin); // couldn't load: leave the empty bubble, no endless spinner
             }
         }
     }
@@ -2087,6 +2091,14 @@ fn load_texture(u: &Rc<Ui>, p: &bubble::Bubble, path: &str) {
     match cached {
         Some(t) => show_texture(p, &t),
         None => {
+            // a spinner in the empty bubble until the picture arrives
+            let sp = gtk::Spinner::new();
+            sp.set_spinning(true);
+            sp.set_halign(gtk::Align::Center);
+            sp.set_valign(gtk::Align::Center);
+            sp.set_hexpand(true);
+            sp.set_size_request(28, 28);
+            p.append(&sp);
             let first = {
                 let mut st = u.st.borrow_mut();
                 let w = st.waiting.entry(path.to_string()).or_default();
@@ -2094,7 +2106,20 @@ fn load_texture(u: &Rc<Ui>, p: &bubble::Bubble, path: &str) {
                 w.len() == 1
             };
             if first {
-                u.send(Cmd::Image { path: path.to_string(), full: false });
+                let was_empty = {
+                    let mut st = u.st.borrow_mut();
+                    st.fetch_q.push(path.to_string());
+                    st.fetch_q.len() == 1
+                };
+                if was_empty {
+                    let u = u.clone();
+                    glib::idle_add_local_once(move || {
+                        let q = std::mem::take(&mut u.st.borrow_mut().fetch_q);
+                        for path in q.into_iter().rev() {
+                            u.send(Cmd::Image { path, full: false });
+                        }
+                    });
+                }
             }
         }
     }
@@ -2105,7 +2130,15 @@ fn texture(bytes: &[u8]) -> Option<gdk::Texture> {
     gdk::Texture::from_bytes(&glib::Bytes::from(bytes)).ok()
 }
 
+/// Remove the loading spinner `load_texture` put in a photo bubble.
+fn stop_spin(p: &bubble::Bubble) {
+    if let Some(sp) = p.first_child().and_downcast::<gtk::Spinner>() {
+        p.remove(&sp);
+    }
+}
+
 fn show_texture(p: &bubble::Bubble, t: &gdk::Texture) {
+    stop_spin(p);
     if !p.has_css_class("stacked") && !p.has_css_class("fixed") {
         // a single photo takes its own shape; stacked cards stay square and crop to fill
         let (w, h) = (t.width().max(1) as f64, t.height().max(1) as f64);
