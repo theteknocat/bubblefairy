@@ -61,7 +61,11 @@ fn main() -> glib::ExitCode {
         rt.spawn(mac::run(cfg.clone(), paths, cmd_rx, ev_tx));
     }
 
-    let app = gtk::Application::builder().application_id(APP_ID).build();
+    let mut flags = gtk::gio::ApplicationFlags::empty();
+    if std::env::var_os("BF_SHOT").is_some() {
+        flags |= gtk::gio::ApplicationFlags::NON_UNIQUE; // don't hand off to a running copy
+    }
+    let app = gtk::Application::builder().application_id(APP_ID).flags(flags).build();
     app.connect_startup(|_| {
         if std::env::var_os("BF_DARK").is_some() {
             // dev aid for screenshots

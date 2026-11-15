@@ -36,6 +36,12 @@ struct State {
     waiting: HashMap<String, Vec<gtk::Picture>>,
     host_key: String,
     connected: bool,
+    chats_loaded: bool,
+    /// chats with a history request in flight (header spinner)
+    loading: HashSet<i64>,
+    older_loading: bool,
+    /// chats whose whole history is already loaded
+    no_more: HashSet<i64>,
 }
 
 pub struct Ui {
@@ -53,13 +59,19 @@ pub struct Ui {
     head_title: gtk::Label,
     head_sub: gtk::Label,
     compose: gtk::TextView,
+    compose_hint: gtk::Label,
     send_btn: gtk::Button,
+    side_stack: gtk::Stack,
+    head_spin: gtk::Spinner,
     status: gtk::Button,
     status_text: gtk::Label,
     banner: gtk::Revealer,
     banner_text: gtk::Label,
     // flags poked from signal handlers, so kept out of the RefCell
     stick_bottom: Cell<bool>,
+    /// when not pinned to the bottom, keep this distance from the bottom while content changes above
+    from_bottom: Cell<f64>,
+    last_upper: Cell<f64>,
     selecting: Cell<bool>,
     sel_gen: Cell<u32>,
     banner_offline: Cell<bool>,
@@ -108,7 +120,22 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     side_title.add_css_class("side-title");
     side_title.set_xalign(0.0);
     sidebar.append(&side_title);
-    sidebar.append(&side_scroll);
+    let side_loading = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    side_loading.set_valign(gtk::Align::Center);
+    side_loading.set_halign(gtk::Align::Center);
+    let sp = gtk::Spinner::new();
+    sp.start();
+    sp.set_size_request(28, 28);
+    side_loading.append(&sp);
+    let sl = gtk::Label::new(Some("Loading chats…"));
+    sl.add_css_class("loading-text");
+    side_loading.append(&sl);
+    let side_stack = gtk::Stack::new();
+    side_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    side_stack.add_named(&side_loading, Some("loading"));
+    side_stack.add_named(&side_scroll, Some("list"));
+    side_stack.set_vexpand(true);
+    sidebar.append(&side_stack);
 
     // conversation
     let head_avatar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -122,17 +149,24 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     head_sub.set_ellipsize(gtk::pango::EllipsizeMode::End);
     let titles = gtk::Box::new(gtk::Orientation::Vertical, 1);
     titles.set_valign(gtk::Align::Center);
+    titles.set_hexpand(true);
+    let head_spin = gtk::Spinner::new();
+    head_spin.set_valign(gtk::Align::Center);
+    head_spin.set_size_request(22, 22);
     titles.append(&head_title);
     titles.append(&head_sub);
     let conv_head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     conv_head.add_css_class("conv-head");
     conv_head.append(&head_avatar);
     conv_head.append(&titles);
+    conv_head.append(&head_spin);
 
     let msgs = gtk::Box::new(gtk::Orientation::Vertical, 0);
     msgs.add_css_class("msgs");
     msgs.set_valign(gtk::Align::End);
-    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&msgs).build();
+    // natural height: pictures can shrink to nothing, so their minimum height would understate the content
+    let viewport = gtk::Viewport::builder().child(&msgs).vscroll_policy(gtk::ScrollablePolicy::Natural).build();
+    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&viewport).build();
 
     let compose = gtk::TextView::builder()
         .wrap_mode(gtk::WrapMode::WordChar)
@@ -149,6 +183,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         .child(&compose)
         .hexpand(true)
         .build();
+    let compose_hint = gtk::Label::new(None);
+    compose_hint.add_css_class("compose-hint");
+    compose_hint.set_halign(gtk::Align::Start);
+    compose_hint.set_valign(gtk::Align::Center);
+    compose_hint.set_can_target(false);
+    let compose_box = gtk::Overlay::new();
+    compose_box.set_child(Some(&compose_scroll));
+    compose_box.add_overlay(&compose_hint);
+    compose_box.set_hexpand(true);
+    let hint = compose_hint.clone();
+    compose.buffer().connect_changed(move |b| hint.set_visible(b.char_count() == 0));
     let emoji = gtk::MenuButton::new();
     emoji.set_icon_name("face-smile-symbolic");
     emoji.set_tooltip_text(Some("Emoji"));
@@ -164,7 +209,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     send_btn.set_valign(gtk::Align::End);
     let composer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     composer.add_css_class("composer");
-    composer.append(&compose_scroll);
+    composer.append(&compose_box);
     composer.append(&emoji);
     composer.append(&send_btn);
 
@@ -224,12 +269,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         head_title,
         head_sub,
         compose,
+        compose_hint,
         send_btn,
+        side_stack,
+        head_spin,
         status,
         status_text,
         banner,
         banner_text,
         stick_bottom: Cell::new(true),
+        from_bottom: Cell::new(0.0),
+        last_upper: Cell::new(0.0),
         selecting: Cell::new(false),
         sel_gen: Cell::new(0),
         banner_offline: Cell::new(false),
@@ -274,12 +324,31 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let adj = ui.scroller.vadjustment();
     let u = ui.clone();
     adj.connect_changed(move |a| {
-        if u.stick_bottom.get() {
-            a.set_value(a.upper() - a.page_size());
-        }
+        u.last_upper.set(a.upper());
+        // "changed" fires while GTK is laying out the viewport; a value set now moves the adjustment but
+        // the viewport misses the redraw (the old "last bubble cut off" bug), so reposition right after
+        let (a, u) = (a.clone(), u.clone());
+        glib::idle_add_local_once(move || {
+            if u.stick_bottom.get() {
+                a.set_value(a.upper() - a.page_size());
+            } else {
+                a.set_value(a.upper() - u.from_bottom.get());
+            }
+        });
     });
     let u = ui.clone();
-    adj.connect_value_changed(move |a| u.stick_bottom.set(a.value() >= a.upper() - a.page_size() - 40.0));
+    adj.connect_value_changed(move |a| {
+        // GTK moves the value while it resizes the content; only react to scrolls at a settled size,
+        // otherwise a half-laid-out frame would unpin us from the bottom
+        if a.upper() != u.last_upper.get() {
+            return;
+        }
+        u.stick_bottom.set(a.value() >= a.upper() - a.page_size() - 40.0);
+        u.from_bottom.set(a.upper() - a.value());
+        if a.value() < 400.0 && a.upper() > a.page_size() {
+            load_older(&u);
+        }
+    });
 
     let open = gio::SimpleAction::new("open-chat", Some(glib::VariantTy::INT64));
     let u = ui.clone();
@@ -318,7 +387,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     if let Some(out) = std::env::var_os("BF_SHOT") {
         // dev aid: save the window to a PNG and quit (used with BF_DEMO in a headless compositor)
         let w = win.clone();
-        glib::timeout_add_local_once(Duration::from_millis(2500), move || {
+        let ms = std::env::var("BF_SHOT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2500);
+        glib::timeout_add_local_once(Duration::from_millis(ms), move || {
             let p = gtk::WidgetPaintable::new(Some(&w));
             let (width, height) = (w.width() as f64, w.height() as f64);
             let snap = gtk::Snapshot::new();
@@ -348,7 +418,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             u.send(Cmd::Chats);
             let sel = u.st.borrow().sel;
             if let Some(id) = sel {
-                u.send(Cmd::History(id));
+                request_history(u, id);
             }
         }
         Event::Offline(why) => {
@@ -370,6 +440,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                     }
                 }
                 st.chats = chats;
+                st.chats_loaded = true;
                 let st = &mut *st;
                 let ids: Vec<i64> = st.chats.iter().filter_map(|c| c["id"].as_i64()).collect();
                 let ask: Vec<i64> =
@@ -380,10 +451,13 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             for id in ask {
                 u.send(Cmd::Preview(id));
             }
+            u.side_stack.set_visible_child_name("list");
             render_chats(u);
             let first = {
                 let st = u.st.borrow();
-                if st.sel.is_none() { st.chats.first().and_then(|c| c["id"].as_i64()) } else { None }
+                // BF_CHAT=<id>: dev aid to open a given chat first
+                let want = std::env::var("BF_CHAT").ok().and_then(|v| v.parse::<i64>().ok());
+                if st.sel.is_none() { want.or_else(|| st.chats.first().and_then(|c| c["id"].as_i64())) } else { None }
             };
             if let Some(id) = first {
                 select_in_list(u, id);
@@ -403,6 +477,27 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                     st.preview.insert(id, last.clone());
                 }
                 st.hist.insert(id, msgs);
+                st.loading.remove(&id);
+                st.sel == Some(id)
+            };
+            if is_sel {
+                render_conv(u);
+            }
+        }
+        Event::Older(id, older) => {
+            learn_names(u, &older);
+            let is_sel = {
+                let mut st = u.st.borrow_mut();
+                st.older_loading = false;
+                let h = st.hist.entry(id).or_default();
+                let have: HashSet<String> = h.iter().filter_map(|m| m["guid"].as_str().map(String::from)).collect();
+                let fresh: Vec<Value> = older.into_iter().filter(|m| m["guid"].as_str().is_some_and(|g| !have.contains(g))).collect();
+                if fresh.is_empty() {
+                    st.no_more.insert(id);
+                } else {
+                    let rest = std::mem::take(h);
+                    *h = fresh.into_iter().chain(rest).collect();
+                }
                 st.sel == Some(id)
             };
             if is_sel {
@@ -414,7 +509,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             u.send(Cmd::Chats);
             let sel = u.st.borrow().sel;
             if let Some(id) = sel {
-                u.send(Cmd::History(id));
+                request_history(u, id);
             }
         }
         Event::SendSlow => show_banner(
@@ -438,7 +533,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             let tex = bytes.and_then(|b| {
                 let _ = std::fs::create_dir_all(&u.store.image_cache);
                 let _ = std::fs::write(cache_path(u, &path), &b);
-                gdk::Texture::from_bytes(&glib::Bytes::from_owned(b)).ok()
+                texture(&b)
             });
             let pics = u.st.borrow_mut().waiting.remove(&path).unwrap_or_default();
             if let Some(tex) = tex {
@@ -559,10 +654,44 @@ fn select(u: &Rc<Ui>, id: i64) {
     let u2 = u.clone();
     glib::timeout_add_local_once(Duration::from_millis(150), move || {
         if u2.sel_gen.get() == g && u2.st.borrow().connected {
-            u2.send(Cmd::History(id));
+            request_history(&u2, id);
         }
     });
     u.compose.grab_focus();
+}
+
+fn request_history(u: &Rc<Ui>, id: i64) {
+    u.st.borrow_mut().loading.insert(id);
+    u.send(Cmd::History(id));
+    update_spinner(u);
+}
+
+fn update_spinner(u: &Ui) {
+    let on = {
+        let st = u.st.borrow();
+        st.sel.is_some_and(|id| st.loading.contains(&id))
+    };
+    u.head_spin.set_spinning(on);
+    u.head_spin.set_visible(on);
+}
+
+/// Scrolled near the top: fetch the next page of older messages.
+fn load_older(u: &Rc<Ui>) {
+    let req = {
+        let mut st = u.st.borrow_mut();
+        let Some(id) = st.sel else { return };
+        if st.older_loading || st.no_more.contains(&id) || !st.connected {
+            return;
+        }
+        let Some(before) = st.hist.get(&id).and_then(|h| h.first()).and_then(|m| m["created_at"].as_str()).map(String::from) else {
+            return;
+        };
+        st.older_loading = true;
+        (id, before)
+    };
+    u.send(Cmd::Older { id: req.0, before: req.1 });
+    let u2 = u.clone();
+    glib::idle_add_local_once(move || render_conv(&u2)); // shows the "Loading more" row; not inside a scroll signal
 }
 
 fn send_now(u: &Ui) {
@@ -646,15 +775,18 @@ fn render_chats(u: &Rc<Ui>) {
 // ---------- conversation ----------
 
 fn render_conv(u: &Rc<Ui>) {
-    let (chat, msgs, names) = {
+    update_spinner(u);
+    let (chat, msgs, names, older) = {
         let st = u.st.borrow();
         let Some(id) = st.sel else { return };
         let Some(chat) = st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).cloned() else { return };
-        (chat, st.hist.get(&id).cloned().unwrap_or_default(), st.names.clone())
+        (chat, st.hist.get(&id).cloned().unwrap_or_default(), st.names.clone(), st.older_loading)
     };
     u.stack.set_visible_child_name("conv");
     let title = chat_title(&chat, &names);
-    let sms = chat["service"].as_str().is_some_and(|s| s != "iMessage");
+    let chat_svc = chat["service"].as_str().unwrap_or("iMessage").to_string();
+    let sms = chat_svc != "iMessage";
+    u.compose_hint.set_text(&if sms { format!("Text Message · {chat_svc}") } else { "iMessage".into() });
     let group = chat["is_group"].as_bool() == Some(true);
     u.head_title.set_text(&title);
     let mut sub = chat["service"].as_str().unwrap_or("").to_string();
@@ -682,11 +814,19 @@ fn render_conv(u: &Rc<Ui>) {
     }
     u.send_btn.add_css_class(if sms { "sms" } else { "imessage" });
 
-    // keep the reading position when a re-render happens while scrolled up
-    let adj = u.scroller.vadjustment();
-    let keep = (!u.stick_bottom.get()).then(|| adj.value());
+    // the scroll position is kept by the adjustment handlers in build() (anchored to the bottom)
     while let Some(c) = u.msgs.first_child() {
         u.msgs.remove(&c);
+    }
+    if older {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.set_halign(gtk::Align::Center);
+        row.add_css_class("loading-more");
+        let sp = gtk::Spinner::new();
+        sp.start();
+        row.append(&sp);
+        row.append(&gtk::Label::new(Some("Loading more messages…")));
+        u.msgs.append(&row);
     }
     let times: Vec<Option<i64>> = msgs.iter().map(|m| m["created_at"].as_str().and_then(local).map(|d| d.to_unix())).collect();
     let who = |m: &Value| (m["is_from_me"].as_bool() == Some(true), m["sender"].as_str().unwrap_or("").to_string());
@@ -718,14 +858,15 @@ fn render_conv(u: &Rc<Ui>) {
             n.set_xalign(0.0);
             u.msgs.append(&n);
         }
-        let bubble = bubble(u, m, me, sms);
+        let svc = m["service"].as_str().unwrap_or(&chat_svc);
+        let bubble = bubble(u, m, me, svc != "iMessage");
         if join_prev {
             bubble.add_css_class("join-prev");
         }
         if join_next {
             bubble.add_css_class("join-next");
         }
-        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         line.add_css_class("msg-line");
         if join_next {
             line.add_css_class("tight");
@@ -742,13 +883,61 @@ fn render_conv(u: &Rc<Ui>) {
                 line.append(&a);
             }
         }
-        line.append(&bubble);
+        let svc_class = if svc == "iMessage" { "imessage" } else { "sms" };
+        if join_next {
+            if !me {
+                line.append(&tail_space());
+            }
+            line.append(&bubble);
+            if me {
+                line.append(&tail_space());
+            }
+        } else {
+            bubble.add_css_class("tailed");
+            let t = tail(me, svc_class);
+            if !me {
+                line.append(&t);
+            }
+            line.append(&bubble);
+            if me {
+                line.append(&t);
+            }
+        }
         u.msgs.append(&line);
     }
-    if let Some(v) = keep {
-        let adj2 = adj.clone();
-        glib::idle_add_local_once(move || adj2.set_value(v));
-    }
+}
+
+/// The little flick at the bottom corner of the last bubble in a run. Its colour comes from CSS (`.tail`).
+fn tail(me: bool, svc: &str) -> gtk::DrawingArea {
+    let d = gtk::DrawingArea::new();
+    d.set_content_width(11);
+    d.set_content_height(20);
+    d.set_valign(gtk::Align::End);
+    d.add_css_class("tail");
+    d.add_css_class(if me { "me" } else { "them" });
+    d.add_css_class(svc);
+    d.set_draw_func(move |w, cr, width, _| {
+        let c = w.color();
+        if !me {
+            cr.translate(width as f64, 0.0);
+            cr.scale(-1.0, 1.0);
+        }
+        // base runs up the bubble's side, tip curls out at the bottom
+        cr.move_to(0.0, 0.0);
+        cr.curve_to(0.5, 10.0, 3.5, 17.0, 11.0, 20.0);
+        cr.curve_to(6.0, 20.6, 2.5, 20.4, 0.0, 19.4);
+        cr.line_to(0.0, 20.0);
+        cr.close_path();
+        cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, c.alpha() as f64);
+        let _ = cr.fill();
+    });
+    d
+}
+
+fn tail_space() -> gtk::Box {
+    let b = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    b.set_size_request(11, -1);
+    b
 }
 
 fn bubble(u: &Rc<Ui>, m: &Value, me: bool, sms: bool) -> gtk::Box {
@@ -763,17 +952,27 @@ fn bubble(u: &Rc<Ui>, m: &Value, me: bool, sms: bool) -> gtk::Box {
         return b;
     }
     let mut has_media = false;
-    for a in m["attachments"].as_array().into_iter().flatten() {
+    let atts: Vec<&Value> = m["attachments"].as_array().into_iter().flatten().collect();
+    // RCS/SMS photos often come as a converted copy plus a missing original; show only what's there
+    let any_present = atts.iter().any(|a| a["missing"].as_bool() != Some(true));
+    for a in atts.into_iter().filter(|a| !any_present || a["missing"].as_bool() != Some(true)) {
         let path = a["original_path"].as_str().unwrap_or("");
         let mime = a["mime_type"].as_str().unwrap_or("");
-        if mime.starts_with("image/") && !path.is_empty() && a["missing"].as_bool() != Some(true) {
+        if is_image(mime, path) && !path.is_empty() && a["missing"].as_bool() != Some(true) {
             b.append(&image(u, path));
             has_media = true;
         } else {
             let name = a["transfer_name"].as_str().or(a["filename"].as_str()).unwrap_or("Attachment");
-            let l = gtk::Label::new(Some(&format!("📎 {name}")));
+            let label = if a["missing"].as_bool() == Some(true) && is_image(mime, name) {
+                "📷 Photo not downloaded on your Mac".to_string()
+            } else {
+                format!("📎 {name}")
+            };
+            let l = gtk::Label::new(Some(&label));
             l.add_css_class("file");
             l.set_xalign(0.0);
+            l.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+            l.set_max_width_chars(40);
             b.append(&l);
         }
     }
@@ -783,7 +982,7 @@ fn bubble(u: &Rc<Ui>, m: &Value, me: bool, sms: bool) -> gtk::Box {
         l.set_wrap(true);
         l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
         l.set_xalign(0.0);
-        l.set_max_width_chars(46);
+        l.set_max_width_chars(60);
         l.set_selectable(true);
         l.set_can_focus(false);
         l.add_css_class("text");
@@ -807,8 +1006,9 @@ fn image(u: &Rc<Ui>, path: &str) -> gtk::Picture {
     p.set_can_shrink(true);
     p.set_content_fit(gtk::ContentFit::Cover);
     p.set_size_request(240, 180);
-    let cached = u.st.borrow().textures.get(path).cloned().or_else(|| {
-        let tex = gdk::Texture::from_filename(cache_path(u, path)).ok()?;
+    let in_memory = u.st.borrow().textures.get(path).cloned(); // borrow ends here; or_else below borrows mutably
+    let cached = in_memory.or_else(|| {
+        let tex = texture(&std::fs::read(cache_path(u, path)).ok()?)?;
         u.st.borrow_mut().textures.insert(path.to_string(), tex.clone());
         Some(tex)
     });
@@ -830,12 +1030,69 @@ fn image(u: &Rc<Ui>, path: &str) -> gtk::Picture {
     p
 }
 
+fn texture(bytes: &[u8]) -> Option<gdk::Texture> {
+    // the Mac already turned the photo upright (see mac::fetch_image)
+    gdk::Texture::from_bytes(&glib::Bytes::from(bytes)).ok()
+}
+
 fn show_texture(p: &gtk::Picture, t: &gdk::Texture) {
     let (w, h) = (t.width().max(1) as f64, t.height().max(1) as f64);
     let s = (300.0 / w).min(340.0 / h).min(1.0);
-    p.set_size_request((w * s) as i32, (h * s) as i32);
-    p.set_paintable(Some(t));
+    let (w, h) = ((w * s) as i32, (h * s) as i32);
+    p.set_size_request(w, h);
+    p.set_paintable(Some(&Sized::new(t, w, h)));
     p.remove_css_class("loading");
+}
+
+// A texture that reports a chosen display size. GtkPicture otherwise asks for the photo's full pixel
+// size as its natural width, which stretches bubbles across the window. The pixels stay full-res (HiDPI).
+glib::wrapper! {
+    pub struct Sized(ObjectSubclass<sized::Imp>) @implements gdk::Paintable;
+}
+
+impl Sized {
+    fn new(t: &gdk::Texture, w: i32, h: i32) -> Self {
+        use gtk::subclass::prelude::ObjectSubclassIsExt;
+        let s: Self = glib::Object::new();
+        s.imp().tex.replace(Some(t.clone()));
+        s.imp().size.set((w, h));
+        s
+    }
+}
+
+mod sized {
+    use gtk::subclass::prelude::*;
+    use gtk::{gdk, glib, prelude::*};
+    use std::cell::{Cell, RefCell};
+
+    #[derive(Default)]
+    pub struct Imp {
+        pub tex: RefCell<Option<gdk::Texture>>,
+        pub size: Cell<(i32, i32)>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for Imp {
+        const NAME: &'static str = "BfSizedTexture";
+        type Type = super::Sized;
+        type Interfaces = (gdk::Paintable,);
+    }
+
+    impl ObjectImpl for Imp {}
+
+    impl PaintableImpl for Imp {
+        fn intrinsic_width(&self) -> i32 {
+            self.size.get().0
+        }
+        fn intrinsic_height(&self) -> i32 {
+            self.size.get().1
+        }
+        fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
+            if let Some(t) = self.tex.borrow().as_ref() {
+                t.snapshot(snapshot, width, height);
+            }
+        }
+    }
 }
 
 fn cache_path(u: &Ui, path: &str) -> PathBuf {
@@ -956,6 +1213,12 @@ fn settings(u: &Rc<Ui>) {
 
 // ---------- helpers ----------
 
+/// Some RCS attachments come without a MIME type, so fall back to the file extension.
+fn is_image(mime: &str, path: &str) -> bool {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    mime.starts_with("image/") || (mime.is_empty() && matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "heic" | "heif" | "gif" | "webp"))
+}
+
 fn chat_title(c: &Value, names: &HashMap<String, String>) -> String {
     for k in ["display_name", "contact_name"] {
         if let Some(s) = c[k].as_str().filter(|s| !s.is_empty()) {
@@ -1065,3 +1328,4 @@ mod tests {
         assert_eq!(summary(&json!({"text": "hi\nthere", "attachments": []})), "hi");
     }
 }
+

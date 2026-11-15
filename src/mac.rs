@@ -25,6 +25,8 @@ pub enum Cmd {
     History(i64),
     /// Just the newest message, for the chat list's preview line.
     Preview(i64),
+    /// Older messages, before the given ISO time (the oldest one loaded).
+    Older { id: i64, before: String },
     Send { chat_id: i64, text: String },
     Image { path: String },
 }
@@ -39,6 +41,7 @@ pub enum Event {
     Chats(Vec<Value>),
     History(i64, Vec<Value>),
     Preview(i64, Value),
+    Older(i64, Vec<Value>),
     Message(Value),
     /// The watch stream lost messages; reload everything.
     Resync,
@@ -165,6 +168,9 @@ async fn resolve(host: &str) -> Result<std::net::SocketAddr, String> {
     Err(format!("can't find {host} on the network (is the Mac awake?)"))
 }
 
+/// sshd allows 10 channels per connection by default (MaxSessions); the rpc channel uses one.
+static CHANNELS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(6);
+
 struct Conn {
     session: Arc<client::Handle<Handler>>,
     rpc: Rpc,
@@ -228,6 +234,7 @@ async fn connect(cfg: &Config, paths: &Paths, ev: &mpsc::UnboundedSender<Event>)
 
     let pending: Pending = Default::default();
     let (dead_tx, dead) = oneshot::channel();
+    let (live_tx, mut live_rx) = mpsc::unbounded_channel::<Value>();
     let (p, ev2) = (pending.clone(), ev.clone());
     tokio::spawn(async move {
         let mut buf = Vec::new();
@@ -239,7 +246,7 @@ async fn connect(cfg: &Config, paths: &Paths, ev: &mpsc::UnboundedSender<Event>)
                     while let Some(n) = buf.iter().position(|&b| b == b'\n') {
                         let line: Vec<u8> = buf.drain(..=n).collect();
                         if let Ok(v) = serde_json::from_slice::<Value>(&line) {
-                            dispatch(v, &p, &ev2);
+                            dispatch(v, &p, &ev2, &live_tx);
                         }
                     }
                 }
@@ -262,10 +269,18 @@ async fn connect(cfg: &Config, paths: &Paths, ev: &mpsc::UnboundedSender<Event>)
         let _ = dead_tx.send(());
     });
 
-    Ok(Conn { session: Arc::new(session), rpc: Rpc { tx, pending, next: Arc::new(AtomicU64::new(1)) }, dead })
+    let session = Arc::new(session);
+    let (s2, ev3) = (session.clone(), ev.clone());
+    tokio::spawn(async move {
+        while let Some(mut m) = live_rx.recv().await {
+            add_services(&s2, std::slice::from_mut(&mut m)).await;
+            let _ = ev3.send(Event::Message(m));
+        }
+    });
+    Ok(Conn { session, rpc: Rpc { tx, pending, next: Arc::new(AtomicU64::new(1)) }, dead })
 }
 
-fn dispatch(v: Value, pending: &Pending, ev: &mpsc::UnboundedSender<Event>) {
+fn dispatch(v: Value, pending: &Pending, ev: &mpsc::UnboundedSender<Event>, live: &mpsc::UnboundedSender<Value>) {
     if let Some(id) = v.get("id").and_then(Value::as_u64) {
         if let Some(tx) = pending.lock().unwrap().remove(&id) {
             let r = match v.get("error") {
@@ -279,7 +294,7 @@ fn dispatch(v: Value, pending: &Pending, ev: &mpsc::UnboundedSender<Event>) {
     match v.get("method").and_then(Value::as_str) {
         Some("message") => {
             if let Some(m) = v.pointer("/params/message") {
-                let _ = ev.send(Event::Message(m.clone()));
+                let _ = live.send(m.clone());
             }
         }
         Some("watch.overflow") => {
@@ -289,13 +304,9 @@ fn dispatch(v: Value, pending: &Pending, ev: &mpsc::UnboundedSender<Event>) {
     }
 }
 
-/// Fetch an image from the Mac, shrunk and converted to JPEG there (handles HEIC, saves bandwidth).
-async fn fetch_image(session: &client::Handle<Handler>, path: &str) -> Option<Vec<u8>> {
-    // ponytail: animated GIFs arrive as a still frame; keep them as-is when animation matters
-    let cmd = format!(
-        "d=$(mktemp -d) && sips -s format jpeg -Z 1600 {} --out \"$d/i.jpg\" >/dev/null 2>&1 && cat \"$d/i.jpg\"; rm -rf \"$d\"",
-        sh_quote(path)
-    );
+/// Run a shell command on the Mac in its own channel and collect stdout.
+async fn exec(session: &client::Handle<Handler>, cmd: String) -> Option<Vec<u8>> {
+    let _permit = CHANNELS.acquire().await.ok()?;
     let mut ch = session.channel_open_session().await.ok()?;
     ch.exec(true, cmd).await.ok()?;
     let mut out = Vec::new();
@@ -307,6 +318,43 @@ async fn fetch_image(session: &client::Handle<Handler>, path: &str) -> Option<Ve
         }
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// Fetch an image from the Mac, shrunk and converted to JPEG there (handles HEIC, saves bandwidth).
+async fn fetch_image(session: &client::Handle<Handler>, path: &str) -> Option<Vec<u8>> {
+    // ponytail: animated GIFs arrive as a still frame; keep them as-is when animation matters
+    let path = path.strip_prefix("~/").map(|p| format!("\"$HOME\"/{}", sh_quote(p))).unwrap_or_else(|| sh_quote(path));
+    exec(
+        session,
+        format!(
+            // Quick Look applies the photo's rotation (HEIC `irot`), which sips ignores; sips is the fallback.
+            "d=$(mktemp -d) || exit 1; qlmanage -t -s 1200 -o \"$d\" {path} >/dev/null 2>&1; \
+             f=$(ls \"$d\"/*.png 2>/dev/null | head -n 1); [ -n \"$f\" ] || f={path}; \
+             sips -s format jpeg -s formatOptions 80 -Z 1200 \"$f\" --out \"$d/i.jpg\" >/dev/null 2>&1 && cat \"$d/i.jpg\"; rm -rf \"$d\""
+        ),
+    )
+    .await
+}
+
+/// imsg doesn't report which service carried each message (an iMessage chat can fall back to SMS),
+/// so read it straight from chat.db. ponytail: drop this once imsg exposes a per-message `service`.
+async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
+    let ids: Vec<String> = msgs.iter().filter_map(|m| m["id"].as_i64()).map(|i| i.to_string()).collect();
+    if ids.is_empty() {
+        return;
+    }
+    let sql = format!("select ROWID||'|'||service from message where ROWID in ({})", ids.join(","));
+    let Some(out) = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await else { return };
+    let map: HashMap<i64, String> = String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|l| l.split_once('|'))
+        .filter_map(|(id, svc)| Some((id.parse().ok()?, svc.to_string())))
+        .collect();
+    for m in msgs {
+        if let Some(svc) = m["id"].as_i64().and_then(|i| map.get(&i)) {
+            m["service"] = Value::String(svc.clone());
+        }
+    }
 }
 
 const READ: Duration = Duration::from_secs(30);
@@ -327,8 +375,19 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             if let Ok(r) = r {
                 let mut msgs = r.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
                 msgs.reverse(); // imsg returns newest first
+                add_services(&session, &mut msgs).await;
                 let _ = ev.send(Event::History(id, msgs));
             }
+        }
+        Cmd::Older { id, before } => {
+            let q = json!({"chat_id": id, "limit": 100, "end": before, "attachments": true});
+            let mut msgs = match rpc.call("messages.history", q, READ).await {
+                Ok(r) => r.get("messages").and_then(Value::as_array).cloned().unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            msgs.reverse();
+            add_services(&session, &mut msgs).await;
+            let _ = ev.send(Event::Older(id, msgs));
         }
         Cmd::Preview(id) => {
             let r = rpc.call("messages.history", json!({"chat_id": id, "limit": 1, "attachments": true}), READ).await;
@@ -454,9 +513,12 @@ mod tests {
         let (tx, mut rx) = oneshot::channel();
         pending.lock().unwrap().insert(7, tx);
         let (ev, mut evs) = mpsc::unbounded_channel();
-        dispatch(json!({"jsonrpc":"2.0","id":7,"result":{"ok":true}}), &pending, &ev);
+        let (live, mut lives) = mpsc::unbounded_channel();
+        dispatch(json!({"jsonrpc":"2.0","id":7,"result":{"ok":true}}), &pending, &ev, &live);
         assert_eq!(rx.try_recv().unwrap().unwrap(), json!({"ok":true}));
-        dispatch(json!({"jsonrpc":"2.0","method":"message","params":{"subscription":1,"message":{"id":5}}}), &pending, &ev);
-        assert!(matches!(evs.try_recv(), Ok(Event::Message(m)) if m["id"] == 5));
+        dispatch(json!({"jsonrpc":"2.0","method":"message","params":{"subscription":1,"message":{"id":5}}}), &pending, &ev, &live);
+        assert_eq!(lives.try_recv().unwrap()["id"], 5);
+        dispatch(json!({"jsonrpc":"2.0","method":"watch.overflow","params":{}}), &pending, &ev, &live);
+        assert!(matches!(evs.try_recv(), Ok(Event::Resync)));
     }
 }

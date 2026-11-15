@@ -154,8 +154,8 @@ row.unread .chat-preview { color: var(--ink); }
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
   box-shadow: 0 2px 6px var(--shadow), inset 0 1px rgba(255, 255, 255, 0.55), inset 0 -3px 4px rgba(0, 0, 0, 0.10);
 }
-.avatar.small { min-width: 28px; min-height: 28px; font-size: 0.72em; }
-.avatar-spacer { min-width: 28px; }
+.avatar.small { min-width: 28px; min-height: 28px; font-size: 0.72em; margin-right: 4px; }
+.avatar-spacer { min-width: 28px; margin-right: 4px; }
 .av0 { background-image: linear-gradient(160deg, #ff9a8b, #ff5e7e); }
 .av1 { background-image: linear-gradient(160deg, #ffc56b, #ff8a3d); }
 .av2 { background-image: linear-gradient(160deg, #7ee8b0, #26b98a); }
@@ -212,6 +212,13 @@ row.unread .chat-preview { color: var(--ink); }
 .bubble.them.join-next { border-bottom-left-radius: 7px; }
 .bubble.them.join-prev { border-top-left-radius: 7px; }
 .bubble.media-only { padding: 4px; }
+/* the last bubble of a run gets a tail; its corner tightens so the tail joins smoothly */
+.bubble.me.tailed { border-bottom-right-radius: 0; }
+.bubble.them.tailed { border-bottom-left-radius: 0; }
+.bubble.them.tailed { border-left-width: 0; } /* the tail carries no border, so drop it where they meet */
+.tail.me.imessage { color: #2166ff; }
+.tail.me.sms { color: #16ad57; }
+.tail.them { color: var(--them-b); }
 .bubble .text { font-size: 1.02em; }
 .bubble .file { font-weight: 600; }
 .bubble .edited, .bubble .unsent { font-size: 0.78em; font-style: italic; opacity: 0.8; }
@@ -263,3 +270,6 @@ button.send-btn:disabled { filter: saturate(0.4) opacity(0.7); }
 }
 
 .dim { color: var(--ink-soft); }
+.loading-text { color: var(--ink-soft); font-weight: 600; }
+.loading-more { color: var(--ink-soft); font-size: 0.85em; font-weight: 600; margin: 8px 0; }
+.compose-hint { color: alpha(var(--ink-soft), 0.75); margin-left: 4px; }
