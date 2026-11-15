@@ -122,6 +122,7 @@ Reactions/tapbacks, search, running in the background or in the tray, photos peo
 - Friendly, bright and inviting, not institutional and not like a toy. Dark mode should be just as bright and inviting.
 - The sibling project to draw on is airscope: its effects live in `~/system-troubleshooting/airscope/src/fx.rs` and its style notes in `docs/STYLE.md`.
 - GTK4 CSS has no `backdrop-filter`. Glass is suggested with translucent gradients and edge highlights. Real blur is used only for the app's own content scrolling under a panel (GTK's snapshot blur).
+- Contrast: the blue and green sent-message bubbles are deep enough for white text (about 4.4 to 6:1; they were 2.5:1 and 1.7:1 at the light end). Like iOS's increased contrast, but always on.
 - Dates: `MMM d, YYYY` with 24 h times, to match airscope. Change this if Peter prefers otherwise.
 
 ## imsg facts (verified on 0.21.0)

@@ -139,8 +139,9 @@ fn rgba(hex: u32, a: f32) -> gdk::RGBA {
 /// (gradient top, gradient bottom, shadow, highlight alpha, border)
 fn palette(look: Look, dark: bool) -> (gdk::RGBA, gdk::RGBA, gdk::RGBA, f32, Option<gdk::RGBA>) {
     match (look.me, look.sms, dark) {
-        (true, false, _) => (rgba(0x4ea8ff, 1.0), rgba(0x2166ff, 1.0), rgba(0x2166ff, 0.30), 0.45, None),
-        (true, true, _) => (rgba(0x52df8c, 1.0), rgba(0x16ad57, 1.0), rgba(0x16ad57, 0.30), 0.45, None),
+        // deep enough for white text: about 4.7 to 6:1 (blue) and 4.4 to 6:1 (green) contrast
+        (true, false, _) => (rgba(0x1f6bf2, 1.0), rgba(0x1456e0, 1.0), rgba(0x1456e0, 0.32), 0.40, None),
+        (true, true, _) => (rgba(0x0f8a3e, 1.0), rgba(0x0a6b2e, 1.0), rgba(0x0a6b2e, 0.32), 0.38, None),
         (false, _, false) => (rgba(0xffffff, 1.0), rgba(0xf2f0fa, 1.0), rgba(0x4c3c96, 0.16), 0.6, Some(rgba(0x7a6eb4, 0.20))),
         (false, _, true) => (rgba(0x544d93, 1.0), rgba(0x453f80, 1.0), rgba(0x08041e, 0.40), 0.18, Some(rgba(0xffffff, 0.10))),
     }
