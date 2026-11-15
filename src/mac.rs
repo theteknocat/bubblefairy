@@ -403,17 +403,16 @@ pub fn addr_key(s: &str) -> Option<String> {
 /// Read every Contacts database on the Mac (iCloud and local accounts each have one): the photo of
 /// each contact that has one, plus the numbers and emails that point at it.
 async fn fetch_contacts(session: &client::Handle<Handler>) -> Option<Contacts> {
+    // type 1 photos are stored in the row; type 2 name a file next to the database (often a
+    // full-size original), which the script shrinks with sips and sends as a type 1 photo
     let sql = "select 'K|'||p.ZOWNER||'|'||p.ZFULLNUMBER from ZABCDPHONENUMBER p join ZABCDRECORD r on r.Z_PK=p.ZOWNER \
                where r.ZTHUMBNAILIMAGEDATA is not null and p.ZFULLNUMBER is not null \
                union all select 'K|'||e.ZOWNER||'|'||lower(e.ZADDRESS) from ZABCDEMAILADDRESS e join ZABCDRECORD r on r.Z_PK=e.ZOWNER \
                where r.ZTHUMBNAILIMAGEDATA is not null and e.ZADDRESS is not null \
-               union all select 'P|'||Z_PK||'|'||hex(ZTHUMBNAILIMAGEDATA) from ZABCDRECORD where ZTHUMBNAILIMAGEDATA is not null";
-    let cmd = format!(
-        "q={}; find \"$HOME/Library/Application Support/AddressBook\" -name AddressBook-v22.abcddb | {{ i=0; \
-         while read -r db; do i=$((i+1)); sqlite3 -readonly \"$db\" \"$q\" 2>/dev/null | sed \"s/^\\([KP]\\)|/\\1|$i:/\"; done; }}",
-        sh_quote(sql)
-    );
-    let out = exec(session, cmd).await?;
+               union all select 'P|'||Z_PK||'|'||hex(ZTHUMBNAILIMAGEDATA) from ZABCDRECORD where hex(substr(ZTHUMBNAILIMAGEDATA,1,1))='01' \
+               union all select 'X|'||Z_PK||'|'||cast(substr(ZTHUMBNAILIMAGEDATA,2) as text) from ZABCDRECORD where hex(substr(ZTHUMBNAILIMAGEDATA,1,1))='02'";
+    const SCRIPT: &str = r#"q=@SQL@; find "$HOME/Library/Application Support/AddressBook" -name AddressBook-v22.abcddb | { i=0; while read -r db; do i=$((i+1)); dir=$(dirname "$db"); sqlite3 -readonly "$db" "$q" 2>/dev/null </dev/null | sed "s/^\([KPX]\)|/\1|$i:/" | while IFS='|' read -r t o v; do if [ "$t" = X ]; then f="$dir/.AddressBook-v22_SUPPORT/_EXTERNAL_DATA/$v"; tmp=$(mktemp); if sips -s format jpeg -Z 160 "$f" --out "$tmp" >/dev/null 2>&1 </dev/null; then printf 'P|%s|01%s\n' "$o" "$(xxd -p "$tmp" | tr -d '\n')"; fi; rm -f "$tmp"; else printf '%s|%s|%s\n' "$t" "$o" "$v"; fi; done; done; }"#;
+    let out = exec(session, SCRIPT.replace("@SQL@", &sh_quote(sql))).await?;
     Some(parse_contacts(&String::from_utf8_lossy(&out)))
 }
 

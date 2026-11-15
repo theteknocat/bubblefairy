@@ -1290,11 +1290,11 @@ fn render_suggest(u: &Ui) {
         let n = gtk::Label::new(Some(&name));
         n.add_css_class("chat-name");
         n.set_xalign(0.0);
-        let a = gtk::Label::new(Some(&addr));
+        let a = gtk::Label::new(Some(&pretty_handle(&addr)));
         a.add_css_class("chat-preview");
         a.set_xalign(0.0);
         text.append(&n);
-        if addr != name {
+        if pretty_handle(&addr) != name {
             text.append(&a);
         }
         line.append(&text);
@@ -1378,7 +1378,7 @@ fn same_addr(typed: &str, ident: &str) -> bool {
 // ---------- chat list ----------
 
 fn render_chats(u: &Rc<Ui>) {
-    let rows: Vec<(String, String, String, bool, i64, Option<String>)> = {
+    let rows: Vec<(String, String, String, bool, i64, Value)> = {
         let st = u.st.borrow();
         st.chats
             .iter()
@@ -1393,15 +1393,14 @@ fn render_chats(u: &Rc<Ui>) {
                 // read here but not on the Mac (imsg can't mark read): trust what we've shown
                 let seen_here = p.and_then(|m| m["id"].as_i64()).is_some_and(|last| st.seen.get(&id).is_some_and(|s| *s >= last));
                 let unread = c["unread_count"].as_i64().unwrap_or(0) > 0 && !seen_here;
-                let handle = (c["is_group"].as_bool() != Some(true)).then(|| direct_addr(c).map(String::from)).flatten();
-                (chat_title(c, &st.names), text.unwrap_or_default(), when.unwrap_or_default(), unread, id, handle)
+                (chat_title(c, &st.names), text.unwrap_or_default(), when.unwrap_or_default(), unread, id, c.clone())
             })
             .collect()
     };
     let sel = u.st.borrow().sel;
     u.selecting.set(true);
     u.chat_list.remove_all();
-    for (title, preview, when, unread, id, handle) in rows {
+    for (title, preview, when, unread, id, chat) in rows {
         let name = gtk::Label::new(Some(&title));
         name.add_css_class("chat-name");
         name.set_xalign(0.0);
@@ -1423,7 +1422,7 @@ fn render_chats(u: &Rc<Ui>) {
         texts.append(&top);
         texts.append(&prev);
         let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 11);
-        row_box.append(&avatar(u, &title, handle.as_deref(), false));
+        row_box.append(&chat_avatar(u, &chat, &title));
         row_box.append(&texts);
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         dot.set_valign(gtk::Align::Center);
@@ -1475,20 +1474,19 @@ fn render_conv(u: &Rc<Ui>) {
             .into_iter()
             .flatten()
             .filter_map(|p| p.as_str())
-            .map(|p| names.get(p).cloned().unwrap_or_else(|| p.to_string()))
+            .map(|p| names.get(p).cloned().unwrap_or_else(|| pretty_handle(p)))
             .collect();
         sub = format!("{sub} · {}", people.join(", "));
     } else if let Some(h) = chat["participants"][0].as_str()
-        && h != title
+        && pretty_handle(h) != title
     {
-        sub = format!("{sub} · {h}");
+        sub = format!("{sub} · {}", pretty_handle(h));
     }
     u.head_sub.set_text(&sub);
     while let Some(c) = u.head_avatar.first_child() {
         u.head_avatar.remove(&c);
     }
-    let head_handle = (!group).then(|| direct_addr(&chat).map(String::from)).flatten();
-    u.head_avatar.append(&avatar(u, &title, head_handle.as_deref(), false));
+    u.head_avatar.append(&chat_avatar(u, &chat, &title));
     for c in ["sms", "imessage"] {
         u.send_btn.remove_css_class(c);
     }
@@ -2102,6 +2100,22 @@ fn is_image(mime: &str, path: &str) -> bool {
     mime.starts_with("image/") || (mime.is_empty() && matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "heic" | "heif" | "gif" | "webp"))
 }
 
+/// A phone number as people write it: +1 (888) 555-1212 for North American numbers. Emails, short
+/// codes and other countries' numbers stay as they are.
+pub fn pretty_handle(h: &str) -> String {
+    let d: String = h.chars().filter(char::is_ascii_digit).collect();
+    let na = match (h.starts_with('+'), d.len()) {
+        (true, 11) if d.starts_with('1') => Some(&d[1..]),
+        (false, 11) if d.starts_with('1') => Some(&d[1..]),
+        (false, 10) => Some(&d[..]),
+        _ => None,
+    };
+    match na {
+        Some(n) if !h.contains('@') => format!("+1 ({}) {}-{}", &n[..3], &n[3..6], &n[6..]),
+        _ => h.to_string(),
+    }
+}
+
 fn chat_title(c: &Value, names: &HashMap<String, String>) -> String {
     for k in ["display_name", "contact_name"] {
         if let Some(s) = c[k].as_str().filter(|s| !s.is_empty()) {
@@ -2113,12 +2127,12 @@ fn chat_title(c: &Value, names: &HashMap<String, String>) -> String {
         .into_iter()
         .flatten()
         .filter_map(|p| p.as_str())
-        .map(|p| names.get(p).cloned().unwrap_or_else(|| p.to_string()))
+        .map(|p| names.get(p).cloned().unwrap_or_else(|| pretty_handle(p)))
         .collect();
     if !people.is_empty() {
         return people.join(", ");
     }
-    c["identifier"].as_str().unwrap_or("?").to_string()
+    pretty_handle(c["identifier"].as_str().unwrap_or("?"))
 }
 
 fn sender_name(m: &Value, names: &HashMap<String, String>) -> String {
@@ -2126,7 +2140,7 @@ fn sender_name(m: &Value, names: &HashMap<String, String>) -> String {
         return n.to_string();
     }
     let h = m["sender"].as_str().unwrap_or("?");
-    names.get(h).cloned().unwrap_or_else(|| h.to_string())
+    names.get(h).cloned().unwrap_or_else(|| pretty_handle(h))
 }
 
 fn clean_text(m: &Value) -> String {
@@ -2184,20 +2198,89 @@ fn avatar(u: &Ui, name: &str, handle: Option<&str>, small: bool) -> gtk::Widget 
         b.set_halign(gtk::Align::Center);
         return b.upcast();
     }
-    initials_avatar(name, small).upcast()
+    initials_avatar(name, small)
 }
 
-fn initials_avatar(name: &str, small: bool) -> gtk::Label {
-    let b = gtk::Label::new(Some(&initials(name)));
-    b.set_halign(gtk::Align::Center);
-    b.add_css_class("avatar");
+/// Initials on a colour, or a generic person for numbers and other names with no letters.
+fn initials_avatar(name: &str, small: bool) -> gtk::Widget {
     let hue = name.bytes().fold(0u32, |a, c| a.wrapping_mul(31).wrapping_add(c as u32)) % 8;
-    b.add_css_class(&format!("av{hue}"));
+    let w: gtk::Widget = if name.chars().next().is_some_and(char::is_alphabetic) {
+        let l = gtk::Label::new(Some(&initials(name)));
+        l.set_halign(gtk::Align::Center);
+        l.upcast()
+    } else {
+        let img = gtk::Image::from_icon_name("avatar-default-symbolic");
+        img.set_pixel_size(if small { 16 } else { 26 });
+        img.set_halign(gtk::Align::Center);
+        img.set_valign(gtk::Align::Center);
+        img.set_hexpand(false); // an avatar never takes spare row width
+        let b = gtk::CenterBox::new();
+        b.set_halign(gtk::Align::Center);
+        b.set_hexpand(false);
+        b.set_vexpand(false);
+        b.set_center_widget(Some(&img));
+        b.upcast()
+    };
+    w.add_css_class("avatar");
+    w.add_css_class(&format!("av{hue}"));
     if small {
-        b.add_css_class("small");
+        w.add_css_class("small");
     }
+    w.set_valign(gtk::Align::Center);
+    w
+}
+
+/// A small circle for the group avatar: the person's photo or their initials, `d` px across.
+fn mini_avatar(u: &Ui, name: &str, handle: &str, d: i32) -> gtk::Widget {
+    let w: gtk::Widget = if let Some(t) = photo_for(u, handle) {
+        let b = bubble::Bubble::disc(d);
+        b.set_texture(Some(&t));
+        b.upcast()
+    } else {
+        let w = initials_avatar(name, true);
+        w.remove_css_class("small");
+        w
+    };
+    w.add_css_class("avatar");
+    w.add_css_class("mini");
+    w.set_size_request(d, d);
+    w
+}
+
+/// A group's avatar, like Messages: a disc with the other members' small avatars inside it.
+fn group_avatar(u: &Ui, title: &str, members: &[String], names: &HashMap<String, String>) -> gtk::Widget {
+    if members.len() < 2 {
+        return avatar(u, title, members.first().map(String::as_str), false);
+    }
+    // ponytail: equal sizes per layout; Messages may size them by member order
+    let (d, spots): (i32, &[(i32, i32)]) = match members.len() {
+        2 => (26, &[(2, 2), (16, 16)]),
+        3 => (22, &[(11, 1), (0, 21), (22, 21)]),
+        _ => (19, &[(3, 3), (22, 3), (3, 22), (22, 22)]),
+    };
+    let fixed = gtk::Fixed::new();
+    fixed.set_size_request(44, 44);
+    for (h, (x, y)) in members.iter().zip(spots) {
+        let name = names.get(h).cloned().unwrap_or_else(|| pretty_handle(h));
+        fixed.put(&mini_avatar(u, &name, h, d), *x as f64, *y as f64);
+    }
+    let b = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    b.add_css_class("group-avatar");
+    b.set_halign(gtk::Align::Center);
     b.set_valign(gtk::Align::Center);
-    b
+    b.append(&fixed);
+    b.upcast()
+}
+
+/// The avatar for a chat: the member circles for a group, the person's own for a 1:1 chat.
+fn chat_avatar(u: &Ui, chat: &Value, title: &str) -> gtk::Widget {
+    if chat["is_group"].as_bool() == Some(true) {
+        let members: Vec<String> = chat["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
+        let names = u.st.borrow().names.clone();
+        group_avatar(u, title, &members, &names)
+    } else {
+        avatar(u, title, direct_addr(chat), false)
+    }
 }
 
 fn local(iso: &str) -> Option<glib::DateTime> {
@@ -2223,6 +2306,17 @@ fn sep_time(d: &glib::DateTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phone_numbers_read_nicely() {
+        assert_eq!(pretty_handle("+14035551212"), "+1 (403) 555-1212");
+        assert_eq!(pretty_handle("14035551212"), "+1 (403) 555-1212");
+        assert_eq!(pretty_handle("4035551212"), "+1 (403) 555-1212");
+        assert_eq!(pretty_handle("+1 (403) 555-1212"), "+1 (403) 555-1212");
+        assert_eq!(pretty_handle("+447860153932"), "+447860153932"); // not North American: untouched
+        assert_eq!(pretty_handle("562528"), "562528");
+        assert_eq!(pretty_handle("sue@icloud.com"), "sue@icloud.com");
+    }
 
     #[test]
     fn url_removed_from_text() {
