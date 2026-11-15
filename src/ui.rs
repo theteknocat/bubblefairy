@@ -1726,7 +1726,13 @@ const LINK_W: i32 = 300;
 fn link_card(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look) -> gtk::Widget {
     // a real preview picture goes across the top; a small one (the site's logo) sits beside the text
     let big = l.image.is_some() && l.image_size.is_none_or(|(w, h)| crate::mac::is_preview_size(w, h));
-    let b = bubble::Bubble::card(look, LINK_W, if big { LINK_W * 52 / 100 } else { 0 });
+    // the preview shows whole, in its own proportions (portrait ones too); only a freak shape is capped
+    let img_h = match l.image_size {
+        _ if !big => 0,
+        Some((w, h)) if w > 0 => (LINK_W as f64 * h as f64 / w as f64).clamp(60.0, 2.0 * LINK_W as f64) as i32,
+        _ => LINK_W * 52 / 100,
+    };
+    let b = bubble::Bubble::card(look, LINK_W, img_h);
     if big && let Some(img) = &l.image {
         b.add_css_class("fixed"); // keeps its card size instead of taking the photo's shape
         load_texture(u, &b, img);
