@@ -31,6 +31,32 @@ pub fn save_config(path: &Path, c: &mac::Config) {
     let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\n", c.host, c.user, c.imsg));
 }
 
+/// Image cache size cap. Everything in it can be fetched again from the Mac.
+const CACHE_MAX: u64 = 500 * 1024 * 1024;
+
+/// Delete the oldest cached images until the folder is under `max` bytes.
+// ponytail: oldest by write time, not last use; fine while re-fetching is cheap
+fn prune_cache(dir: &Path, max: u64) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<_> = rd
+        .flatten()
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            m.is_file().then(|| (m.modified().ok(), m.len(), e.path()))
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    files.sort_by_key(|f| f.0);
+    for (_, len, path) in files {
+        if total <= max {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= len;
+        }
+    }
+}
+
 fn main() -> glib::ExitCode {
     let config_file = glib::user_config_dir().join("bubblefairy/config");
     let data = glib::user_data_dir().join("bubblefairy");
@@ -53,6 +79,9 @@ fn main() -> glib::ExitCode {
         image_cache: glib::user_cache_dir().join("bubblefairy/images"),
         public_key,
     };
+
+    let cache = store.image_cache.clone();
+    std::thread::spawn(move || prune_cache(&cache, CACHE_MAX));
 
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio runtime");
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -96,4 +125,21 @@ fn main() -> glib::ExitCode {
     let code = app.run();
     drop(rt); // closes the SSH session; imsg on the Mac exits when its stdin closes
     code
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn prune_removes_oldest_first() {
+        let d = std::env::temp_dir().join(format!("bf-prune-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        for (i, name) in ["a", "b", "c"].iter().enumerate() {
+            std::fs::write(d.join(name), [0u8; 10]).unwrap();
+            let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + i as u64);
+            std::fs::File::options().write(true).open(d.join(name)).unwrap().set_modified(t).unwrap();
+        }
+        super::prune_cache(&d, 15);
+        assert!(!d.join("a").exists() && !d.join("b").exists() && d.join("c").exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 }

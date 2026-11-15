@@ -397,7 +397,8 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
         }
         Cmd::Preview(id) => {
             let r = rpc.call("messages.history", json!({"chat_id": id, "limit": 1, "attachments": true}), READ).await;
-            if let Some(m) = r.ok().and_then(|r| r.pointer("/messages/0").cloned()) {
+            if let Some(mut m) = r.ok().and_then(|r| r.pointer("/messages/0").cloned()) {
+                add_services(&session, std::slice::from_mut(&mut m)).await;
                 let _ = ev.send(Event::Preview(id, m));
             }
         }

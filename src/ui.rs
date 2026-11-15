@@ -871,17 +871,23 @@ fn render_chats(u: &Rc<Ui>) {
 
 fn render_conv(u: &Rc<Ui>) {
     update_spinner(u);
-    let (chat, msgs, names, older) = {
+    let (chat, msgs, names, older, preview_svc) = {
         let st = u.st.borrow();
         let Some(id) = st.sel else { return };
         let Some(chat) = st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).cloned() else { return };
-        (chat, st.hist.get(&id).cloned().unwrap_or_default(), st.names.clone(), st.older_loading)
+        let preview_svc = st.preview.get(&id).and_then(|m| m["service"].as_str()).map(String::from);
+        (chat, st.hist.get(&id).cloned().unwrap_or_default(), st.names.clone(), st.older_loading, preview_svc)
     };
     u.stack.set_visible_child_name("conv");
     let title = chat_title(&chat, &names);
     let chat_svc = chat["service"].as_str().unwrap_or("iMessage").to_string();
     // chat.db's chat service can be stale (see mac::handle Send); the latest message tells what's in use
-    let now_svc = msgs.iter().rev().find_map(|m| m["service"].as_str()).unwrap_or(&chat_svc).to_string();
+    let now_svc = msgs
+        .iter()
+        .rev()
+        .find_map(|m| m["service"].as_str().map(String::from))
+        .or(preview_svc)
+        .unwrap_or_else(|| chat_svc.clone());
     let sms = now_svc != "iMessage";
     u.compose_hint.set_text(&if sms { format!("Text Message · {now_svc}") } else { "iMessage".into() });
     let group = chat["is_group"].as_bool() == Some(true);
@@ -1047,6 +1053,9 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
     let mut others = Vec::new();
     for a in atts.into_iter().filter(|a| !any_present || a["missing"].as_bool() != Some(true)) {
         let path = a["original_path"].as_str().unwrap_or("");
+        if path.ends_with(".pluginPayloadAttachment") {
+            continue; // ponytail: link-preview data; drawn as a preview card in Phase 1.1
+        }
         let mime = a["mime_type"].as_str().unwrap_or("");
         if is_image(mime, path) && !path.is_empty() && a["missing"].as_bool() != Some(true) {
             continue; // shown as a photo card (photo_paths)

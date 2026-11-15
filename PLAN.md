@@ -35,7 +35,7 @@ BubbleFairy (GTK4, Flatpak)
 
 ### Phase 1: works for Peter (run from source)
 
-The connection settings (host, user and key path) are entered once in a simple settings view. They point at the existing manually configured Mac key and use the imsg already installed by Homebrew. Phase 2 replaces this with the app's own key and its own imsg copy.
+The connection settings (host, user and imsg path) are entered once in a simple settings view. The app already uses its own ed25519 key (its public key is shown there to add to the Mac's `authorized_keys` by hand) and the imsg installed by Homebrew. Phase 2 automates the key install and replaces Homebrew's imsg with the app's own copy.
 
 - Chat list: avatar with initials, name, last message, time, unread dot.
 - Conversation: history with timestamps between groups of messages, and live incoming and outgoing messages.
@@ -119,11 +119,11 @@ Reactions/tapbacks, starting new conversations, search, marking chats read, cont
 
 Answered from imsg's `docs/rpc.md` and `docs/json.md` (v0.21.0):
 
-- Messages carry no `service` field, so only chats do. Bubble colour follows the chat's service. A chat that falls back to SMS partway through stays one colour.
+- Messages carry no `service` field, so `mac::add_services` reads each message's service from chat.db (`sqlite3 -readonly`) and every bubble is coloured by its own service.
 - Apple's link previews are exposed. When imsg folds the preview row into its text message, that message carries `url_preview` (and `balloon_bundle_id` = `com.apple.messages.URLBalloonProvider`). That's the source for Phase 1.1.
 - `imsg rpc` exits cleanly when its stdin closes, so closing the SSH channel is enough and no wrapper is needed.
 - Messages include `sender_name` (from Contacts), `edited_at`, `unsent_at` and `reply_to_guid`. Live updates add `type: edited|unsent`.
-- Attachments have `original_path` on the Mac. Phase 1 fetches images over an extra SSH exec channel, converting them to JPEG at a maximum of 1600 px with `sips` (which also handles HEIC).
+- Attachments have `original_path` on the Mac. Images are fetched over extra SSH exec channels (at most 6 at once; sshd allows 10): Quick Look (`qlmanage -t`, which applies HEIC rotation) then `sips` to JPEG, 1200 px for the chat and 4096 px for the viewer, cached on disk. Link-preview data arrives as `*.pluginPayloadAttachment` files, which are hidden until Phase 1.1 draws previews.
 
 Still open:
 
