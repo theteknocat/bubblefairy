@@ -381,12 +381,66 @@ async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
 pub struct Contacts {
     index: HashMap<String, usize>,
     photos: Vec<Vec<u8>>,
+    people: Vec<Person>,
+    /// "mobile", "work"... for a phone number or email, by `addr_key`
+    labels: HashMap<String, String>,
+    /// contact index by `addr_key`, for the contact card
+    by_addr: HashMap<String, usize>,
+    /// numbers and emails Messages has an iMessage conversation history with (`addr_key`s)
+    imessage: std::collections::HashSet<String>,
+}
+
+/// One address-book entry: a display name and every phone number / email it has.
+#[derive(Default)]
+pub struct Person {
+    pub name: String,
+    /// company, when the contact also has a personal name
+    pub org: String,
+    /// (number or email, label)
+    pub addrs: Vec<(String, String)>,
+    /// postal addresses: (label, lines)
+    pub places: Vec<(String, Vec<String>)>,
+    /// e.g. "Nov 15" or "Nov 15, 1980"
+    pub birthday: Option<String>,
 }
 
 impl Contacts {
     /// The photo (JPEG/PNG bytes) for a phone number or email address, if the contact has one.
     pub fn photo(&self, handle: &str) -> Option<&[u8]> {
         self.index.get(&addr_key(handle)?).map(|i| &self.photos[*i][..])
+    }
+
+    /// The address-book entry that has this number or email.
+    pub fn person(&self, handle: &str) -> Option<&Person> {
+        self.people.get(*self.by_addr.get(&addr_key(handle)?)?)
+    }
+
+    /// True when Messages has an iMessage history with this number or email. (Whether a number is
+    /// *registered* with iMessage can't be asked from the Mac, so no history means "unknown".)
+    pub fn has_imessage(&self, addr: &str) -> bool {
+        addr_key(addr).is_some_and(|k| self.imessage.contains(&k))
+    }
+
+    /// The label the contact gave this number or email ("mobile", "work", "home"...), if any.
+    pub fn label(&self, addr: &str) -> Option<&str> {
+        self.labels.get(&addr_key(addr)?).map(String::as_str)
+    }
+
+    /// (name, address) for each contact number or email matching `q` (name, email text, or phone digits).
+    pub fn search(&self, q: &str) -> Vec<(&str, &str)> {
+        let q = q.trim().to_lowercase();
+        let qd: String = q.chars().filter(char::is_ascii_digit).collect();
+        let mut out = vec![];
+        for p in &self.people {
+            let name_hit = p.name.to_lowercase().contains(&q);
+            for (a, _) in &p.addrs {
+                let d: String = a.chars().filter(char::is_ascii_digit).collect();
+                if q.is_empty() || name_hit || a.to_lowercase().contains(&q) || (qd.len() >= 3 && d.contains(&qd)) {
+                    out.push((&p.name[..], &a[..]));
+                }
+            }
+        }
+        out
     }
 }
 
@@ -406,15 +460,27 @@ pub fn addr_key(s: &str) -> Option<String> {
 async fn fetch_contacts(session: &client::Handle<Handler>) -> Option<Contacts> {
     // type 1 photos are stored in the row; type 2 name a file next to the database (often a
     // full-size original), which the script shrinks with sips and sends as a type 1 photo
-    let sql = "select 'K|'||p.ZOWNER||'|'||p.ZFULLNUMBER from ZABCDPHONENUMBER p join ZABCDRECORD r on r.Z_PK=p.ZOWNER \
-               where r.ZTHUMBNAILIMAGEDATA is not null and p.ZFULLNUMBER is not null \
-               union all select 'K|'||e.ZOWNER||'|'||lower(e.ZADDRESS) from ZABCDEMAILADDRESS e join ZABCDRECORD r on r.Z_PK=e.ZOWNER \
-               where r.ZTHUMBNAILIMAGEDATA is not null and e.ZADDRESS is not null \
+    let sql = "select 'K|'||p.ZOWNER||'|'||p.ZFULLNUMBER||'|'||replace(coalesce(p.ZLABEL,''),'|',' ') from ZABCDPHONENUMBER p join ZABCDRECORD r on r.Z_PK=p.ZOWNER \
+               where p.ZFULLNUMBER is not null \
+               union all select 'K|'||e.ZOWNER||'|'||lower(e.ZADDRESS)||'|'||replace(coalesce(e.ZLABEL,''),'|',' ') from ZABCDEMAILADDRESS e join ZABCDRECORD r on r.Z_PK=e.ZOWNER \
+               where e.ZADDRESS is not null \
+               union all select 'N|'||Z_PK||'|'||replace(replace(trim(coalesce(ZFIRSTNAME,'')||' '||coalesce(ZLASTNAME,'')),'|',' '),char(10),' ')||'|'||replace(replace(coalesce(ZORGANIZATION,ZNICKNAME,''),'|',' '),char(10),' ') from ZABCDRECORD \
                union all select 'P|'||Z_PK||'|'||hex(ZTHUMBNAILIMAGEDATA) from ZABCDRECORD where hex(substr(ZTHUMBNAILIMAGEDATA,1,1))='01' \
                union all select 'X|'||Z_PK||'|'||cast(substr(ZTHUMBNAILIMAGEDATA,2) as text) from ZABCDRECORD where hex(substr(ZTHUMBNAILIMAGEDATA,1,1))='02'";
-    const SCRIPT: &str = r#"q=@SQL@; find "$HOME/Library/Application Support/AddressBook" -name AddressBook-v22.abcddb | { i=0; while read -r db; do i=$((i+1)); dir=$(dirname "$db"); sqlite3 -readonly "$db" "$q" 2>/dev/null </dev/null | sed "s/^\([KPX]\)|/\1|$i:/" | while IFS='|' read -r t o v; do if [ "$t" = X ]; then f="$dir/.AddressBook-v22_SUPPORT/_EXTERNAL_DATA/$v"; tmp=$(mktemp); if sips -s format jpeg -Z 160 "$f" --out "$tmp" >/dev/null 2>&1 </dev/null; then printf 'P|%s|01%s\n' "$o" "$(xxd -p "$tmp" | tr -d '\n')"; fi; rm -f "$tmp"; else printf '%s|%s|%s\n' "$t" "$o" "$v"; fi; done; done; }"#;
-    let out = exec(session, SCRIPT.replace("@SQL@", &sh_quote(sql))).await?;
-    Some(parse_contacts(&String::from_utf8_lossy(&out)))
+    // postal addresses and birthdays, in a separate query so a column that differs on some macOS
+    // version loses only these, not the names and photos
+    let sql2 = "select 'A|'||ZOWNER||'|'||replace(coalesce(ZLABEL,''),'|',' ')||'|'||replace(replace(coalesce(ZSTREET,''),'|',' '),char(10),', ')||'|'||replace(coalesce(ZCITY,''),'|',' ')||'|'||replace(coalesce(ZSTATE,''),'|',' ')||'|'||replace(coalesce(ZZIPCODE,''),'|',' ')||'|'||replace(coalesce(ZCOUNTRYNAME,''),'|',' ') from ZABCDPOSTALADDRESS \
+                union all select 'B|'||Z_PK||'|'||strftime('%m-%d',ZBIRTHDAY+978307200,'unixepoch')||'|'||coalesce(ZBIRTHDAYYEAR,'') from ZABCDRECORD where ZBIRTHDAY is not null";
+    const SCRIPT: &str = r#"q=@SQL@; q2=@SQL2@; find "$HOME/Library/Application Support/AddressBook" -name AddressBook-v22.abcddb | { i=0; while read -r db; do i=$((i+1)); dir=$(dirname "$db"); sqlite3 -readonly "$db" "$q" 2>/dev/null </dev/null | sed "s/^\([KPXN]\)|/\1|$i:/" | while IFS='|' read -r t o v; do if [ "$t" = X ]; then f="$dir/.AddressBook-v22_SUPPORT/_EXTERNAL_DATA/$v"; tmp=$(mktemp); if sips -s format jpeg -Z 160 "$f" --out "$tmp" >/dev/null 2>&1 </dev/null; then printf 'P|%s|01%s\n' "$o" "$(xxd -p "$tmp" | tr -d '\n')"; fi; rm -f "$tmp"; else printf '%s|%s|%s\n' "$t" "$o" "$v"; fi; done; sqlite3 -readonly "$db" "$q2" 2>/dev/null </dev/null | sed "s/^\([AB]\)|/\1|$i:/"; done; }"#;
+    let out = exec(session, SCRIPT.replace("@SQL@", &sh_quote(sql)).replace("@SQL2@", &sh_quote(sql2))).await?;
+    let mut text = String::from_utf8_lossy(&out).into_owned();
+    // which numbers and emails Messages has iMessage conversations with
+    let q = "select 'M|'||id from handle where service='iMessage'";
+    if let Some(m) = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(q))).await {
+        text.push('\n');
+        text.push_str(&String::from_utf8_lossy(&m));
+    }
+    Some(parse_contacts(&text))
 }
 
 /// `P|<db>:<contact>|<hex photo>` and `K|<db>:<contact>|<number or email>` lines -> lookup table.
@@ -422,7 +488,19 @@ async fn fetch_contacts(session: &client::Handle<Handler>) -> Option<Contacts> {
 pub fn parse_contacts(out: &str) -> Contacts {
     let mut c = Contacts::default();
     let mut owner_photo: HashMap<&str, usize> = HashMap::new();
+    let mut owner_person: HashMap<&str, usize> = HashMap::new();
     for l in out.lines() {
+        let mut f = l.splitn(3, '|');
+        if let (Some("N"), Some(owner), Some(v)) = (f.next(), f.next(), f.next()) {
+            let (n, org) = v.split_once('|').unwrap_or((v, ""));
+            let name = if n.trim().is_empty() { org.trim() } else { n.trim() };
+            if !name.is_empty() {
+                owner_person.insert(owner, c.people.len());
+                let org = if n.trim().is_empty() { "" } else { org.trim() };
+                c.people.push(Person { name: name.to_string(), org: org.to_string(), ..Default::default() });
+            }
+            continue;
+        }
         let mut f = l.splitn(3, '|');
         if let (Some("P"), Some(owner), Some(h)) = (f.next(), f.next(), f.next())
             && let Some(b) = hex(h)
@@ -435,13 +513,69 @@ pub fn parse_contacts(out: &str) -> Contacts {
     }
     for l in out.lines() {
         let mut f = l.splitn(3, '|');
-        if let (Some("K"), Some(owner), Some(raw)) = (f.next(), f.next(), f.next())
-            && let (Some(i), Some(k)) = (owner_photo.get(owner), addr_key(raw))
-        {
-            c.index.entry(k).or_insert(*i);
+        match (f.next(), f.next(), f.next()) {
+            (Some("A"), Some(owner), Some(v)) => {
+                if let Some(i) = owner_person.get(owner) {
+                    let mut p = v.split('|').map(str::trim);
+                    let label = clean_label(p.next().unwrap_or(""));
+                    let (street, city, state, zip, country) = (p.next().unwrap_or(""), p.next().unwrap_or(""), p.next().unwrap_or(""), p.next().unwrap_or(""), p.next().unwrap_or(""));
+                    let region = [state, zip].iter().filter(|x| !x.is_empty()).copied().collect::<Vec<_>>().join(" ");
+                    let town = [city, region.as_str()].iter().filter(|x| !x.is_empty()).copied().collect::<Vec<_>>().join(", ");
+                    let lines: Vec<String> = [street, town.as_str(), country].iter().filter(|x| !x.is_empty()).map(|x| x.to_string()).collect();
+                    if !lines.is_empty() {
+                        c.people[*i].places.push((label, lines));
+                    }
+                }
+                continue;
+            }
+            (Some("B"), Some(owner), Some(v)) => {
+                if let (Some(i), Some((md, year))) = (owner_person.get(owner), v.split_once('|'))
+                    && let Some((m, d)) = md.split_once('-')
+                    && let (Ok(m), Ok(d)) = (m.parse::<usize>(), d.parse::<u32>())
+                    && (1..=12).contains(&m)
+                {
+                    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                    let year = year.trim().parse::<u32>().ok().filter(|y| *y > 1900);
+                    c.people[*i].birthday = Some(match year {
+                        Some(y) => format!("{} {d}, {y}", MONTHS[m - 1]),
+                        None => format!("{} {d}", MONTHS[m - 1]),
+                    });
+                }
+                continue;
+            }
+            (Some("M"), _, _) => {
+                if let Some(k) = l.strip_prefix("M|").and_then(addr_key) {
+                    c.imessage.insert(k);
+                }
+                continue;
+            }
+            _ => {}
+        }
+        let mut f = l.splitn(3, '|');
+        if let (Some("K"), Some(owner), Some(v)) = (f.next(), f.next(), f.next()) {
+            let (raw, label) = v.rsplit_once('|').unwrap_or((v, ""));
+            let label_raw = clean_label(label);
+            let label = label_raw.clone();
+            if let (Some(k), false) = (addr_key(raw), label.is_empty()) {
+                c.labels.entry(k).or_insert(label);
+            }
+            if let (Some(i), Some(k)) = (owner_photo.get(owner), addr_key(raw)) {
+                c.index.entry(k).or_insert(*i);
+            }
+            if let Some(i) = owner_person.get(owner) {
+                c.people[*i].addrs.push((raw.trim().to_string(), label_raw.to_string()));
+                if let Some(k) = addr_key(raw) {
+                    c.by_addr.entry(k).or_insert(*i);
+                }
+            }
         }
     }
     c
+}
+
+/// Contacts stores the standard labels as `_$!<Mobile>!$_`; custom ones are plain text.
+fn clean_label(l: &str) -> String {
+    l.trim().trim_start_matches("_$!<").trim_end_matches(">!$_").trim().to_lowercase()
 }
 
 /// What Messages saved about a shared link. `image` / `icon` are payload files on the Mac.
@@ -825,6 +959,24 @@ mod link_tests {
         assert_eq!(p.image.as_deref(), Some("big.jpg"));
         assert_eq!(p.icon, None);
         assert_eq!(super::hex("0aff"), Some(vec![10, 255]));
+        let c = super::parse_contacts(
+            "N|1:7|Sue Smith|\nN|1:9||Acme Co\nP|1:7|01FFD8FF00\nK|1:7|(403) 555-1234\nK|1:7|Sue@iCloud.com\nK|1:9|587 555 0000\n",
+        );
+        assert_eq!(c.search("sue"), vec![("Sue Smith", "(403) 555-1234"), ("Sue Smith", "Sue@iCloud.com")]);
+        assert_eq!(c.search("587 55"), vec![("Acme Co", "587 555 0000")]);
+        assert_eq!(c.search("acme").len(), 1);
+        assert_eq!(c.photo("+14035551234").map(|p| p.len()), Some(4));
+        let c3 = super::parse_contacts(
+            "N|1:7|Sue Smith|Acme\nK|1:7|(403) 555-1234|_$!<Mobile>!$_\nA|1:7|_$!<Home>!$_|1 Main St|Calgary|AB|T2P 1A1|Canada\nB|1:7|11-15|1980\nM|+14035551234\n",
+        );
+        let p = c3.person("4035551234").unwrap();
+        assert_eq!((p.org.as_str(), p.birthday.as_deref()), ("Acme", Some("Nov 15, 1980")));
+        assert_eq!(p.places, vec![("home".to_string(), vec!["1 Main St".to_string(), "Calgary, AB T2P 1A1".into(), "Canada".into()])]);
+        assert!(c3.has_imessage("(403) 555-1234") && !c3.has_imessage("5550001111"));
+        let c2 = super::parse_contacts("K|1:7|(403) 555-1234|_$!<Mobile>!$_\nK|1:7|sue@x.com|Work\nK|1:7|555 000 1111|\n");
+        assert_eq!(c2.label("+14035551234"), Some("mobile"));
+        assert_eq!(c2.label("SUE@x.com"), Some("work"));
+        assert_eq!(c2.label("5550001111"), None);
         let c = super::parse_contacts(
             "P|1:7|01FFD8FF00\nP|1:8|02424633AA\nK|1:7|(403) 555-1234\nK|1:7|Sue@iCloud.com\nK|1:8|403 555 9999\nK|2:7|+1 555 000 1111\n",
         );

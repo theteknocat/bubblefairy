@@ -106,6 +106,8 @@ fn main() -> glib::ExitCode {
             gtk::Settings::default().unwrap().set_gtk_interface_color_scheme(gtk::InterfaceColorScheme::Light);
             
         }
+        // our own icons (the chat bubble); installed under share/icons in the Flatpak, found here when run from source
+        gtk::IconTheme::for_display(&gdk::Display::default().expect("display")).add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/data/icons"));
         let css = gtk::CssProvider::new();
         css.load_from_string(include_str!("style.css"));
         gtk::style_context_add_provider_for_display(

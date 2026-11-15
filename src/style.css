@@ -135,6 +135,18 @@ row.chat-row:selected {
 .chat-name { font-weight: 700; }
 row.unread .chat-name { font-weight: 800; }
 .chat-time { color: var(--ink-soft); font-size: 0.82em; }
+.addr-chip {
+  background-color: rgba(128, 118, 200, 0.22); color: var(--ink-soft);
+  border-radius: 99px; padding: 0 8px; font-size: 0.75em;
+}
+.addr-chip.imessage { background-color: rgba(40, 120, 255, 0.28); color: var(--ink); }
+.contact-card { padding: 14px; }
+button.card-action {
+  min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px;
+  background-color: rgba(128, 118, 200, 0.22); background-image: none; box-shadow: none; border: none;
+}
+button.card-action:hover { background-color: rgba(128, 118, 200, 0.42); }
+.card-name { font-weight: 700; font-size: 1.15em; }
 .chat-preview { color: var(--ink-soft); font-size: 0.9em; }
 row.unread .chat-preview { color: var(--ink); }
 .unread-dot, .read-dot { min-width: 10px; min-height: 10px; border-radius: 99px; }

@@ -567,7 +567,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     ui.to_entry.connect_activate(move |e| {
         // Enter: open the top suggestion, or move on to the message if it's a new address
         match ui_first_suggestion(&u) {
-            Some(id) if !e.text().trim().is_empty() => open_chat(&u, id),
+            Some((Some(id), _)) if !e.text().trim().is_empty() => open_chat(&u, id),
+            Some((None, addr)) if !is_addr(&e.text()) => e.set_text(&addr),
             _ if is_addr(&e.text()) => {
                 u.compose.grab_focus();
             }
@@ -576,7 +577,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     });
     let u = ui.clone();
     ui.suggest.connect_row_activated(move |_, row| {
-        if let Ok(id) = row.widget_name().parse::<i64>() {
+        let name = row.widget_name();
+        if let Some(addr) = name.strip_prefix("a:") {
+            u.to_entry.set_text(addr);
+            u.compose.grab_focus();
+        } else if let Ok(id) = name.parse::<i64>() {
             open_chat(&u, id);
         }
     });
@@ -1327,8 +1332,9 @@ fn open_chat(u: &Rc<Ui>, id: i64) {
     select(u, id);
 }
 
-/// 1:1 chats matching what's typed in the To field: (chat id, name, address).
-fn suggestions(u: &Ui) -> Vec<(i64, String, String)> {
+/// What the To field suggests: 1:1 chats first, then address-book contacts without a chat
+/// yet, as (chat id if there is one, name, address).
+fn suggestions(u: &Ui) -> Vec<(Option<i64>, String, String)> {
     let q = u.to_entry.text().trim().to_lowercase();
     let st = u.st.borrow();
     st.chats
@@ -1337,11 +1343,22 @@ fn suggestions(u: &Ui) -> Vec<(i64, String, String)> {
         .filter_map(|c| Some((c["id"].as_i64()?, chat_title(c, &st.names), direct_addr(c)?.to_string())))
         .filter(|(_, name, addr)| q.is_empty() || name.to_lowercase().contains(&q) || addr.to_lowercase().contains(&q) || same_addr(&q, addr))
         .take(8)
+        .map(|(id, n, a)| (Some(id), n, a))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .chain(match (&st.contacts, q.is_empty()) {
+            (Some(c), false) => c.search(&q), // ponytail: nothing listed until you type; a 360-row list helps nobody
+            _ => vec![],
+        }
+        .into_iter()
+        .filter(|(_, a)| !st.chats.iter().any(|c| direct_addr(c).is_some_and(|d| same_addr(a, d))))
+        .take(8)
+        .map(|(n, a)| (None, n.to_string(), a.to_string())))
         .collect()
 }
 
-fn ui_first_suggestion(u: &Ui) -> Option<i64> {
-    suggestions(u).first().map(|s| s.0)
+fn ui_first_suggestion(u: &Ui) -> Option<(Option<i64>, String)> {
+    suggestions(u).into_iter().next().map(|s| (s.0, s.2))
 }
 
 fn render_suggest(u: &Ui) {
@@ -1362,7 +1379,7 @@ fn render_suggest(u: &Ui) {
     for (id, name, addr) in suggestions(u) {
         let row = gtk::ListBoxRow::new();
         row.add_css_class("chat-row");
-        row.set_widget_name(&id.to_string());
+        row.set_widget_name(&id.map_or_else(|| format!("a:{addr}"), |i| i.to_string()));
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         line.append(&avatar(u, &name, Some(&addr), false));
         let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
@@ -1375,7 +1392,16 @@ fn render_suggest(u: &Ui) {
         a.set_xalign(0.0);
         text.append(&n);
         if pretty_handle(&addr) != name {
-            text.append(&a);
+            let line2 = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            line2.append(&a);
+            let label = u.st.borrow().contacts.as_ref().and_then(|c| c.label(&addr).map(str::to_string));
+            if let Some(l) = label {
+                let chip = gtk::Label::new(Some(&l));
+                chip.add_css_class("addr-chip");
+                chip.set_valign(gtk::Align::Center);
+                line2.append(&chip);
+            }
+            text.append(&line2);
         }
         line.append(&text);
         row.set_child(Some(&line));
@@ -1502,7 +1528,7 @@ fn render_chats(u: &Rc<Ui>) {
         texts.append(&top);
         texts.append(&prev);
         let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 11);
-        row_box.append(&chat_avatar(u, &chat, &title, false));
+        row_box.append(&chat_avatar(u, &chat, &title));
         row_box.append(&texts);
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         dot.set_valign(gtk::Align::Center);
@@ -1566,7 +1592,7 @@ fn render_conv(u: &Rc<Ui>) {
     while let Some(c) = u.head_avatar.first_child() {
         u.head_avatar.remove(&c);
     }
-    u.head_avatar.append(&chat_avatar(u, &chat, &title, true));
+    u.head_avatar.append(&header_avatar(u, &chat, &title));
     for c in ["sms", "imessage"] {
         u.send_btn.remove_css_class(c);
     }
@@ -2422,10 +2448,15 @@ fn group_avatar(u: &Ui, title: &str, members: &[String], names: &HashMap<String,
 
 /// For the conversation header: the members' avatars in a row, each peeking out from under the one
 /// before it (the first on top), like a stack of photos. Up to four, then a "+N" circle.
-fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<String, String>) -> gtk::Widget {
+/// `pick` is told about each member's avatar (widget, handle, name) so it can make them clickable.
+fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<String, String>, pick: &dyn Fn(&gtk::Widget, &str, &str)) -> gtk::Widget {
     let n = members.len();
     if n < 2 {
-        return avatar(u, title, members.first().map(String::as_str), false);
+        let w = avatar(u, title, members.first().map(String::as_str), false);
+        if let Some(h) = members.first() {
+            pick(&w, h, title);
+        }
+        return w;
     }
     let (d, step) = (36, 22);
     let shown = n.min(4);
@@ -2441,7 +2472,9 @@ fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<Stri
         let w = if i < shown {
             let h = &members[i];
             let name = names.get(h).cloned().unwrap_or_else(|| pretty_handle(h));
-            mini_avatar(u, &name, h, d)
+            let w = mini_avatar(u, &name, h, d);
+            pick(&w, h, &name);
+            w
         } else {
             more_pill(n - shown, d)
         };
@@ -2454,15 +2487,203 @@ fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<Stri
     o.upcast()
 }
 
-/// The avatar for a chat: the member circles for a group (a stack of them in the header, `wide`),
-/// the person's own for a 1:1 chat.
-fn chat_avatar(u: &Ui, chat: &Value, title: &str, wide: bool) -> gtk::Widget {
+/// The avatar for a chat in the list: the member circles for a group, the person's own for a 1:1 chat.
+fn chat_avatar(u: &Ui, chat: &Value, title: &str) -> gtk::Widget {
     if chat["is_group"].as_bool() == Some(true) {
         let members: Vec<String> = chat["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
         let names = u.st.borrow().names.clone();
-        if wide { stacked_avatars(u, title, &members, &names) } else { group_avatar(u, title, &members, &names) }
+        group_avatar(u, title, &members, &names)
     } else {
         avatar(u, title, direct_addr(chat), false)
+    }
+}
+
+// ---------- contact card ----------
+
+/// The conversation header's avatar; each person in it opens their contact card when clicked.
+fn header_avatar(u: &Rc<Ui>, chat: &Value, title: &str) -> gtk::Widget {
+    let click = |w: &gtk::Widget, handle: &str, name: &str| {
+        let (u, w2, handle, name) = (u.clone(), w.clone(), handle.to_string(), name.to_string());
+        let g = gtk::GestureClick::new();
+        g.connect_released(move |_, _, _, _| show_card(&u, &w2, &handle, &name));
+        w.add_controller(g);
+        w.set_cursor_from_name(Some("pointer"));
+    };
+    if chat["is_group"].as_bool() == Some(true) {
+        let members: Vec<String> = chat["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
+        let names = u.st.borrow().names.clone();
+        stacked_avatars(u, title, &members, &names, &click)
+    } else {
+        let w = avatar(u, title, direct_addr(chat), false);
+        if let Some(h) = direct_addr(chat) {
+            click(&w, h, title);
+        }
+        w
+    }
+}
+
+/// Drop a card in under `w` (a header avatar), with an arrow pointing at it.
+fn show_card(u: &Rc<Ui>, w: &gtk::Widget, handle: &str, name: &str) {
+    let pop = gtk::Popover::new();
+    // On the window, not the header: a popover parented to a Box gets a slot among its children
+    // and pushes them over.
+    pop.set_parent(&u.win);
+    pop.set_position(gtk::PositionType::Bottom);
+    // room below the avatar, inside the window and the monitor; taller cards scroll
+    let mut room = u.win.height();
+    if let Some(r) = w.compute_bounds(&u.win) {
+        pop.set_pointing_to(Some(&gdk::Rectangle::new(r.x() as i32, r.y() as i32, r.width() as i32, r.height() as i32)));
+        room -= (r.y() + r.height()) as i32;
+    }
+    if let Some(mon) = u.win.surface().and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s)) {
+        room = room.min(mon.geometry().height() - 120);
+    }
+    let body = card_body(u, &pop, handle, name);
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .propagate_natural_width(true)
+        .max_content_height((room - 30).max(160))
+        .child(&body)
+        .build();
+    pop.set_child(Some(&scroll));
+    pop.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
+    pop.popup();
+    body.grab_focus(); // else the first button opens with a focus ring
+}
+
+/// A person's details from the address book (or just their number when they aren't in it), with
+/// buttons to message them or, for an email address, write to it.
+fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::Box {
+    // (value, label, has an iMessage history)
+    let (title, org, rows, places, birthday) = {
+        let st = u.st.borrow();
+        match st.contacts.as_ref().and_then(|c| Some((c, c.person(handle)?))) {
+            Some((c, p)) => (
+                p.name.clone(),
+                p.org.clone(),
+                p.addrs.iter().map(|(a, l)| (a.clone(), l.clone(), c.has_imessage(a))).collect::<Vec<_>>(),
+                p.places.clone(),
+                p.birthday.clone(),
+            ),
+            None => (name.to_string(), String::new(), vec![(handle.to_string(), String::new(), st.contacts.as_ref().is_some_and(|c| c.has_imessage(handle)))], vec![], None),
+        }
+    };
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    root.add_css_class("contact-card");
+    root.set_size_request(340, -1);
+    root.set_focusable(true);
+    let head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    head.append(&avatar(u, &title, Some(handle), false));
+    let names = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    names.set_valign(gtk::Align::Center);
+    let n = gtk::Label::new(Some(&title));
+    n.add_css_class("card-name");
+    n.set_xalign(0.0);
+    n.set_wrap(true);
+    names.append(&n);
+    if !org.is_empty() {
+        let o = gtk::Label::new(Some(&org));
+        o.add_css_class("dim");
+        o.set_xalign(0.0);
+        names.append(&o);
+    }
+    head.append(&names);
+    root.append(&head);
+    let chip = |text: &str, extra: &str| {
+        let c = gtk::Label::new(Some(text));
+        c.add_css_class("addr-chip");
+        if !extra.is_empty() {
+            c.add_css_class(extra);
+        }
+        c.set_valign(gtk::Align::Center);
+        c
+    };
+    for (addr, label, imsg) in rows {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let col = gtk::Box::new(gtk::Orientation::Vertical, 3);
+        col.set_hexpand(true);
+        let v = gtk::Label::new(Some(&pretty_handle(&addr)));
+        v.set_xalign(0.0);
+        v.set_wrap(true);
+        v.set_wrap_mode(gtk::pango::WrapMode::Char);
+        col.append(&v);
+        if !label.is_empty() || imsg {
+            let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            if !label.is_empty() {
+                chips.append(&chip(&label, ""));
+            }
+            if imsg {
+                chips.append(&chip("iMessage", "imessage"));
+            }
+            col.append(&chips);
+        }
+        row.append(&col);
+        let button = |icon: &str, tip: &str| {
+            let b = gtk::Button::from_icon_name(icon);
+            b.add_css_class("card-action");
+            b.set_valign(gtk::Align::Center);
+            b.set_tooltip_text(Some(tip));
+            b
+        };
+        let msg = button("bf-message-symbolic", "Send a message");
+        let (u2, pop2, a2) = (u.clone(), pop.downgrade(), addr.clone());
+        msg.connect_clicked(move |_| {
+            if let Some(p) = pop2.upgrade() {
+                p.popdown();
+            }
+            message_to(&u2, &a2);
+        });
+        row.append(&msg);
+        if addr.contains('@') {
+            let mail = button("mail-message-new-symbolic", "Write an email");
+            let (pop2, win) = (pop.downgrade(), u.win.clone());
+            mail.connect_clicked(move |_| {
+                if let Some(p) = pop2.upgrade() {
+                    p.popdown();
+                }
+                // not gio::AppInfo::launch_default_for_uri: that handed Thunderbird "mailto:///addr"
+                gtk::UriLauncher::new(&format!("mailto:{addr}")).launch(Some(&win), gio::Cancellable::NONE, |_| {});
+            });
+            row.append(&mail);
+        }
+        root.append(&row);
+    }
+    for (label, lines) in places {
+        let col = gtk::Box::new(gtk::Orientation::Vertical, 3);
+        let l = gtk::Label::new(Some(&lines.join("\n")));
+        l.set_xalign(0.0);
+        l.set_wrap(true);
+        col.append(&l);
+        if !label.is_empty() {
+            let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            chips.append(&chip(&label, ""));
+            col.append(&chips);
+        }
+        root.append(&col);
+    }
+    if let Some(b) = birthday {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.append(&gtk::Label::new(Some(&b)));
+        row.append(&chip("birthday", ""));
+        root.append(&row);
+    }
+    root
+}
+
+/// Open the chat with this number or email, or start a new one to it.
+fn message_to(u: &Rc<Ui>, addr: &str) {
+    let id = find_direct_chat(&u.st.borrow().chats, addr);
+    match id {
+        Some(id) => open_chat(u, id),
+        None => {
+            start_new(u);
+            u.to_entry.set_text(addr);
+            u.compose.grab_focus();
+        }
     }
 }
 
