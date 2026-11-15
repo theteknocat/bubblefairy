@@ -38,7 +38,9 @@ struct State {
     textures: HashMap<String, gdk::Texture>,
     waiting: HashMap<String, Vec<bubble::Bubble>>,
     /// photo widgets of the open chat in display order (the viewer cycles through these)
-    photos: Vec<bubble::Bubble>,
+    photos: Vec<(String, bubble::Bubble)>,
+    /// full-size viewer fetches in flight
+    waiting_full: HashSet<String>,
     host_key: String,
     connected: bool,
     chats_loaded: bool,
@@ -82,13 +84,13 @@ pub struct Ui {
     sel_gen: Cell<u32>,
     banner_offline: Cell<bool>,
     chats_queued: Cell<bool>,
+    /// open chat is a group (them-side rows carry an avatar column)
+    group: Cell<bool>,
+    /// re-lay photo stacks when the chat width changes (rebuilt with the conversation)
+    stacks: RefCell<Vec<Rc<dyn Fn()>>>,
 }
 
 impl Ui {
-    fn root_hover_for_dev(&self) {
-        self.viewer.root.add_css_class("hover"); // show the controls in headless screenshots
-    }
-
     fn send(&self, c: Cmd) {
         let _ = self.cmd.send(c);
     }
@@ -326,6 +328,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         sel_gen: Cell::new(0),
         banner_offline: Cell::new(false),
         chats_queued: Cell::new(false),
+        group: Cell::new(false),
+        stacks: RefCell::default(),
     });
 
     // wiring
@@ -425,18 +429,47 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let a4 = apply.clone();
     app.connect_window_added(move |_, _| a4(&gtk::Settings::default().unwrap()));
 
+    // viewer keys: at window level so they work whatever has focus
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let u = ui.clone();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if u.viewer.is_open() && u.viewer.key(key) { glib::Propagation::Stop } else { glib::Propagation::Proceed }
+    });
+    win.add_controller(keys);
+    let w = Rc::downgrade(&ui);
+    let (w2, w3) = (w.clone(), w.clone());
+    ui.viewer.set_hooks(viewer::Hooks {
+        fetch_full: Box::new(move |p| if let Some(u) = w.upgrade() { fetch_full(&u, p) }),
+        has_older: Box::new(move || {
+            w2.upgrade().is_some_and(|u| {
+                let st = u.st.borrow();
+                st.connected && st.sel.is_some_and(|id| !st.no_more.contains(&id))
+            })
+        }),
+        load_older: Box::new(move || if let Some(u) = w3.upgrade() { load_older(&u) }),
+    });
+    let u = ui.clone();
+    ui.scroller.hadjustment().connect_page_size_notify(move |_| {
+        let fs: Vec<_> = u.stacks.borrow().clone();
+        for f in fs {
+            f();
+        }
+    });
+
     win.present();
     if let Ok(t) = std::env::var("BF_DRAFT") {
         ui.compose.buffer().set_text(&t.replace("\\n", "\n")); // dev aid: prefill the composer
     }
     if std::env::var_os("BF_VIEW").is_some() {
         // dev aid: open the viewer on the newest loaded photo shortly before BF_SHOT fires
+        // BF_VIEW=<ms> sets when it opens; otherwise 0.9 s before the shot
         let ms = std::env::var("BF_SHOT_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(2500);
+        let at = std::env::var("BF_VIEW").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(ms.saturating_sub(900));
         let u = ui.clone();
-        glib::timeout_add_local_once(Duration::from_millis(ms.saturating_sub(900)), move || {
-            let items: Vec<bubble::Bubble> = u.st.borrow().photos.iter().filter(|b| b.texture().is_some()).cloned().collect();
-            if let Some(last) = items.last().cloned() {
-                u.root_hover_for_dev();
+        glib::timeout_add_local_once(Duration::from_millis(at), move || {
+            let items = u.st.borrow().photos.clone();
+            if let Some((last, _)) = items.iter().rev().find(|(_, b)| b.texture().is_some()).cloned() {
                 u.viewer.open(items, &last);
             }
         });
@@ -585,12 +618,20 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 u.banner.set_reveal_child(false);
             }
         }
-        Event::Image { path, bytes } => {
+        Event::Image { path, full, bytes } => {
             let tex = bytes.and_then(|b| {
                 let _ = std::fs::create_dir_all(&u.store.image_cache);
-                let _ = std::fs::write(cache_path(u, &path), &b);
+                let _ = std::fs::write(cache_path(u, &path, full), &b);
                 texture(&b)
             });
+            if full {
+                u.st.borrow_mut().waiting_full.remove(&path);
+                match tex {
+                    Some(t) => u.viewer.full_ready(&path, t),
+                    None => u.viewer.full_failed(&path),
+                }
+                return;
+            }
             let pics = u.st.borrow_mut().waiting.remove(&path).unwrap_or_default();
             if let Some(tex) = tex {
                 for p in pics {
@@ -872,6 +913,8 @@ fn render_conv(u: &Rc<Ui>) {
 
     // the scroll position is kept by the adjustment handlers in build() (anchored to the bottom)
     u.st.borrow_mut().photos.clear();
+    u.stacks.borrow_mut().clear();
+    u.group.set(group);
     while let Some(c) = u.msgs.first_child() {
         u.msgs.remove(&c);
     }
@@ -941,6 +984,8 @@ fn render_conv(u: &Rc<Ui>) {
             u.msgs.append(&line);
         }
     }
+    let photos = u.st.borrow().photos.clone(); // the viewer's hooks borrow State
+    u.viewer.refresh(photos);
 }
 
 /// Photos to show for a message. RCS keeps a converted copy next to a missing original, and some rows
@@ -1056,7 +1101,6 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
 
 const CARD: i32 = 210; // stacked photo card size
 const CARD_STEP: f64 = 26.0; // how far each card under the top one peeks out
-const CARD_SPREAD: f64 = 150.0; // ...and how far on hover
 const CARDS_SHOWN: usize = 4;
 
 /// One photo on its own, or several from the same message fanned out like cards: the first on top,
@@ -1097,8 +1141,24 @@ fn photo_stack(u: &Rc<Ui>, paths: &[String], look: bubble::Look) -> gtk::Widget 
             if me { p.set_margin_end(off) } else { p.set_margin_start(off) }
         }
     };
-    place(CARD_STEP);
-    let step = Rc::new(Cell::new(CARD_STEP));
+    // the widest spacing that still fits the chat; resting never exceeds it, hovering uses all of it
+    let room = {
+        let u = Rc::downgrade(u);
+        move || {
+            let w = u.upgrade().map_or(0.0, |u| stack_room(&u));
+            // never further apart than side by side
+            if w <= 0.0 { CARD_STEP } else { ((w - (CARD as f64 + bubble::TAIL as f64)) / (shown as f64 - 1.0)).clamp(0.0, CARD as f64 + 12.0) }
+        }
+    };
+    let step = Rc::new(Cell::new(CARD_STEP.min(room())));
+    let hovered = Rc::new(Cell::new(false));
+    place(step.get());
+    let (st2, pl2, rm2, hv2) = (step.clone(), place.clone(), room.clone(), hovered.clone());
+    u.stacks.borrow_mut().push(Rc::new(move || {
+        let s = if hv2.get() { rm2() } else { CARD_STEP.min(rm2()) };
+        st2.set(s);
+        pl2(s);
+    }));
     let hover = gtk::EventControllerMotion::new();
     let spread = move |o: &gtk::Overlay, to: f64| {
         let (step, place) = (step.clone(), place.clone());
@@ -1114,10 +1174,16 @@ fn photo_stack(u: &Rc<Ui>, paths: &[String], look: bubble::Look) -> gtk::Widget 
             if p >= 1.0 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
         });
     };
-    let (sp, o2) = (spread.clone(), o.clone());
-    hover.connect_enter(move |_, _, _| sp(&o2, CARD_SPREAD));
+    let (sp, o2, rm, hv) = (spread.clone(), o.clone(), room.clone(), hovered.clone());
+    hover.connect_enter(move |_, _, _| {
+        hv.set(true);
+        sp(&o2, rm());
+    });
     let o2 = o.clone();
-    hover.connect_leave(move |_| spread(&o2, CARD_STEP));
+    hover.connect_leave(move |_| {
+        hovered.set(false);
+        spread(&o2, CARD_STEP.min(room()));
+    });
     o.add_controller(hover);
     if paths.len() > shown {
         let more = gtk::Label::new(Some(&format!("+{}", paths.len() - shown)));
@@ -1142,18 +1208,18 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
     }
     p.set_cursor_from_name(Some("pointer"));
     let click = gtk::GestureClick::new();
-    let (u2, p2) = (u.clone(), p.clone());
+    let (u2, path2) = (u.clone(), path.to_string());
     click.connect_released(move |g, _, _, _| {
         g.set_state(gtk::EventSequenceState::Claimed);
-        let items: Vec<bubble::Bubble> = u2.st.borrow().photos.iter().filter(|b| b.texture().is_some()).cloned().collect();
-        u2.viewer.open(items, &p2);
+        let items = u2.st.borrow().photos.clone();
+        u2.viewer.open(items, &path2);
     });
     p.add_controller(click);
-    u.st.borrow_mut().photos.push(p.clone());
+    u.st.borrow_mut().photos.push((path.to_string(), p.clone()));
 
     let in_memory = u.st.borrow().textures.get(path).cloned(); // borrow ends here; or_else below borrows mutably
     let cached = in_memory.or_else(|| {
-        let tex = texture(&std::fs::read(cache_path(u, path)).ok()?)?;
+        let tex = texture(&std::fs::read(cache_path(u, path, false)).ok()?)?;
         u.st.borrow_mut().textures.insert(path.to_string(), tex.clone());
         Some(tex)
     });
@@ -1167,7 +1233,7 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
                 w.len() == 1
             };
             if first {
-                u.send(Cmd::Image { path: path.to_string() });
+                u.send(Cmd::Image { path: path.to_string(), full: false });
             }
         }
     }
@@ -1189,11 +1255,29 @@ fn show_texture(p: &bubble::Bubble, t: &gdk::Texture) {
     p.set_texture(Some(t));
 }
 
-fn cache_path(u: &Ui, path: &str) -> PathBuf {
+/// `full`: the viewer's big copy (mac::FULL_PX) rather than the chat's.
+// ponytail: the cache never shrinks; prune by age if it gets big
+fn cache_path(u: &Ui, path: &str, full: bool) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut h);
-    u.store.image_cache.join(format!("{:016x}.jpg", h.finish()))
+    u.store.image_cache.join(format!("{:016x}{}.jpg", h.finish(), if full { "-full" } else { "" }))
+}
+
+/// The viewer wants the big version of a photo: disk cache, else ask the Mac (once).
+fn fetch_full(u: &Rc<Ui>, path: &str) {
+    if let Some(t) = std::fs::read(cache_path(u, path, true)).ok().and_then(|b| texture(&b)) {
+        u.viewer.full_ready(path, t);
+    } else if u.st.borrow_mut().waiting_full.insert(path.to_string()) {
+        u.send(Cmd::Image { path: path.to_string(), full: true });
+    }
+}
+
+/// Width a photo stack may use in the open chat.
+fn stack_room(u: &Ui) -> f64 {
+    // ponytail: mirrors .msgs padding (18 px a side) and the avatar column (28 + 4) in style.css
+    let w = u.scroller.hadjustment().page_size() - 36.0;
+    if u.group.get() { w - 32.0 } else { w }
 }
 
 // ---------- settings ----------

@@ -28,7 +28,8 @@ pub enum Cmd {
     /// Older messages, before the given ISO time (the oldest one loaded).
     Older { id: i64, before: String },
     Send { chat_id: i64, text: String },
-    Image { path: String },
+    /// `full`: the viewer wants the big version (up to 4096 px) instead of the 1200 px chat copy
+    Image { path: String, full: bool },
 }
 
 pub enum Event {
@@ -47,7 +48,7 @@ pub enum Event {
     Resync,
     Sent { text: String, err: Option<String> },
     SendSlow,
-    Image { path: String, bytes: Option<Vec<u8>> },
+    Image { path: String, full: bool, bytes: Option<Vec<u8>> },
 }
 
 pub struct Paths {
@@ -321,16 +322,16 @@ async fn exec(session: &client::Handle<Handler>, cmd: String) -> Option<Vec<u8>>
 }
 
 /// Fetch an image from the Mac, shrunk and converted to JPEG there (handles HEIC, saves bandwidth).
-async fn fetch_image(session: &client::Handle<Handler>, path: &str) -> Option<Vec<u8>> {
+async fn fetch_image(session: &client::Handle<Handler>, path: &str, max: u32) -> Option<Vec<u8>> {
     // ponytail: animated GIFs arrive as a still frame; keep them as-is when animation matters
     let path = path.strip_prefix("~/").map(|p| format!("\"$HOME\"/{}", sh_quote(p))).unwrap_or_else(|| sh_quote(path));
     exec(
         session,
         format!(
             // Quick Look applies the photo's rotation (HEIC `irot`), which sips ignores; sips is the fallback.
-            "d=$(mktemp -d) || exit 1; qlmanage -t -s 1200 -o \"$d\" {path} >/dev/null 2>&1; \
+            "d=$(mktemp -d) || exit 1; qlmanage -t -s {max} -o \"$d\" {path} >/dev/null 2>&1; \
              f=$(ls \"$d\"/*.png 2>/dev/null | head -n 1); [ -n \"$f\" ] || f={path}; \
-             sips -s format jpeg -s formatOptions 80 -Z 1200 \"$f\" --out \"$d/i.jpg\" >/dev/null 2>&1 && cat \"$d/i.jpg\"; rm -rf \"$d\""
+             sips -s format jpeg -s formatOptions 85 -Z {max} \"$f\" --out \"$d/i.jpg\" >/dev/null 2>&1 && cat \"$d/i.jpg\"; rm -rf \"$d\""
         ),
     )
     .await
@@ -356,6 +357,10 @@ async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
         }
     }
 }
+
+/// Longest side of the copy shown in the chat, and of the one fetched for the viewer.
+pub const CHAT_PX: u32 = 1200;
+pub const FULL_PX: u32 = 4096;
 
 const READ: Duration = Duration::from_secs(30);
 
@@ -408,9 +413,9 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             };
             let _ = ev.send(Event::Sent { text, err: r.err() });
         }
-        Cmd::Image { path } => {
-            let bytes = fetch_image(&session, &path).await;
-            let _ = ev.send(Event::Image { path, bytes });
+        Cmd::Image { path, full } => {
+            let bytes = fetch_image(&session, &path, if full { FULL_PX } else { CHAT_PX }).await;
+            let _ = ev.send(Event::Image { path, full, bytes });
         }
         Cmd::Configure(_) => {}
     }
