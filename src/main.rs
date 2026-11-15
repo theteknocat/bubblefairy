@@ -1,3 +1,4 @@
+mod bubble;
 mod demo;
 mod mac;
 mod ui;

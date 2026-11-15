@@ -12,6 +12,7 @@ use gtk::{gdk, gio, glib};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use crate::bubble;
 use crate::mac::{Cmd, Config, Event};
 
 const OBJ: char = '\u{FFFC}'; // what imsg puts in `text` for attachment-only messages
@@ -859,153 +860,168 @@ fn render_conv(u: &Rc<Ui>) {
             u.msgs.append(&n);
         }
         let svc = m["service"].as_str().unwrap_or(&chat_svc);
-        let bubble = bubble(u, m, me, svc != "iMessage");
-        if join_prev {
-            bubble.add_css_class("join-prev");
-        }
-        if join_next {
-            bubble.add_css_class("join-next");
-        }
-        let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        line.add_css_class("msg-line");
-        if join_next {
-            line.add_css_class("tight");
-        }
-        line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
-        if group && !me {
-            if join_next {
-                let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-                spacer.add_css_class("avatar-spacer");
-                line.append(&spacer);
-            } else {
-                let a = avatar(&sender_name(m, &names), true);
-                a.set_valign(gtk::Align::End);
-                line.append(&a);
+        let parts = message_parts(u, m, me, svc != "iMessage", join_prev, join_next);
+        let n = parts.len();
+        for (k, part) in parts.into_iter().enumerate() {
+            let last = k + 1 == n;
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            line.add_css_class("msg-line");
+            if !last || join_next {
+                line.add_css_class("tight");
             }
+            line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+            if group && !me {
+                if last && !join_next {
+                    let a = avatar(&sender_name(m, &names), true);
+                    a.set_valign(gtk::Align::End);
+                    line.append(&a);
+                } else {
+                    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    spacer.add_css_class("avatar-spacer");
+                    line.append(&spacer);
+                }
+            }
+            line.append(&part);
+            u.msgs.append(&line);
         }
-        let svc_class = if svc == "iMessage" { "imessage" } else { "sms" };
-        if join_next {
-            if !me {
-                line.append(&tail_space());
-            }
-            line.append(&bubble);
-            if me {
-                line.append(&tail_space());
-            }
-        } else {
-            bubble.add_css_class("tailed");
-            let t = tail(me, svc_class);
-            if !me {
-                line.append(&t);
-            }
-            line.append(&bubble);
-            if me {
-                line.append(&t);
-            }
-        }
-        u.msgs.append(&line);
     }
 }
 
-/// The little flick at the bottom corner of the last bubble in a run. Its colour comes from CSS (`.tail`).
-fn tail(me: bool, svc: &str) -> gtk::DrawingArea {
-    let d = gtk::DrawingArea::new();
-    d.set_content_width(11);
-    d.set_content_height(20);
-    d.set_valign(gtk::Align::End);
-    d.add_css_class("tail");
-    d.add_css_class(if me { "me" } else { "them" });
-    d.add_css_class(svc);
-    d.set_draw_func(move |w, cr, width, _| {
-        let c = w.color();
-        if !me {
-            cr.translate(width as f64, 0.0);
-            cr.scale(-1.0, 1.0);
-        }
-        // base runs up the bubble's side, tip curls out at the bottom
-        cr.move_to(0.0, 0.0);
-        cr.curve_to(0.5, 10.0, 3.5, 17.0, 11.0, 20.0);
-        cr.curve_to(6.0, 20.6, 2.5, 20.4, 0.0, 19.4);
-        cr.line_to(0.0, 20.0);
-        cr.close_path();
-        cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, c.alpha() as f64);
-        let _ = cr.fill();
-    });
-    d
-}
-
-fn tail_space() -> gtk::Box {
-    let b = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    b.set_size_request(11, -1);
-    b
-}
-
-fn bubble(u: &Rc<Ui>, m: &Value, me: bool, sms: bool) -> gtk::Box {
-    let b = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    b.add_css_class("bubble");
-    b.add_css_class(if me { "me" } else { "them" });
-    b.add_css_class(if sms { "sms" } else { "imessage" });
+/// One message as display rows: its photos (as cards, outside any bubble), then a bubble with the
+/// text and any other attachments. Only the bubble of the last message in a run gets a tail.
+fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, join_next: bool) -> Vec<gtk::Widget> {
+    let look = |join_prev| bubble::Look { me, sms, tail: !join_next, join_prev, join_next };
     if m["unsent_at"].as_str().is_some() || m["type"].as_str() == Some("unsent") {
+        let b = bubble::Bubble::new(look(join_prev));
         let l = gtk::Label::new(Some("Message unsent"));
         l.add_css_class("unsent");
-        b.append(&l);
-        return b;
+        b.add(&l);
+        return vec![b.upcast()];
     }
-    let mut has_media = false;
     let atts: Vec<&Value> = m["attachments"].as_array().into_iter().flatten().collect();
     // RCS/SMS photos often come as a converted copy plus a missing original; show only what's there
     let any_present = atts.iter().any(|a| a["missing"].as_bool() != Some(true));
+    let mut photos = Vec::new();
+    let mut others = Vec::new();
     for a in atts.into_iter().filter(|a| !any_present || a["missing"].as_bool() != Some(true)) {
         let path = a["original_path"].as_str().unwrap_or("");
         let mime = a["mime_type"].as_str().unwrap_or("");
         if is_image(mime, path) && !path.is_empty() && a["missing"].as_bool() != Some(true) {
-            b.append(&image(u, path));
-            has_media = true;
+            photos.push(path.to_string());
         } else {
             let name = a["transfer_name"].as_str().or(a["filename"].as_str()).unwrap_or("Attachment");
-            let label = if a["missing"].as_bool() == Some(true) && is_image(mime, name) {
-                "📷 Photo not downloaded on your Mac".to_string()
+            let (icon, label) = if a["missing"].as_bool() == Some(true) && is_image(mime, name) {
+                ("📷", "Photo not downloaded on your Mac".to_string())
             } else {
-                format!("📎 {name}")
+                ("📎", name.to_string())
             };
-            let l = gtk::Label::new(Some(&label));
+            let l = gtk::Label::new(None);
+            l.set_markup(&format!("<span size='170%'>{icon}</span>  {}", glib::markup_escape_text(&label)));
             l.add_css_class("file");
             l.set_xalign(0.0);
             l.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
             l.set_max_width_chars(40);
-            b.append(&l);
+            others.push(l);
         }
     }
+    let mut out: Vec<gtk::Widget> = Vec::new();
+    if !photos.is_empty() {
+        let stack = photo_stack(u, &photos, me);
+        // line the cards up with the bubble body, not its tail gutter
+        if me {
+            stack.set_margin_end(bubble::TAIL as i32);
+        } else {
+            stack.set_margin_start(bubble::TAIL as i32);
+        }
+        out.push(stack);
+    }
     let text = clean_text(m);
-    if !text.is_empty() {
-        let l = gtk::Label::new(Some(&text));
-        l.set_wrap(true);
-        l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-        l.set_xalign(0.0);
-        l.set_max_width_chars(60);
-        l.set_selectable(true);
-        l.set_can_focus(false);
-        l.add_css_class("text");
-        b.append(&l);
-    } else if has_media {
-        b.add_css_class("media-only");
+    if !text.is_empty() || !others.is_empty() {
+        let b = bubble::Bubble::new(look(join_prev && photos.is_empty()));
+        for l in others {
+            b.add(&l);
+        }
+        if !text.is_empty() {
+            let l = gtk::Label::new(Some(&text));
+            l.set_wrap(true);
+            l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            l.set_xalign(0.0);
+            l.set_max_width_chars(60);
+            l.set_selectable(true);
+            l.set_can_focus(false);
+            l.add_css_class("text");
+            b.add(&l);
+        }
+        if m["edited_at"].as_str().is_some() {
+            let l = gtk::Label::new(Some("Edited"));
+            l.add_css_class("edited");
+            l.set_xalign(if me { 1.0 } else { 0.0 });
+            b.add(&l);
+        }
+        out.push(b.upcast());
     }
-    if m["edited_at"].as_str().is_some() {
-        let l = gtk::Label::new(Some("Edited"));
-        l.add_css_class("edited");
-        l.set_xalign(if me { 1.0 } else { 0.0 });
-        b.append(&l);
-    }
-    b
+    out
 }
 
-fn image(u: &Rc<Ui>, path: &str) -> gtk::Picture {
+const CARD: i32 = 210; // stacked photo card size
+const CARD_STEP: i32 = 26; // how far each card under the top one peeks out
+const CARDS_SHOWN: usize = 4;
+
+/// One photo on its own, or several from the same message fanned out like cards: the first on top,
+/// the rest peeking out underneath, away from the side the message sits on.
+fn photo_stack(u: &Rc<Ui>, paths: &[String], me: bool) -> gtk::Widget {
+    if paths.len() == 1 {
+        return image(u, &paths[0], None).upcast();
+    }
+    let shown = paths.len().min(CARDS_SHOWN);
+    let base = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    base.set_size_request(CARD + CARD_STEP * (shown as i32 - 1), CARD);
+    let o = gtk::Overlay::new();
+    o.set_child(Some(&base));
+    o.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+    for i in (0..shown).rev() {
+        let p = image(u, &paths[i], Some(CARD));
+        p.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+        p.set_valign(gtk::Align::Start);
+        let off = CARD_STEP * i as i32;
+        if me {
+            p.set_margin_end(off);
+        } else {
+            p.set_margin_start(off);
+        }
+        o.add_overlay(&p); // added last = drawn on top, so the first photo ends up on top
+    }
+    if paths.len() > shown {
+        let more = gtk::Label::new(Some(&format!("+{}", paths.len() - shown)));
+        more.add_css_class("stack-count");
+        more.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+        more.set_valign(gtk::Align::End);
+        let inset = 10;
+        if me {
+            more.set_margin_end(inset);
+        } else {
+            more.set_margin_start(inset);
+        }
+        more.set_margin_bottom(inset);
+        o.add_overlay(&more);
+    }
+    o.upcast()
+}
+
+/// A photo card. `card` = fixed square size (stacks); otherwise it takes the photo's own shape.
+fn image(u: &Rc<Ui>, path: &str, card: Option<i32>) -> gtk::Picture {
     let p = gtk::Picture::new();
     p.add_css_class("photo");
     p.set_overflow(gtk::Overflow::Hidden);
     p.set_can_shrink(true);
     p.set_content_fit(gtk::ContentFit::Cover);
-    p.set_size_request(240, 180);
+    match card {
+        Some(c) => {
+            p.set_size_request(c, c);
+            p.add_css_class("stacked");
+        }
+        None => p.set_size_request(240, 180),
+    }
     let in_memory = u.st.borrow().textures.get(path).cloned(); // borrow ends here; or_else below borrows mutably
     let cached = in_memory.or_else(|| {
         let tex = texture(&std::fs::read(cache_path(u, path)).ok()?)?;
@@ -1039,7 +1055,12 @@ fn show_texture(p: &gtk::Picture, t: &gdk::Texture) {
     let (w, h) = (t.width().max(1) as f64, t.height().max(1) as f64);
     let s = (300.0 / w).min(340.0 / h).min(1.0);
     let (w, h) = ((w * s) as i32, (h * s) as i32);
-    p.set_size_request(w, h);
+    let (w, h) = if p.has_css_class("stacked") {
+        (CARD, CARD) // stacked cards stay square; Sized crops the photo to fill
+    } else {
+        p.set_size_request(w, h);
+        (w, h)
+    };
     p.set_paintable(Some(&Sized::new(t, w, h)));
     p.remove_css_class("loading");
 }
@@ -1088,9 +1109,18 @@ mod sized {
             self.size.get().1
         }
         fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
-            if let Some(t) = self.tex.borrow().as_ref() {
-                t.snapshot(snapshot, width, height);
-            }
+            let Some(t) = self.tex.borrow().clone() else { return };
+            let Some(s) = snapshot.downcast_ref::<gtk::Snapshot>() else { return };
+            // fill the box, cropping the photo's overflow (like CSS object-fit: cover)
+            let (tw, th) = (t.width().max(1) as f64, t.height().max(1) as f64);
+            let k = (width / tw).max(height / th);
+            let (dw, dh) = (tw * k, th * k);
+            s.push_clip(&gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
+            s.save();
+            s.translate(&gtk::graphene::Point::new(((width - dw) / 2.0) as f32, ((height - dh) / 2.0) as f32));
+            t.snapshot(s, dw, dh);
+            s.restore();
+            s.pop();
         }
     }
 }

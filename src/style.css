@@ -186,46 +186,30 @@ row.unread .chat-preview { color: var(--ink); }
 }
 .sender-name { color: var(--ink-soft); font-size: 0.8em; margin: 8px 0 0 48px; }
 
-.bubble {
-  padding: 8px 14px;
-  border-radius: 20px;
-}
-.bubble.me.imessage {
-  background-image: linear-gradient(180deg, #4ea8ff, #2166ff);
-  color: #ffffff;
-  box-shadow: 0 3px 10px rgba(33, 102, 255, 0.30), inset 0 1px rgba(255, 255, 255, 0.50), inset 0 -2px 3px rgba(0, 0, 0, 0.08);
-}
-.bubble.me.sms {
-  background-image: linear-gradient(180deg, #52df8c, #16ad57);
-  color: #ffffff;
-  box-shadow: 0 3px 10px rgba(22, 173, 87, 0.30), inset 0 1px rgba(255, 255, 255, 0.50), inset 0 -2px 3px rgba(0, 0, 0, 0.08);
-}
-.bubble.them {
-  background-image: linear-gradient(180deg, var(--them-a), var(--them-b));
-  color: var(--them-ink);
-  border: 1px solid var(--them-edge);
-  box-shadow: 0 2px 8px var(--shadow), inset 0 1px rgba(255, 255, 255, 0.55);
-}
-/* grouped runs: corners facing the next/previous bubble tuck in */
-.bubble.me.join-next { border-bottom-right-radius: 7px; }
-.bubble.me.join-prev { border-top-right-radius: 7px; }
-.bubble.them.join-next { border-bottom-left-radius: 7px; }
-.bubble.them.join-prev { border-top-left-radius: 7px; }
-.bubble.media-only { padding: 4px; }
-/* the last bubble of a run gets a tail; its corner tightens so the tail joins smoothly */
-.bubble.me.tailed { border-bottom-right-radius: 0; }
-.bubble.them.tailed { border-bottom-left-radius: 0; }
-.bubble.them.tailed { border-left-width: 0; } /* the tail carries no border, so drop it where they meet */
-.tail.me.imessage { color: #2166ff; }
-.tail.me.sms { color: #16ad57; }
-.tail.them { color: var(--them-b); }
+/* bubbles: the shape, gradient, shadow and tail are drawn in bubble.rs; CSS gives padding and text */
+.bubble.me { color: #ffffff; }
+.bubble.them { color: var(--them-ink); }
 .bubble .text { font-size: 1.02em; }
 .bubble .file { font-weight: 600; }
 .bubble .edited, .bubble .unsent { font-size: 0.78em; font-style: italic; opacity: 0.8; }
 .bubble label selection { background-color: rgba(255, 255, 255, 0.35); }
-picture.photo { border-radius: 16px; }
+
+/* photos sit outside bubbles as cards */
+picture.photo {
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 4px 14px var(--shadow-strong), 0 1px 3px var(--shadow);
+}
+picture.photo.stacked { box-shadow: 0 3px 12px rgba(10, 5, 40, 0.35), 0 1px 2px rgba(10, 5, 40, 0.25); }
 picture.loading {
   background-image: linear-gradient(135deg, alpha(currentColor, 0.08), alpha(currentColor, 0.16));
+}
+.stack-count {
+  background-color: rgba(20, 14, 50, 0.65);
+  color: #ffffff;
+  font-weight: 800;
+  border-radius: 99px;
+  padding: 2px 9px;
 }
 
 /* composer */
