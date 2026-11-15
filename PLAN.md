@@ -2,7 +2,16 @@
 
 BubbleFairy is an open-source (MIT) Linux desktop app for iMessage. The Mac does all of the iMessage work. BubbleFairy is the window on Linux that ferries messages to and from it over the local network.
 
-Status: planning is done and implementation has not started.
+Status (2026-11-15): Phase 1 is built and running from source against Peter's Mac. Most of Phase 1.1 is built too (new conversations, local read state, sending files, link previews, avatars). Not started: Phase 1.2 (conversation info), the contacts integration, the app icon, and Phase 2 (wizard and Flatpak packaging).
+
+### Not yet checked on a real run
+
+- A message to Sue, sent from the app: does it go as iMessage and land in the same conversation?
+- Sending a file: can Messages read it from the app's `outgoing` folder on the Mac?
+- Clicking a desktop notification opens its chat.
+- Local read state: opening an unread chat clears its dot (the headless test window never counts as focused).
+- A message with a link plus other text, and a link card next to a bubble.
+- A real group chat with more than four people (the "+N" circle).
 
 ## Decisions
 
@@ -27,7 +36,8 @@ BubbleFairy (GTK4, Flatpak)
                                └─ sends through Messages.app with AppleScript (needs the Automation permission)
 ```
 
-- Mac install dir (planned): `~/Library/Application Support/BubbleFairy/` (the imsg binary and its version marker).
+- Mac install dir (planned): `~/Library/Application Support/BubbleFairy/` (the imsg binary and its version marker). Already used: `outgoing/` for files being sent.
+- Beyond imsg, the app runs macOS's built-in tools over separate SSH channels, under the same login and Full Disk Access: `sqlite3 -readonly` on `chat.db` (per-message service, corrected unread counts, link-preview data) and on the Contacts databases (photos); `qlmanage` and `sips` (photo conversion and rotation, preview images); `cat`/`mkdir`/`find` for outgoing files. imsg is the stable layer; these depend on Apple's database layout and are written to fail soft (plain colour, plain text, initials).
 - Linux app data: the XDG config and data dirs, which `glib` provides. Inside the Flatpak these are `~/.var/app/<id>/`.
 - The GTK main loop runs the UI. Networking runs on a tokio runtime, because russh needs one, and sends its results back to the UI over a channel. The UI thread never waits on the network.
 
@@ -41,14 +51,14 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 - Conversation: history with timestamps between groups of messages, and live incoming and outgoing messages.
 - Sending.
 - Bubbles: blue for iMessage, green for SMS/RCS, grey for incoming. Consecutive messages are grouped, and bubbles have tails.
-- Images shown inline (received and sent).
+- Images shown inline (received and sent): several photos in a message become a card stack that spreads on hover to the chat's width; clicking opens a full-panel viewer (edge-to-edge, one photo per wheel notch or arrow key, controls that fade out, the 4096 px original fetched in the background with a spinner, stops at the earliest loaded photo).
 - Desktop notifications (`gio::Notification`, which goes through the portal inside the Flatpak).
 - Auto-reconnect, with a visible connection state.
 - Follows the system light/dark setting.
 
 ### Phase 1.1
 
-- New 1:1 conversations: a "new message" button (Ctrl+N) swaps the conversation header for a To field. As you type, it suggests people you already have chats with (picking one opens that chat). Otherwise it takes a phone number or email, and the first message goes out as `send {to, service: "auto"}`; the app opens the new chat once it appears. imsg can't list the Mac's Contacts, so there's no address-book search.
+- New 1:1 conversations: a "new message" button (Ctrl+N) swaps the conversation header for a To field. As you type, it suggests people you already have chats with (picking one opens that chat). Otherwise it takes a phone number or email, and the first message goes out as `send {to, service: "auto"}`; the app opens the new chat once it appears. Suggestions come from existing chats only; the full address-book search is in the contacts integration section below.
   - New group chats aren't possible: imsg's `chats.create` needs its bridge, which needs SIP off (out of scope).
 - Read state, kept locally. Chats read on other devices already clear (see imsg facts: `mac::fix_unread`, with the chat list refreshed every 60 s). Chats read only in BubbleFairy can't be marked read on the Mac: imsg's `read` needs SIP off, and Messages has no AppleScript for it. So the app remembers, per chat, the newest message seen in BubbleFairy, and hides the dot until something newer arrives. Nothing goes back to the Mac.
 - Sending attachments (built): paperclip button, drag and drop onto the conversation, or paste (files or an image). Waiting files show as removable cards above the composer. Each file is copied over SSH to `~/Library/Application Support/BubbleFairy/outgoing/<random>/` on the Mac (copies older than a day are cleared on the next upload) and sent as its own `send {file}`, then the text. VERIFY: Messages can read files from that folder.
@@ -57,13 +67,13 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 - Link previews:
   - Built: Apple's own saved preview (title, site, image) is read from chat.db's `payload_data` over SSH (`mac::link_preview`, using the `plist` crate) and drawn as a card; clicking opens the link. The site icon isn't drawn yet.
   - Not built: links with no saved preview (the sender's device didn't make one) still show as plain text. Fetching the page from Linux would fill that gap, behind a setting.
-  - Never fetch automatically for links from unknown senders, because that reveals the user's IP address to the link's owner.
+  - Layout follows Messages: a preview picture of 400x200 px or more goes across the top in its own proportions (never cropped); a smaller one (a site logo) sits beside the title as an icon. Messages saves no "is this a logo" flag, so this is a size rule. The card is off-white in both colour schemes.
   - Never fetch automatically for links from unknown senders, because that reveals the user's IP address to the link's owner.
 
 ### Phase 1.2: conversation info
 
 - An info button in the conversation header opens a panel for the chat:
-  - Participants (name, handle). Contact cards need the Mac's Contacts, so not for now.
+  - Participants (name, handle, avatar). Contact cards (phones, emails, address, birthday) come with the contacts integration below.
   - Tabs to browse the whole chat's Photos, Attachments and Links.
 - imsg has no "messages with attachments only" query, so read chat.db directly over SSH (as `mac::add_services` already does): `attachment` joined through `message_attachment_join` and `chat_message_join` for one chat, newest first, paged. Links come from message text.
 - The photo viewer can then walk every photo in the chat, not only the ones loaded in the conversation (for now it stops at the earliest loaded photo).
@@ -97,13 +107,13 @@ The wizard does everything else:
 4. Checks that the macOS version is 14 or newer.
 5. Generates BubbleFairy's key and appends it to the Mac's `~/.ssh/authorized_keys` (directory mode 700, file mode 600).
 6. Downloads the pinned `imsg-macos.zip` on the Mac, checks its SHA256 against the hash built into the app, and unpacks it into the app dir.
-7. Checks that chat.db can be read. If it can't, it shows how to tick the Full Disk Access box, then checks again.
+7. Checks that chat.db and the Contacts databases can be read, and that `sqlite3`, `qlmanage` and `sips` exist. If a database can't be read, it shows how to tick the Full Disk Access box, then checks again.
 8. Sends a test message (optional). It warns the user to watch the Mac for the Automation prompt.
 9. Flatpak packaging and a GitHub Actions release workflow (push a tag `vX.Y.Z` to build the Flatpak bundle), then submission to Flathub.
 
 ### Later
 
-Reactions/tapbacks, search, contact photos, running in the background or in the tray. A Mac companion app is a possibility. An iPhone-only route is unlikely, because iOS gives third-party apps no access to iMessage (not researched).
+Reactions/tapbacks, search, running in the background or in the tray, photos people share through Messages' Name & Photo. A Mac companion app is a possibility. An iPhone-only route is unlikely, because iOS gives third-party apps no access to iMessage (not researched).
 
 ## Design direction
 
@@ -143,7 +153,7 @@ Answered from imsg's `docs/rpc.md` and `docs/json.md` (v0.21.0):
 - Apple's link previews are exposed. When imsg folds the preview row into its text message, that message carries `url_preview` (and `balloon_bundle_id` = `com.apple.messages.URLBalloonProvider`). That's the source for Phase 1.1.
 - `imsg rpc` exits cleanly when its stdin closes, so closing the SSH channel is enough and no wrapper is needed.
 - Messages include `sender_name` (from Contacts), `edited_at`, `unsent_at` and `reply_to_guid`. Live updates add `type: edited|unsent`.
-- Attachments have `original_path` on the Mac. Images are fetched over extra SSH exec channels (at most 6 at once; sshd allows 10): Quick Look (`qlmanage -t`, which applies HEIC rotation) then `sips` to JPEG, 1200 px for the chat and 4096 px for the viewer, cached on disk. Link-preview data arrives as `*.pluginPayloadAttachment` files, which are hidden until Phase 1.1 draws previews.
+- Attachments have `original_path` on the Mac. Images are fetched over extra SSH exec channels (at most 6 at once; sshd allows 10): Quick Look (`qlmanage -t`, which applies HEIC rotation) then `sips` to JPEG, 1200 px for the chat and 4096 px for the viewer, cached on disk. Link-preview pictures arrive as `*.pluginPayloadAttachment` files (plain PNG/JPEG/ICO): they go through `sips` only, because Quick Look hangs on that extension, and `fetch_image` kills a stuck `qlmanage` after 8 s. Photos still need Quick Look, because `sips` ignores HEIC rotation (8 of 13 test HEICs came out sideways).
 
 Still open:
 
@@ -153,6 +163,6 @@ Still open:
 ## Risks
 
 - imsg churns quickly and has one maintainer. Mitigation: the version pin, and the option to fork (it's MIT).
-- Apple can change the chat.db schema or Messages' AppleScript support in any macOS release. That breaks every tool of this kind.
+- Apple can change the chat.db or Contacts schema, or Messages' AppleScript support, in any macOS release. That breaks every tool of this kind; our own queries are written to fail soft.
 - The Mac has to be awake and reachable. Outside the home network that means Tailscale or similar (future docs).
 - Prior art: BlueBubbles and OpenBubbles. BubbleFairy differs in needing no server app on the Mac and in being a native GTK app on Linux.
