@@ -1422,7 +1422,7 @@ fn render_chats(u: &Rc<Ui>) {
         texts.append(&top);
         texts.append(&prev);
         let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 11);
-        row_box.append(&chat_avatar(u, &chat, &title));
+        row_box.append(&chat_avatar(u, &chat, &title, false));
         row_box.append(&texts);
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         dot.set_valign(gtk::Align::Center);
@@ -1486,7 +1486,7 @@ fn render_conv(u: &Rc<Ui>) {
     while let Some(c) = u.head_avatar.first_child() {
         u.head_avatar.remove(&c);
     }
-    u.head_avatar.append(&chat_avatar(u, &chat, &title));
+    u.head_avatar.append(&chat_avatar(u, &chat, &title, true));
     for c in ["sms", "imessage"] {
         u.send_btn.remove_css_class(c);
     }
@@ -2247,22 +2247,39 @@ fn mini_avatar(u: &Ui, name: &str, handle: &str, d: i32) -> gtk::Widget {
     w
 }
 
-/// A group's avatar, like Messages: a disc with the other members' small avatars inside it.
+/// "+3": how many more people than there is room for.
+fn more_pill(n: usize, d: i32) -> gtk::Widget {
+    let l = gtk::Label::new(Some(&format!("+{n}")));
+    l.add_css_class("avatar");
+    l.add_css_class("mini");
+    l.add_css_class("more");
+    l.set_size_request(d, d);
+    l.upcast()
+}
+
+/// A group's avatar, like Messages: a disc with the other members' small avatars inside it. With
+/// more than four people it shows three and a "+N" circle for the rest.
 fn group_avatar(u: &Ui, title: &str, members: &[String], names: &HashMap<String, String>) -> gtk::Widget {
-    if members.len() < 2 {
+    let n = members.len();
+    if n < 2 {
         return avatar(u, title, members.first().map(String::as_str), false);
     }
     // ponytail: equal sizes per layout; Messages may size them by member order
-    let (d, spots): (i32, &[(i32, i32)]) = match members.len() {
+    let (d, spots): (i32, &[(i32, i32)]) = match n {
         2 => (26, &[(2, 2), (16, 16)]),
         3 => (22, &[(11, 1), (0, 21), (22, 21)]),
         _ => (19, &[(3, 3), (22, 3), (3, 22), (22, 22)]),
     };
     let fixed = gtk::Fixed::new();
     fixed.set_size_request(44, 44);
-    for (h, (x, y)) in members.iter().zip(spots) {
+    let shown = if n > 4 { 3 } else { n };
+    for (h, (x, y)) in members.iter().take(shown).zip(spots) {
         let name = names.get(h).cloned().unwrap_or_else(|| pretty_handle(h));
         fixed.put(&mini_avatar(u, &name, h, d), *x as f64, *y as f64);
+    }
+    if n > 4 {
+        let (x, y) = spots[3];
+        fixed.put(&more_pill(n - 3, d), x as f64, y as f64);
     }
     let b = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     b.add_css_class("group-avatar");
@@ -2272,12 +2289,47 @@ fn group_avatar(u: &Ui, title: &str, members: &[String], names: &HashMap<String,
     b.upcast()
 }
 
-/// The avatar for a chat: the member circles for a group, the person's own for a 1:1 chat.
-fn chat_avatar(u: &Ui, chat: &Value, title: &str) -> gtk::Widget {
+/// For the conversation header: the members' avatars in a row, each peeking out from under the one
+/// before it (the first on top), like a stack of photos. Up to four, then a "+N" circle.
+fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<String, String>) -> gtk::Widget {
+    let n = members.len();
+    if n < 2 {
+        return avatar(u, title, members.first().map(String::as_str), false);
+    }
+    let (d, step) = (36, 22);
+    let shown = n.min(4);
+    let slots = shown + usize::from(n > 4);
+    let base = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    base.set_size_request(d + step * (slots as i32 - 1), d);
+    let o = gtk::Overlay::new();
+    o.set_child(Some(&base));
+    o.set_halign(gtk::Align::Start);
+    o.set_valign(gtk::Align::Center);
+    // added last = drawn on top, so go from the last slot back to the first
+    for i in (0..slots).rev() {
+        let w = if i < shown {
+            let h = &members[i];
+            let name = names.get(h).cloned().unwrap_or_else(|| pretty_handle(h));
+            mini_avatar(u, &name, h, d)
+        } else {
+            more_pill(n - shown, d)
+        };
+        w.add_css_class("stackav");
+        w.set_halign(gtk::Align::Start);
+        w.set_valign(gtk::Align::Center);
+        w.set_margin_start(i as i32 * step);
+        o.add_overlay(&w);
+    }
+    o.upcast()
+}
+
+/// The avatar for a chat: the member circles for a group (a stack of them in the header, `wide`),
+/// the person's own for a 1:1 chat.
+fn chat_avatar(u: &Ui, chat: &Value, title: &str, wide: bool) -> gtk::Widget {
     if chat["is_group"].as_bool() == Some(true) {
         let members: Vec<String> = chat["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
         let names = u.st.borrow().names.clone();
-        group_avatar(u, title, &members, &names)
+        if wide { stacked_avatars(u, title, &members, &names) } else { group_avatar(u, title, &members, &names) }
     } else {
         avatar(u, title, direct_addr(chat), false)
     }

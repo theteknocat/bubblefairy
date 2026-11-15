@@ -17,6 +17,8 @@ fn chats() -> Vec<Value> {
         json!({"id": 3, "participants": ["+15550199"], "service": "SMS", "is_group": false, "unread_count": 0, "last_message_at": ago(200)}),
         json!({"id": 4, "contact_name": "Dad", "participants": ["dad@example.com"], "service": "iMessage", "is_group": false, "unread_count": 0, "last_message_at": ago(1500)}),
         json!({"id": 5, "contact_name": "Priya Shah", "participants": ["+15550105"], "service": "iMessage", "is_group": false, "unread_count": 0, "last_message_at": ago(4000)}),
+        json!({"id": 6, "display_name": "Hiking Crew", "participants": ["+15550102", "+15550103", "+15550104", "+15550105", "+15550106", "+15550107", "+15550108"], "service": "iMessage", "is_group": true, "unread_count": 0, "last_message_at": ago(2500)}),
+        json!({"id": 7, "display_name": "Dinner Four", "participants": ["+15550102", "+15550103", "+15550104", "+15550105"], "service": "iMessage", "is_group": true, "unread_count": 0, "last_message_at": ago(3000)}),
     ]
 }
 
