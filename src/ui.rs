@@ -12,7 +12,7 @@ use gtk::{gdk, gio, glib};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::bubble;
+use crate::{bubble, viewer};
 use crate::mac::{Cmd, Config, Event};
 
 const COMPOSE_PAD_X: i32 = 4;
@@ -36,7 +36,9 @@ struct State {
     preview_asked: HashSet<i64>,
     sel: Option<i64>,
     textures: HashMap<String, gdk::Texture>,
-    waiting: HashMap<String, Vec<gtk::Picture>>,
+    waiting: HashMap<String, Vec<bubble::Bubble>>,
+    /// photo widgets of the open chat in display order (the viewer cycles through these)
+    photos: Vec<bubble::Bubble>,
     host_key: String,
     connected: bool,
     chats_loaded: bool,
@@ -52,6 +54,7 @@ pub struct Ui {
     win: gtk::ApplicationWindow,
     store: Store,
     cmd: mpsc::UnboundedSender<Cmd>,
+    viewer: Rc<viewer::Viewer>,
     st: RefCell<State>,
     // widgets
     chat_list: gtk::ListBox,
@@ -82,6 +85,10 @@ pub struct Ui {
 }
 
 impl Ui {
+    fn root_hover_for_dev(&self) {
+        self.viewer.root.add_css_class("hover"); // show the controls in headless screenshots
+    }
+
     fn send(&self, c: Cmd) {
         let _ = self.cmd.send(c);
     }
@@ -252,8 +259,16 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     stack.add_named(&conv, Some("conv"));
     let conv_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conv_panel.add_css_class("conv");
-    conv_panel.append(&stack);
+    // the photo viewer covers the whole panel (header and composer too)
+    let viewer = viewer::Viewer::new();
+    let conv_overlay = gtk::Overlay::new();
+    conv_overlay.set_child(Some(&stack));
+    conv_overlay.add_overlay(&viewer.root);
+    conv_overlay.set_vexpand(true);
+    conv_panel.set_overflow(gtk::Overflow::Hidden); // keeps the viewer inside the panel's rounded corners
+    conv_panel.append(&conv_overlay);
     stack.set_vexpand(true);
+    let _ = &stack;
 
     // warnings banner above everything
     let banner_text = gtk::Label::new(None);
@@ -286,6 +301,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         win: win.clone(),
         store,
         cmd,
+        viewer,
         st: RefCell::new(State { cfg, ..Default::default() }),
         chat_list,
         msgs,
@@ -412,6 +428,18 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     win.present();
     if let Ok(t) = std::env::var("BF_DRAFT") {
         ui.compose.buffer().set_text(&t.replace("\\n", "\n")); // dev aid: prefill the composer
+    }
+    if std::env::var_os("BF_VIEW").is_some() {
+        // dev aid: open the viewer on the newest loaded photo shortly before BF_SHOT fires
+        let ms = std::env::var("BF_SHOT_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(2500);
+        let u = ui.clone();
+        glib::timeout_add_local_once(Duration::from_millis(ms.saturating_sub(900)), move || {
+            let items: Vec<bubble::Bubble> = u.st.borrow().photos.iter().filter(|b| b.texture().is_some()).cloned().collect();
+            if let Some(last) = items.last().cloned() {
+                u.root_hover_for_dev();
+                u.viewer.open(items, &last);
+            }
+        });
     }
     if let Some(out) = std::env::var_os("BF_SHOT") {
         // dev aid: save the window to a PNG and quit (used with BF_DEMO in a headless compositor)
@@ -673,6 +701,7 @@ fn select_in_list(u: &Ui, id: i64) {
 }
 
 fn select(u: &Rc<Ui>, id: i64) {
+    u.viewer.close_now();
     u.st.borrow_mut().sel = Some(id);
     u.stick_bottom.set(true);
     render_conv(u); // cached view right away, fresh history shortly
@@ -842,6 +871,7 @@ fn render_conv(u: &Rc<Ui>) {
     u.send_btn.add_css_class(if sms { "sms" } else { "imessage" });
 
     // the scroll position is kept by the adjustment handlers in build() (anchored to the bottom)
+    u.st.borrow_mut().photos.clear();
     while let Some(c) = u.msgs.first_child() {
         u.msgs.remove(&c);
     }
@@ -886,7 +916,7 @@ fn render_conv(u: &Rc<Ui>) {
             u.msgs.append(&n);
         }
         let svc = m["service"].as_str().unwrap_or(&chat_svc);
-        let parts = message_parts(u, m, me, svc != "iMessage", join_prev, join_next);
+        let parts = message_parts(u, m, me, svc != "iMessage", join_prev, join_next, !run_next);
         let n = parts.len();
         for (k, part) in parts.into_iter().enumerate() {
             let last = k + 1 == n;
@@ -954,8 +984,10 @@ fn has_bubble(m: &Value) -> bool {
 
 /// One message as display rows: its photos (as cards, outside any bubble), then a bubble with the
 /// text and any other attachments. Only the bubble of the last message in a run gets a tail.
-fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, join_next: bool) -> Vec<gtk::Widget> {
-    let look = |join_prev| bubble::Look { me, sms, tail: !join_next, join_prev, join_next };
+/// `end_of_run`: this message is the sender's last in the run, so its last item (bubble or photo)
+/// carries the tail. Nothing else does.
+fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, join_next: bool, end_of_run: bool) -> Vec<gtk::Widget> {
+    let look = |join_prev| bubble::Look { me, sms, tail: end_of_run, join_prev, join_next };
     if m["unsent_at"].as_str().is_some() || m["type"].as_str() == Some("unsent") {
         let b = bubble::Bubble::new(look(join_prev));
         let l = gtk::Label::new(Some("Message unsent"));
@@ -990,18 +1022,12 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
         }
     }
     let mut out: Vec<gtk::Widget> = Vec::new();
-    if !photos.is_empty() {
-        let stack = photo_stack(u, &photos, me);
-        // line the cards up with the bubble body, not its tail gutter
-        if me {
-            stack.set_margin_end(bubble::TAIL as i32);
-        } else {
-            stack.set_margin_start(bubble::TAIL as i32);
-        }
-        out.push(stack);
-    }
     let text = clean_text(m);
-    if !text.is_empty() || !others.is_empty() {
+    let has_bubble = !text.is_empty() || !others.is_empty();
+    if !photos.is_empty() {
+        out.push(photo_stack(u, &photos, bubble::Look { me, sms, tail: end_of_run && !has_bubble, ..Default::default() }));
+    }
+    if has_bubble {
         let b = bubble::Bubble::new(look(join_prev && photos.is_empty()));
         for l in others {
             b.add(&l);
@@ -1029,64 +1055,102 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
 }
 
 const CARD: i32 = 210; // stacked photo card size
-const CARD_STEP: i32 = 26; // how far each card under the top one peeks out
+const CARD_STEP: f64 = 26.0; // how far each card under the top one peeks out
+const CARD_SPREAD: f64 = 150.0; // ...and how far on hover
 const CARDS_SHOWN: usize = 4;
 
 /// One photo on its own, or several from the same message fanned out like cards: the first on top,
-/// the rest peeking out underneath, away from the side the message sits on.
-fn photo_stack(u: &Rc<Ui>, paths: &[String], me: bool) -> gtk::Widget {
+/// the rest peeking out underneath, away from the side the message sits on. Hovering spreads them.
+/// `look.tail` puts the tail on the top card.
+fn photo_stack(u: &Rc<Ui>, paths: &[String], look: bubble::Look) -> gtk::Widget {
+    let me = look.me;
     if paths.len() == 1 {
-        return image(u, &paths[0], None).upcast();
+        return image(u, &paths[0], None, look).upcast();
     }
     let shown = paths.len().min(CARDS_SHOWN);
+    let side = if me { gtk::Align::End } else { gtk::Align::Start };
     let base = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    base.set_size_request(CARD + CARD_STEP * (shown as i32 - 1), CARD);
     let o = gtk::Overlay::new();
     o.set_child(Some(&base));
-    o.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+    o.set_halign(side);
+    // created in message order (that's the viewer's order); photos past CARDS_SHOWN aren't drawn
+    // in the stack but stay reachable in the viewer
+    let all: Vec<bubble::Bubble> = paths
+        .iter()
+        .enumerate()
+        .map(|(i, path)| image(u, path, Some(CARD), bubble::Look { tail: look.tail && i == 0, ..look }))
+        .collect();
+    let mut cards = Vec::new();
     for i in (0..shown).rev() {
-        let p = image(u, &paths[i], Some(CARD));
-        p.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+        let p = all[i].clone();
+        p.set_halign(side);
         p.set_valign(gtk::Align::Start);
-        let off = CARD_STEP * i as i32;
-        if me {
-            p.set_margin_end(off);
-        } else {
-            p.set_margin_start(off);
-        }
         o.add_overlay(&p); // added last = drawn on top, so the first photo ends up on top
+        cards.push((i, p));
     }
+    // lay the cards out for a given spacing; the base box gives the overlay its size
+    let place = move |step: f64| {
+        let card_w = CARD + bubble::TAIL as i32;
+        base.set_size_request(card_w + (step * (shown as f64 - 1.0)) as i32, CARD);
+        for (i, p) in &cards {
+            let off = (step * *i as f64) as i32;
+            if me { p.set_margin_end(off) } else { p.set_margin_start(off) }
+        }
+    };
+    place(CARD_STEP);
+    let step = Rc::new(Cell::new(CARD_STEP));
+    let hover = gtk::EventControllerMotion::new();
+    let spread = move |o: &gtk::Overlay, to: f64| {
+        let (step, place) = (step.clone(), place.clone());
+        let from = step.get();
+        let began = Cell::new(None::<i64>);
+        o.add_tick_callback(move |_, clock| {
+            let t0 = *began.get().get_or_insert(clock.frame_time());
+            began.set(Some(t0));
+            let p = ((clock.frame_time() - t0) as f64 / 180_000.0).min(1.0);
+            let e = 1.0 - (1.0 - p).powi(3);
+            step.set(from + (to - from) * e);
+            place(step.get());
+            if p >= 1.0 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+        });
+    };
+    let (sp, o2) = (spread.clone(), o.clone());
+    hover.connect_enter(move |_, _, _| sp(&o2, CARD_SPREAD));
+    let o2 = o.clone();
+    hover.connect_leave(move |_| spread(&o2, CARD_STEP));
+    o.add_controller(hover);
     if paths.len() > shown {
         let more = gtk::Label::new(Some(&format!("+{}", paths.len() - shown)));
         more.add_css_class("stack-count");
-        more.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+        more.set_halign(side);
         more.set_valign(gtk::Align::End);
-        let inset = 10;
-        if me {
-            more.set_margin_end(inset);
-        } else {
-            more.set_margin_start(inset);
-        }
-        more.set_margin_bottom(inset);
+        let inset = 10 + bubble::TAIL as i32;
+        if me { more.set_margin_end(inset) } else { more.set_margin_start(inset) }
+        more.set_margin_bottom(10);
         o.add_overlay(&more);
     }
     o.upcast()
 }
 
 /// A photo card. `card` = fixed square size (stacks); otherwise it takes the photo's own shape.
-fn image(u: &Rc<Ui>, path: &str, card: Option<i32>) -> gtk::Picture {
-    let p = gtk::Picture::new();
-    p.add_css_class("photo");
-    p.set_overflow(gtk::Overflow::Hidden);
-    p.set_can_shrink(true);
-    p.set_content_fit(gtk::ContentFit::Cover);
-    match card {
-        Some(c) => {
-            p.set_size_request(c, c);
-            p.add_css_class("stacked");
-        }
-        None => p.set_size_request(240, 180),
+/// Clicking opens the viewer.
+fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubble::Bubble {
+    let (w, h) = card.map(|c| (c, c)).unwrap_or((240, 180));
+    let p = bubble::Bubble::photo(look, w, h);
+    if card.is_some() {
+        p.add_css_class("stacked");
     }
+    p.set_cursor_from_name(Some("pointer"));
+    let click = gtk::GestureClick::new();
+    let (u2, p2) = (u.clone(), p.clone());
+    click.connect_released(move |g, _, _, _| {
+        g.set_state(gtk::EventSequenceState::Claimed);
+        let items: Vec<bubble::Bubble> = u2.st.borrow().photos.iter().filter(|b| b.texture().is_some()).cloned().collect();
+        u2.viewer.open(items, &p2);
+    });
+    p.add_controller(click);
+    u.st.borrow_mut().photos.push(p.clone());
+
     let in_memory = u.st.borrow().textures.get(path).cloned(); // borrow ends here; or_else below borrows mutably
     let cached = in_memory.or_else(|| {
         let tex = texture(&std::fs::read(cache_path(u, path)).ok()?)?;
@@ -1096,7 +1160,6 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>) -> gtk::Picture {
     match cached {
         Some(t) => show_texture(&p, &t),
         None => {
-            p.add_css_class("loading");
             let first = {
                 let mut st = u.st.borrow_mut();
                 let w = st.waiting.entry(path.to_string()).or_default();
@@ -1116,78 +1179,14 @@ fn texture(bytes: &[u8]) -> Option<gdk::Texture> {
     gdk::Texture::from_bytes(&glib::Bytes::from(bytes)).ok()
 }
 
-fn show_texture(p: &gtk::Picture, t: &gdk::Texture) {
-    let (w, h) = (t.width().max(1) as f64, t.height().max(1) as f64);
-    let s = (300.0 / w).min(340.0 / h).min(1.0);
-    let (w, h) = ((w * s) as i32, (h * s) as i32);
-    let (w, h) = if p.has_css_class("stacked") {
-        (CARD, CARD) // stacked cards stay square; Sized crops the photo to fill
-    } else {
-        p.set_size_request(w, h);
-        (w, h)
-    };
-    p.set_paintable(Some(&Sized::new(t, w, h)));
-    p.remove_css_class("loading");
-}
-
-// A texture that reports a chosen display size. GtkPicture otherwise asks for the photo's full pixel
-// size as its natural width, which stretches bubbles across the window. The pixels stay full-res (HiDPI).
-glib::wrapper! {
-    pub struct Sized(ObjectSubclass<sized::Imp>) @implements gdk::Paintable;
-}
-
-impl Sized {
-    fn new(t: &gdk::Texture, w: i32, h: i32) -> Self {
-        use gtk::subclass::prelude::ObjectSubclassIsExt;
-        let s: Self = glib::Object::new();
-        s.imp().tex.replace(Some(t.clone()));
-        s.imp().size.set((w, h));
-        s
+fn show_texture(p: &bubble::Bubble, t: &gdk::Texture) {
+    if !p.has_css_class("stacked") {
+        // a single photo takes its own shape; stacked cards stay square and crop to fill
+        let (w, h) = (t.width().max(1) as f64, t.height().max(1) as f64);
+        let s = (300.0 / w).min(340.0 / h).min(1.0);
+        p.set_photo_size((w * s) as i32, (h * s) as i32);
     }
-}
-
-mod sized {
-    use gtk::subclass::prelude::*;
-    use gtk::{gdk, glib, prelude::*};
-    use std::cell::{Cell, RefCell};
-
-    #[derive(Default)]
-    pub struct Imp {
-        pub tex: RefCell<Option<gdk::Texture>>,
-        pub size: Cell<(i32, i32)>,
-    }
-
-    #[glib::object_subclass]
-    impl ObjectSubclass for Imp {
-        const NAME: &'static str = "BfSizedTexture";
-        type Type = super::Sized;
-        type Interfaces = (gdk::Paintable,);
-    }
-
-    impl ObjectImpl for Imp {}
-
-    impl PaintableImpl for Imp {
-        fn intrinsic_width(&self) -> i32 {
-            self.size.get().0
-        }
-        fn intrinsic_height(&self) -> i32 {
-            self.size.get().1
-        }
-        fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
-            let Some(t) = self.tex.borrow().clone() else { return };
-            let Some(s) = snapshot.downcast_ref::<gtk::Snapshot>() else { return };
-            // fill the box, cropping the photo's overflow (like CSS object-fit: cover)
-            let (tw, th) = (t.width().max(1) as f64, t.height().max(1) as f64);
-            let k = (width / tw).max(height / th);
-            let (dw, dh) = (tw * k, th * k);
-            s.push_clip(&gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
-            s.save();
-            s.translate(&gtk::graphene::Point::new(((width - dw) / 2.0) as f32, ((height - dh) / 2.0) as f32));
-            t.snapshot(s, dw, dh);
-            s.restore();
-            s.pop();
-        }
-    }
+    p.set_texture(Some(t));
 }
 
 fn cache_path(u: &Ui, path: &str) -> PathBuf {

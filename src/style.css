@@ -194,16 +194,7 @@ row.unread .chat-preview { color: var(--ink); }
 .bubble .edited, .bubble .unsent { font-size: 0.78em; font-style: italic; opacity: 0.8; }
 .bubble label selection { background-color: rgba(255, 255, 255, 0.35); }
 
-/* photos sit outside bubbles as cards */
-picture.photo {
-  border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  box-shadow: 0 4px 14px var(--shadow-strong), 0 1px 3px var(--shadow);
-}
-picture.photo.stacked { box-shadow: 0 3px 12px rgba(10, 5, 40, 0.35), 0 1px 2px rgba(10, 5, 40, 0.25); }
-picture.loading {
-  background-image: linear-gradient(135deg, alpha(currentColor, 0.08), alpha(currentColor, 0.16));
-}
+/* photos are drawn in bubble.rs (Bubble::photo); stacks and the +N badge: */
 .stack-count {
   background-color: rgba(20, 14, 50, 0.65);
   color: #ffffff;
@@ -263,3 +254,23 @@ button.send-btn:disabled { filter: saturate(0.25) opacity(0.45); box-shadow: non
 .dim { color: var(--ink-soft); }
 .loading-text { color: var(--ink-soft); font-weight: 600; }
 .loading-more { color: var(--ink-soft); font-size: 0.85em; font-weight: 600; margin: 8px 0; }
+
+/* photo viewer */
+.viewer-nav {
+  min-width: 52px;
+  min-height: 52px;
+  margin: 0 16px;
+  padding: 0;
+  border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background-color: rgba(255, 255, 255, 0.10);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.02));
+  color: #ffffff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45), inset 0 1px rgba(255, 255, 255, 0.25);
+  opacity: 0;
+  transition: opacity 180ms ease, background-color 120ms ease;
+}
+.viewer-nav image { -gtk-icon-size: 22px; }
+.viewer.hover .viewer-nav { opacity: 1; }
+.viewer-nav:hover { background-color: rgba(255, 255, 255, 0.22); }
+.viewer-close { min-width: 40px; min-height: 40px; margin: 16px; }

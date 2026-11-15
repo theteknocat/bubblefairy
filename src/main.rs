@@ -2,6 +2,7 @@ mod bubble;
 mod demo;
 mod mac;
 mod ui;
+mod viewer;
 
 use std::path::Path;
 

@@ -44,12 +44,55 @@ impl Bubble {
         b
     }
 
+    /// A photo drawn through the bubble outline: rounded like a bubble, and with a tail (showing a
+    /// sliver of the photo) when it ends a run. `w`/`h` are the photo's display size.
+    pub fn photo(look: Look, w: i32, h: i32) -> Self {
+        let b: Self = glib::Object::new();
+        b.imp().look.set(look);
+        b.imp().is_photo.set(true);
+        b.set_photo_size(w, h);
+        b.add_css_class("photo");
+        b
+    }
+
+    pub fn set_photo_size(&self, w: i32, h: i32) {
+        self.set_size_request(w + TAIL as i32, h);
+    }
+
+    pub fn set_texture(&self, t: Option<&gdk::Texture>) {
+        self.imp().tex.replace(t.cloned());
+        self.queue_draw();
+    }
+
+    pub fn texture(&self) -> Option<gdk::Texture> {
+        self.imp().tex.borrow().clone()
+    }
+
+    /// The photo's area without the tail gutter, in this widget's coordinates.
+    pub fn body(&self) -> graphene::Rect {
+        let x = if self.imp().look.get().me { 0.0 } else { TAIL };
+        graphene::Rect::new(x, 0.0, self.width() as f32 - TAIL, self.height() as f32)
+    }
+
     /// Add content (text, file rows) inside the bubble's padding.
     pub fn add(&self, w: &impl IsA<gtk::Widget>) {
         if let Some(inner) = self.first_child().and_downcast::<gtk::Box>() {
             inner.append(w);
         }
     }
+}
+
+/// Draw `t` so it fills `r` (cropping the overflow), like CSS `object-fit: cover`.
+pub fn draw_cover(s: &gtk::Snapshot, t: &gdk::Texture, r: &graphene::Rect) {
+    let (tw, th) = (t.width().max(1) as f32, t.height().max(1) as f32);
+    let k = (r.width() / tw).max(r.height() / th);
+    let (dw, dh) = (tw * k, th * k);
+    s.push_clip(r);
+    s.save();
+    s.translate(&graphene::Point::new(r.x() + (r.width() - dw) / 2.0, r.y() + (r.height() - dh) / 2.0));
+    t.snapshot(s, dw as f64, dh as f64);
+    s.restore();
+    s.pop();
 }
 
 fn rgba(hex: u32, a: f32) -> gdk::RGBA {
@@ -99,11 +142,13 @@ pub fn outline(look: Look, w: f32, h: f32) -> gsk::Path {
 
 mod imp {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     #[derive(Default)]
     pub struct Bubble {
         pub look: Cell<Look>,
+        pub is_photo: Cell<bool>,
+        pub tex: RefCell<Option<gdk::Texture>>,
     }
 
     #[glib::object_subclass]
@@ -120,6 +165,28 @@ mod imp {
         fn snapshot(&self, s: &gtk::Snapshot) {
             let w = self.obj();
             let (width, height) = (w.width() as f32, w.height() as f32);
+            if self.is_photo.get() && width > TAIL && height > 0.0 {
+                let look = self.look.get();
+                let path = outline(look, width, height);
+                let bounds = graphene::Rect::new(0.0, 0.0, width, height);
+                s.push_shadow(&[gsk::Shadow::new(rgba(0x0a0528, 0.35), 0.0, 4.0, 14.0)]);
+                s.push_fill(&path, gsk::FillRule::Winding);
+                match self.tex.borrow().as_ref() {
+                    // cover the whole widget, gutter included, so the tail shows a sliver of the photo
+                    Some(t) => draw_cover(s, t, &bounds),
+                    None => s.append_color(&rgba(0x8a7cc8, 0.22), &bounds),
+                }
+                s.pop();
+                s.pop();
+                s.push_fill(&path, gsk::FillRule::Winding);
+                s.save();
+                s.translate(&graphene::Point::new(0.0, 1.2));
+                s.append_stroke(&path, &gsk::Stroke::new(1.5), &gdk::RGBA::new(1.0, 1.0, 1.0, 0.30));
+                s.restore();
+                s.pop();
+                s.append_stroke(&path, &gsk::Stroke::new(1.0), &gdk::RGBA::new(1.0, 1.0, 1.0, 0.22));
+                return;
+            }
             if width > TAIL && height > 0.0 {
                 let look = self.look.get();
                 let dark = w.root().is_some_and(|r| r.has_css_class("dark"));
