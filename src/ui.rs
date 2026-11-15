@@ -49,6 +49,8 @@ struct State {
     /// chats with a history request in flight (header spinner)
     loading: HashSet<i64>,
     older_loading: bool,
+    /// files waiting in the composer
+    outgoing: Vec<PathBuf>,
     /// chat id -> newest message id seen in BubbleFairy; hides the unread dot the Mac can't clear
     seen: HashMap<i64, i64>,
     /// address a new conversation's first message went to; its chat opens once it shows up
@@ -75,6 +77,7 @@ pub struct Ui {
     compose: gtk::TextView,
     compose_hint: gtk::Label,
     send_btn: gtk::Button,
+    attach_bar: gtk::Box,
     side_stack: gtk::Stack,
     head_spin: gtk::Spinner,
     head_titles: gtk::Box,
@@ -277,12 +280,16 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let send_btn = gtk::Button::from_icon_name("go-up-symbolic");
     send_btn.add_css_class("send-btn");
     send_btn.set_sensitive(false); // enabled once there's something to send
-    let sb = send_btn.clone();
-    compose.buffer().connect_changed(move |b| sb.set_sensitive(b.char_count() > 0));
     send_btn.set_tooltip_text(Some("Send (Enter)"));
     send_btn.set_valign(gtk::Align::End);
     let composer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     composer.add_css_class("composer");
+    let attach_btn = gtk::Button::from_icon_name("mail-attachment-symbolic");
+    attach_btn.add_css_class("head-btn");
+    attach_btn.add_css_class("attach-btn");
+    attach_btn.set_tooltip_text(Some("Attach files (or drop or paste them)"));
+    attach_btn.set_valign(gtk::Align::End);
+    composer.append(&attach_btn);
     composer.append(&compose_box);
     composer.append(&emoji);
     composer.append(&send_btn);
@@ -291,6 +298,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     conv.append(&conv_head);
     conv.append(&suggest_scroll);
     conv.append(&scroller);
+    // files waiting to go, above the composer
+    let attach_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    attach_bar.add_css_class("attach-bar");
+    attach_bar.set_visible(false);
+    conv.append(&attach_bar);
     conv.append(&composer);
 
     let placeholder = gtk::Label::new(Some("Pick a conversation"));
@@ -356,6 +368,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         compose,
         compose_hint,
         send_btn,
+        attach_bar,
         side_stack,
         head_spin,
         head_titles: titles,
@@ -440,6 +453,48 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         u.from_bottom.set(a.upper() - a.value());
         if a.value() < 400.0 && a.upper() > a.page_size() {
             load_older(&u);
+        }
+    });
+
+    let u = ui.clone();
+    ui.compose.buffer().connect_changed(move |_| update_send(&u));
+    let u = ui.clone();
+    attach_btn.connect_clicked(move |_| pick_files(&u));
+    let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    let u = ui.clone();
+    drop.connect_drop(move |_, v, _, _| {
+        let Ok(list) = v.get::<gdk::FileList>() else { return false };
+        add_files(&u, list.files().iter().filter_map(|f| f.path()).collect());
+        true
+    });
+    conv.add_controller(drop);
+    let u = ui.clone();
+    ui.compose.connect_paste_clipboard(move |tv| {
+        // pasted files or images become attachments; text pastes as usual
+        let cb = tv.clipboard();
+        let f = cb.formats();
+        if f.contains_type(gdk::FileList::static_type()) {
+            tv.stop_signal_emission_by_name("paste-clipboard");
+            let u = u.clone();
+            glib::spawn_future_local(async move {
+                if let Ok(v) = cb.read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT).await
+                    && let Ok(list) = v.get::<gdk::FileList>()
+                {
+                    add_files(&u, list.files().iter().filter_map(|f| f.path()).collect());
+                }
+            });
+        } else if f.contains_type(gdk::Texture::static_type()) && !f.contain_mime_type("text/plain") {
+            tv.stop_signal_emission_by_name("paste-clipboard");
+            let u = u.clone();
+            glib::spawn_future_local(async move {
+                let Ok(Some(t)) = cb.read_texture_future().await else { return };
+                let dir = outgoing_dir(&u);
+                let _ = std::fs::create_dir_all(&dir);
+                let path = dir.join(format!("Pasted image {}.png", glib::DateTime::now_local().map(|d| d.format("%Y-%m-%d %H.%M.%S").unwrap_or_default()).unwrap_or_default()));
+                if t.save_to_png(&path).is_ok() {
+                    add_files(&u, vec![path]);
+                }
+            });
         }
     });
 
@@ -546,6 +601,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     win.present();
     if let Ok(t) = std::env::var("BF_DRAFT") {
         ui.compose.buffer().set_text(&t.replace("\\n", "\n")); // dev aid: prefill the composer
+    }
+    if let Ok(t) = std::env::var("BF_ATTACH") {
+        // dev aid: put these files (colon-separated) in the composer
+        let u = ui.clone();
+        glib::timeout_add_local_once(Duration::from_millis(1500), move || add_files(&u, t.split(':').map(PathBuf::from).collect()));
     }
     if let Ok(t) = std::env::var("BF_NEW") {
         // dev aid: open the new-message view with this typed in the To field
@@ -714,7 +774,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             "Still sending… If this is your first message from BubbleFairy, check your Mac: it may be asking whether to allow control of Messages.",
             false,
         ),
-        Event::Sent { text, err, .. } => {
+        Event::Sent { text, files, err } => {
             if let Some(err) = err {
                 u.st.borrow_mut().new_pending = None;
                 show_banner(u, &format!("Message not sent: {err}"), false);
@@ -722,6 +782,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 if buf.char_count() == 0 {
                     buf.set_text(&text); // nothing typed is lost
                 }
+                add_files(u, files); // nor any file that didn't go
             } else if !u.banner_offline.get() {
                 u.banner.set_reveal_child(false);
             }
@@ -904,7 +965,7 @@ fn load_older(u: &Rc<Ui>) {
 fn send_now(u: &Rc<Ui>) {
     let buf = u.compose.buffer();
     let text = buf.text(&buf.start_iter(), &buf.end_iter(), false).trim().to_string();
-    if text.is_empty() {
+    if text.is_empty() && u.st.borrow().outgoing.is_empty() {
         return;
     }
     if u.new_mode.get() {
@@ -920,9 +981,99 @@ fn send_now(u: &Rc<Ui>) {
             .filter(|c| c["is_group"].as_bool() != Some(true))
             .and_then(|c| direct_addr(c).map(String::from))
     };
+    let files = take_files(u);
     buf.set_text(""); // also disables the send button (buffer changed)
     u.stick_bottom.set(true);
-    u.send(Cmd::Send { chat_id, to, text }); // the message itself comes back through the live stream
+    u.send(Cmd::Send { chat_id, to, text, files }); // the messages come back through the live stream
+}
+
+// ---------- attachments ----------
+
+fn update_send(u: &Ui) {
+    let has = u.compose.buffer().char_count() > 0 || !u.st.borrow().outgoing.is_empty();
+    u.send_btn.set_sensitive(has);
+}
+
+fn outgoing_dir(u: &Ui) -> PathBuf {
+    u.store.image_cache.with_file_name("outgoing")
+}
+
+fn pick_files(u: &Rc<Ui>) {
+    let d = gtk::FileDialog::builder().title("Attach files").modal(true).build();
+    let u = u.clone();
+    glib::spawn_future_local(async move {
+        if let Ok(list) = d.open_multiple_future(Some(&u.win)).await {
+            let files = (0..list.n_items()).filter_map(|i| list.item(i).and_downcast::<gio::File>()?.path()).collect();
+            add_files(&u, files);
+        }
+    });
+}
+
+fn add_files(u: &Rc<Ui>, files: Vec<PathBuf>) {
+    if files.is_empty() {
+        return;
+    }
+    {
+        let mut st = u.st.borrow_mut();
+        for f in files {
+            if f.is_file() && !st.outgoing.contains(&f) {
+                st.outgoing.push(f);
+            }
+        }
+    }
+    render_attach(u);
+    u.compose.grab_focus();
+}
+
+fn take_files(u: &Rc<Ui>) -> Vec<PathBuf> {
+    let files = std::mem::take(&mut u.st.borrow_mut().outgoing);
+    render_attach(u);
+    files
+}
+
+/// The waiting files as removable cards: a thumbnail for images, else an icon and the name.
+fn render_attach(u: &Rc<Ui>) {
+    while let Some(c) = u.attach_bar.first_child() {
+        u.attach_bar.remove(&c);
+    }
+    let files = u.st.borrow().outgoing.clone();
+    u.attach_bar.set_visible(!files.is_empty());
+    for f in files {
+        let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let card = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        card.add_css_class("attach-chip");
+        card.set_tooltip_text(Some(&name));
+        if let Some(t) = is_image("", &name).then(|| gdk::Texture::from_filename(&f).ok()).flatten() {
+            // ponytail: whole image decoded for a 64 px thumbnail; fine for a few files
+            let pic = gtk::Image::from_paintable(Some(&t));
+            pic.set_pixel_size(64);
+            pic.add_css_class("attach-thumb");
+            card.append(&pic);
+        } else {
+            let icon = gtk::Image::from_icon_name("text-x-generic-symbolic");
+            icon.set_pixel_size(24);
+            card.append(&icon);
+            let l = gtk::Label::new(Some(&name));
+            l.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+            l.set_max_width_chars(18);
+            card.append(&l);
+        }
+        let x = gtk::Button::from_icon_name("window-close-symbolic");
+        x.add_css_class("attach-remove");
+        x.set_tooltip_text(Some("Remove"));
+        x.set_halign(gtk::Align::End);
+        x.set_valign(gtk::Align::Start);
+        let o = gtk::Overlay::new();
+        o.set_child(Some(&card));
+        o.add_overlay(&x);
+        let (u2, f2) = (u.clone(), f.clone());
+        x.connect_clicked(move |_| {
+            u2.st.borrow_mut().outgoing.retain(|p| *p != f2);
+            render_attach(&u2);
+        });
+        u.attach_bar.append(&o);
+    }
+    update_send(u);
 }
 
 // ---------- new conversation ----------
@@ -1045,9 +1196,10 @@ fn send_new(u: &Rc<Ui>, text: &str) {
         return;
     }
     let to = clean_addr(&typed);
+    let files = take_files(u);
     u.compose.buffer().set_text("");
     u.st.borrow_mut().new_pending = Some(to.clone());
-    u.send(Cmd::Send { chat_id: 0, to: Some(to), text: text.to_string() });
+    u.send(Cmd::Send { chat_id: 0, to: Some(to), text: text.to_string(), files });
     // the chat opens when the Mac's chat list includes it (Event::Chats)
 }
 

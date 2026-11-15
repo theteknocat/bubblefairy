@@ -59,7 +59,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
             Cmd::Send { chat_id, text, .. } => {
                 next += 1;
                 let _ = ev.send(Event::Message(msg(chat_id, next, true, "", "", 0, &text)));
-                ev.send(Event::Sent { text, err: None })
+                ev.send(Event::Sent { text: String::new(), files: Vec::new(), err: None })
             }
             Cmd::Older { id, .. } => ev.send(Event::Older(id, Vec::new())),
             Cmd::Image { path, full } => ev.send(Event::Image { path, full, bytes: None }),

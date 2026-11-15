@@ -2,7 +2,7 @@
 //! plus short extra exec channels for fetching images. Runs on tokio; the UI only sees `Cmd` and `Event`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,7 +28,8 @@ pub enum Cmd {
     /// Older messages, before the given ISO time (the oldest one loaded).
     Older { id: i64, before: String },
     /// `to`: the other person in a 1:1 chat, sent directly so Messages picks the service (see handle)
-    Send { chat_id: i64, to: Option<String>, text: String },
+    /// `files` go first, one message each, then `text` (if any) as its own message
+    Send { chat_id: i64, to: Option<String>, text: String, files: Vec<PathBuf> },
     /// `full`: the viewer wants the big version (up to 4096 px) instead of the 1200 px chat copy
     Image { path: String, full: bool },
 }
@@ -47,7 +48,8 @@ pub enum Event {
     Message(Value),
     /// The watch stream lost messages; reload everything.
     Resync,
-    Sent { text: String, err: Option<String> },
+    /// on failure, `text` and `files` are what didn't go out (to put back in the composer)
+    Sent { text: String, files: Vec<PathBuf>, err: Option<String> },
     SendSlow,
     Image { path: String, full: bool, bytes: Option<Vec<u8>> },
 }
@@ -359,6 +361,57 @@ async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
     }
 }
 
+/// One `send` call: `target` plus `key` = `value` (a text or a file path on the Mac).
+async fn send_one(rpc: &Rpc, ev: &mpsc::UnboundedSender<Event>, target: &Value, key: &str, value: &str) -> Result<(), String> {
+    let mut params = target.clone();
+    params[key] = Value::from(value);
+    // The first send ever waits on the Mac's Automation prompt, so allow a long time and say so.
+    let call = rpc.call("send", params, Duration::from_secs(180));
+    tokio::pin!(call);
+    tokio::select! {
+        r = &mut call => r,
+        _ = tokio::time::sleep(Duration::from_secs(6)) => {
+            let _ = ev.send(Event::SendSlow);
+            call.await
+        }
+    }
+    .map(|_| ())
+}
+
+/// Copy a local file to the Mac for sending; returns its path there. Copies older than a day are
+/// cleared out first (Messages keeps its own copy of what it sent).
+async fn upload(session: &client::Handle<Handler>, file: &Path) -> Result<String, String> {
+    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "attachment".into());
+    let owned = file.to_path_buf();
+    let bytes = tokio::task::spawn_blocking(move || std::fs::read(owned))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.map_err(|e| e.to_string()))
+        .map_err(|e| format!("can't read {name}: {e}"))?;
+    let fail = || format!("couldn't copy {name} to the Mac");
+    let cmd = format!(
+        "o=\"$HOME/Library/Application Support/BubbleFairy/outgoing\"; \
+         find \"$o\" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {{}} + 2>/dev/null; \
+         d=$(mkdir -p \"$o\" && mktemp -d \"$o/XXXXXX\") && cat > \"$d\"/{q} && printf %s \"$d\"/{q}",
+        q = sh_quote(&name)
+    );
+    let _permit = CHANNELS.acquire().await.map_err(|_| fail())?;
+    let mut ch = session.channel_open_session().await.map_err(|_| fail())?;
+    ch.exec(true, cmd).await.map_err(|_| fail())?;
+    ch.data(&bytes[..]).await.map_err(|_| fail())?;
+    ch.eof().await.map_err(|_| fail())?;
+    let mut out = Vec::new();
+    while let Some(msg) = ch.wait().await {
+        match msg {
+            ChannelMsg::Data { data } => out.extend_from_slice(&data),
+            ChannelMsg::Eof | ChannelMsg::Close => break,
+            _ => {}
+        }
+    }
+    let path = String::from_utf8_lossy(&out).into_owned();
+    if path.is_empty() { Err(fail()) } else { Ok(path) }
+}
+
 /// imsg counts unread from each message's `is_read` flag, which can stay unset after the chat was
 /// read on another device. Messages itself also honours the chat's `last_read_message_timestamp`,
 /// so count only messages that are unread by both.
@@ -426,25 +479,38 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
                 let _ = ev.send(Event::Preview(id, m));
             }
         }
-        Cmd::Send { chat_id, to, text } => {
+        Cmd::Send { chat_id, to, text, files } => {
             // chat.db keeps a 1:1 chat's service from whenever it was set (an iMessage chat with some
             // SMS history can stay "SMS"), and a chat_id send uses it. A direct send with "auto" lets
             // Messages choose, as it does on the Mac.
-            let params = match to {
-                Some(to) => json!({"to": to, "text": text, "service": "auto"}),
-                None => json!({"chat_id": chat_id, "text": text}),
+            let target = match &to {
+                Some(to) => json!({"to": to, "service": "auto"}),
+                None => json!({"chat_id": chat_id}),
             };
-            // The first send ever waits on the Mac's Automation prompt, so allow a long time and say so.
-            let call = rpc.call("send", params, Duration::from_secs(180));
-            tokio::pin!(call);
-            let r = tokio::select! {
-                r = &mut call => r,
-                _ = tokio::time::sleep(Duration::from_secs(6)) => {
-                    let _ = ev.send(Event::SendSlow);
-                    call.await
+            let mut sent = 0; // files that went out
+            let mut err = None;
+            for f in &files {
+                let r = match upload(&session, f).await {
+                    Ok(path) => send_one(&rpc, &ev, &target, "file", &path).await,
+                    Err(e) => Err(e),
+                };
+                match r {
+                    Ok(()) => sent += 1,
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
                 }
-            };
-            let _ = ev.send(Event::Sent { text, err: r.err() });
+            }
+            let mut text_left = text;
+            if err.is_none() && !text_left.is_empty() {
+                match send_one(&rpc, &ev, &target, "text", &text_left).await {
+                    Ok(()) => text_left.clear(),
+                    Err(e) => err = Some(e),
+                }
+            }
+            let files_left = if err.is_some() { files[sent..].to_vec() } else { Vec::new() };
+            let _ = ev.send(Event::Sent { text: if err.is_some() { text_left } else { String::new() }, files: files_left, err });
         }
         Cmd::Image { path, full } => {
             let bytes = fetch_image(&session, &path, if full { FULL_PX } else { CHAT_PX }).await;
@@ -526,8 +592,8 @@ async fn wait_offline(cmds: &mut mpsc::UnboundedReceiver<Cmd>, ev: &mpsc::Unboun
             _ = &mut sleep => return None,
             c = cmds.recv() => match c? {
                 Cmd::Configure(c) => return Some(c),
-                Cmd::Send { text, .. } => {
-                    let _ = ev.send(Event::Sent { text, err: Some("not connected to the Mac".into()) });
+                Cmd::Send { text, files, .. } => {
+                    let _ = ev.send(Event::Sent { text, files, err: Some("not connected to the Mac".into()) });
                 }
                 _ => {}
             },
