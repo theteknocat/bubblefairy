@@ -17,6 +17,8 @@ pub struct Config {
     pub host: String,
     pub user: String,
     pub imsg: String,
+    /// show a map picture under postal addresses on contact cards (sends the address to OpenStreetMap)
+    pub map_previews: bool,
 }
 
 pub enum Cmd {
@@ -37,6 +39,8 @@ pub enum Cmd {
     Link(i64),
     /// The Mac's contact photos, to use as avatars
     Contacts,
+    /// A small OpenStreetMap picture of this postal address (see `map_for`)
+    Map(String),
 }
 
 pub enum Event {
@@ -59,6 +63,7 @@ pub enum Event {
     Image { path: String, full: bool, bytes: Option<Vec<u8>> },
     Link(i64, Option<LinkPreview>),
     Contacts(Contacts),
+    Map(String, Option<MapData>),
 }
 
 pub struct Paths {
@@ -578,6 +583,108 @@ fn clean_label(l: &str) -> String {
     l.trim().trim_start_matches("_$!<").trim_end_matches(">!$_").trim().to_lowercase()
 }
 
+/// OpenStreetMap tiles around an address, as a `cols` x `rows` grid (row by row), and where the
+/// address sits on the grid (pixels, 256 per tile).
+#[derive(Clone)]
+pub struct MapData {
+    pub lat: f64,
+    pub lon: f64,
+    pub cols: usize,
+    pub rows: usize,
+    pub pin_x: f64,
+    pub pin_y: f64,
+    pub tiles: Vec<Vec<u8>>,
+}
+
+pub const TILE_ZOOM: u32 = 17;
+/// The preview shows this many tile pixels around the address (so the grid always covers it).
+pub const MAP_WIN: f64 = 192.0;
+
+/// Which tile holds this point, and the point's pixel position inside it.
+pub fn tile_pos(lat: f64, lon: f64, z: u32) -> (u32, u32, f64, f64) {
+    let n = f64::from(1u32 << z);
+    let x = (lon + 180.0) / 360.0 * n;
+    let lr = lat.to_radians();
+    let y = (1.0 - (lr.tan() + 1.0 / lr.cos()).ln() / std::f64::consts::PI) / 2.0 * n;
+    (x.floor() as u32, y.floor() as u32, x.fract() * 256.0, y.fract() * 256.0)
+}
+
+/// Tile offsets (first, last) along one axis that cover `MAP_WIN` pixels centred on pixel `p` of the
+/// address's own tile: -1..=0, 0..=0, 0..=1 or -1..=1 is impossible since the window is under 256.
+fn tile_span(p: f64) -> (i32, i32) {
+    (((p - MAP_WIN / 2.0) / 256.0).floor() as i32, ((p + MAP_WIN / 2.0) / 256.0).floor() as i32)
+}
+
+pub fn url_encode(s: &str) -> String {
+    s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
+/// Nominatim's public server allows one request a second.
+static NOMINATIM_LAST: tokio::sync::Mutex<Option<std::time::Instant>> = tokio::sync::Mutex::const_new(None);
+
+/// Find an address on OpenStreetMap (Nominatim) and fetch the map tile around it. Both go out from the
+/// Mac with its curl, so the app needs no HTTP library. Fails soft (None).
+// ponytail: one tile, so the pin can sit near its edge; stitch neighbours if that looks bad
+async fn map_for(session: &client::Handle<Handler>, query: &str) -> Option<MapData> {
+    let ua = format!("BubbleFairy/{}", env!("CARGO_PKG_VERSION"));
+    let curl = |url: String| exec(session, format!("curl -sSf --max-time 15 -A {} {}", sh_quote(&ua), sh_quote(&url)));
+    // "305-1961 Durnin Road" (unit-street) often finds nothing; then try it without the unit
+    let mut tries = vec![query.to_string()];
+    if let Some((street, rest)) = query.split_once(", ")
+        && let Some((unit, no_unit)) = street.split_once('-')
+        && [unit, no_unit].iter().all(|p| p.trim().chars().next().is_some_and(|c| c.is_ascii_digit()))
+    {
+        tries.push(format!("{}, {rest}", no_unit.trim()));
+    }
+    let mut spot = None;
+    {
+        let mut last = NOMINATIM_LAST.lock().await;
+        for q in &tries {
+            if let Some(t) = *last {
+                tokio::time::sleep(Duration::from_millis(1100).saturating_sub(t.elapsed())).await;
+            }
+            let out = curl(format!("https://nominatim.openstreetmap.org/search?format=json&limit=1&q={}", url_encode(q))).await;
+            *last = Some(std::time::Instant::now());
+            let found = out.and_then(|o| serde_json::from_slice::<Value>(&o).ok()).and_then(|v| {
+                let first = v.get(0)?;
+                Some((first["lat"].as_str()?.parse::<f64>().ok()?, first["lon"].as_str()?.parse::<f64>().ok()?))
+            });
+            if found.is_some() {
+                spot = found;
+                break;
+            }
+        }
+    }
+    let Some((lat, lon)) = spot else {
+        eprintln!("map: address not found (or the Mac's curl got no answer)"); // not the address itself: it's private
+        return None;
+    };
+    let (x, y, px, py) = tile_pos(lat, lon, TILE_ZOOM);
+    let ((c0, c1), (r0, r1)) = (tile_span(px), tile_span(py));
+    let mut tiles = vec![];
+    for r in r0..=r1 {
+        for c in c0..=c1 {
+            let url = format!("https://tile.openstreetmap.org/{TILE_ZOOM}/{}/{}.png", i64::from(x) + i64::from(c), i64::from(y) + i64::from(r));
+            match curl(url).await {
+                Some(png) if png.starts_with(&[0x89, b'P', b'N', b'G']) => tiles.push(png),
+                _ => {
+                    eprintln!("map: tile fetch failed");
+                    return None;
+                }
+            }
+        }
+    }
+    Some(MapData {
+        lat,
+        lon,
+        cols: (c1 - c0 + 1) as usize,
+        rows: (r1 - r0 + 1) as usize,
+        pin_x: px - f64::from(c0) * 256.0,
+        pin_y: py - f64::from(r0) * 256.0,
+        tiles,
+    })
+}
+
 /// What Messages saved about a shared link. `image` / `icon` are payload files on the Mac.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LinkPreview {
@@ -824,6 +931,10 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let bytes = fetch_image(&session, &path, if full { FULL_PX } else { CHAT_PX }).await;
             let _ = ev.send(Event::Image { path, full, bytes });
         }
+        Cmd::Map(query) => {
+            let data = map_for(&session, &query).await;
+            let _ = ev.send(Event::Map(query, data));
+        }
         Cmd::Configure(_) => {}
     }
 }
@@ -959,6 +1070,15 @@ mod link_tests {
         assert_eq!(p.image.as_deref(), Some("big.jpg"));
         assert_eq!(p.icon, None);
         assert_eq!(super::hex("0aff"), Some(vec![10, 255]));
+        // (-114.0631 + 180) / 360 * 2^16 = 12003.3
+        let (x, _, px, py) = super::tile_pos(51.0442, -114.0631, 16);
+        assert_eq!(x, 12003);
+        assert!((0.0..256.0).contains(&px) && (0.0..256.0).contains(&py));
+        // the 192 px window around a point always lies within the span of tiles asked for
+        assert_eq!(super::tile_span(128.0), (0, 0));
+        assert_eq!(super::tile_span(20.0), (-1, 0));
+        assert_eq!(super::tile_span(240.0), (0, 1));
+        assert_eq!(super::url_encode("1 Main St, A&B"), "1%20Main%20St%2C%20A%26B");
         let c = super::parse_contacts(
             "N|1:7|Sue Smith|\nN|1:9||Acme Co\nP|1:7|01FFD8FF00\nK|1:7|(403) 555-1234\nK|1:7|Sue@iCloud.com\nK|1:9|587 555 0000\n",
         );

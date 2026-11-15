@@ -67,6 +67,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
             Cmd::Contacts => ev.send(Event::Contacts(Default::default())),
             Cmd::Link(id) => ev.send(Event::Link(id, None)),
             Cmd::Image { path, full } => ev.send(Event::Image { path, full, bytes: None }),
+            Cmd::Map(q) => ev.send(Event::Map(q, None)),
             Cmd::Configure(_) => Ok(()),
         };
     }

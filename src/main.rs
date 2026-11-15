@@ -14,12 +14,13 @@ pub const APP_ID: &str = "io.github.theteknocat.BubbleFairy";
 pub const DEFAULT_IMSG: &str = "/opt/homebrew/bin/imsg";
 
 fn load_config(path: &Path) -> mac::Config {
-    let mut c = mac::Config { imsg: DEFAULT_IMSG.into(), ..Default::default() };
+    let mut c = mac::Config { imsg: DEFAULT_IMSG.into(), map_previews: true, ..Default::default() };
     for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
         match line.split_once('=') {
             Some(("host", v)) => c.host = v.trim().into(),
             Some(("user", v)) => c.user = v.trim().into(),
             Some(("imsg", v)) if !v.trim().is_empty() => c.imsg = v.trim().into(),
+            Some(("map_previews", v)) => c.map_previews = v.trim() == "1",
             _ => {}
         }
     }
@@ -28,7 +29,7 @@ fn load_config(path: &Path) -> mac::Config {
 
 pub fn save_config(path: &Path, c: &mac::Config) {
     let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\n", c.host, c.user, c.imsg));
+    let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\nmap_previews={}\n", c.host, c.user, c.imsg, u8::from(c.map_previews)));
 }
 
 /// Image cache size cap. Everything in it can be fetched again from the Mac.

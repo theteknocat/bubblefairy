@@ -43,8 +43,26 @@ enum PendingItem {
     File(PathBuf),
 }
 
+/// The map around an address, ready to show: tiles in a grid and where the address is on it.
+#[derive(Clone)]
+struct MapView {
+    lat: f64,
+    lon: f64,
+    cols: usize,
+    pin_x: f64,
+    pin_y: f64,
+    tiles: Vec<gdk::Texture>,
+}
+
+/// A card's map box waiting for its map, and the place the box opens when clicked.
+type MapWait = (glib::WeakRef<gtk::Overlay>, Rc<Cell<Option<(f64, f64)>>>);
+
 #[derive(Default)]
 struct State {
+    /// address text -> its map (None: couldn't be found, don't ask again this session)
+    maps: HashMap<String, Option<MapView>>,
+    /// card slots waiting for a map
+    waiting_map: HashMap<String, Vec<MapWait>>,
     /// messages on their way (shown faded with a spinner until the real one arrives)
     pending: Vec<Pending>,
     cfg: Config,
@@ -932,6 +950,18 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 // normally the real messages replace these within a second; if they never show, don't leave spinners
                 let u2 = u.clone();
                 glib::timeout_add_local_once(Duration::from_secs(20), move || drop_pending(&u2, token));
+            }
+        }
+        Event::Map(query, data) => {
+            let view = data.and_then(|d| {
+                let _ = std::fs::create_dir_all(&u.store.image_cache);
+                let _ = std::fs::write(map_cache_path(u, &query), map_cache_bytes(&d));
+                map_view(&d)
+            });
+            u.st.borrow_mut().maps.insert(query.clone(), view.clone());
+            let slots = u.st.borrow_mut().waiting_map.remove(&query).unwrap_or_default();
+            for (frame, loc) in slots.iter().filter_map(|(w, l)| Some((w.upgrade()?, l))) {
+                fill_map(&frame, loc, view.as_ref());
             }
         }
         Event::Link(row, p) => {
@@ -2255,6 +2285,23 @@ fn settings(u: &Rc<Ui>) {
         grid.attach(&hb, 1, 5, 1, 1);
     }
 
+    let privacy_title = gtk::Label::new(Some("Privacy"));
+    privacy_title.set_xalign(1.0);
+    privacy_title.set_valign(gtk::Align::Start);
+    let previews = gtk::CheckButton::with_label("Show map previews on contact cards");
+    previews.set_active(cfg.map_previews);
+    let why = gtk::Label::new(Some(
+        "Uses OpenStreetMap: a contact's postal address is sent there to find it on the map. When off, cards show a plain button that opens the address in your maps app.",
+    ));
+    why.set_wrap(true);
+    why.set_xalign(0.0);
+    why.add_css_class("dim");
+    let pbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    pbox.append(&previews);
+    pbox.append(&why);
+    grid.attach(&privacy_title, 0, 6, 1, 1);
+    grid.attach(&pbox, 1, 6, 1, 1);
+
     let save = gtk::Button::with_label("Save and connect");
     save.add_css_class("suggested-action");
     let cancel = gtk::Button::with_label("Cancel");
@@ -2262,7 +2309,7 @@ fn settings(u: &Rc<Ui>) {
     buttons.set_halign(gtk::Align::End);
     buttons.append(&cancel);
     buttons.append(&save);
-    grid.attach(&buttons, 0, 6, 2, 1);
+    grid.attach(&buttons, 0, 7, 2, 1);
     w.set_child(Some(&grid));
 
     let w2 = w.clone();
@@ -2273,7 +2320,7 @@ fn settings(u: &Rc<Ui>) {
         if imsg_path.is_empty() {
             imsg_path = crate::DEFAULT_IMSG.into();
         }
-        let cfg = Config { host: host.text().trim().to_string(), user: user.text().trim().to_string(), imsg: imsg_path };
+        let cfg = Config { host: host.text().trim().to_string(), user: user.text().trim().to_string(), imsg: imsg_path, map_previews: previews.is_active() };
         crate::save_config(&u2.store.config_file, &cfg);
         u2.st.borrow_mut().cfg = cfg.clone();
         u2.send(Cmd::Configure(cfg));
@@ -2481,13 +2528,27 @@ fn group_avatar(u: &Ui, title: &str, members: &[String], names: &HashMap<String,
 
 /// For the conversation header: the members' avatars in a row, each peeking out from under the one
 /// before it (the first on top), like a stack of photos. Up to four, then a "+N" circle.
-/// `pick` is told about each member's avatar (widget, handle, name) so it can make them clickable.
-fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<String, String>, pick: &dyn Fn(&gtk::Widget, &str, &str)) -> gtk::Widget {
+/// Called with true while a person's contact card is open, false when it closes.
+type CardOpen = Rc<dyn Fn(bool)>;
+/// Opens a contact card: (avatar to point at, handle, name, card-open callback).
+type OpenCard = Rc<dyn Fn(&gtk::Widget, &str, &str, CardOpen)>;
+type Slot = Rc<Cell<Option<usize>>>;
+
+/// `open_card` is called with (avatar widget, handle, name, card-open callback) when a member is clicked.
+/// An avatar the pointer is on, or that has its card open, is drawn on top of the stack.
+// GTK4's Overlay can't reorder children, so raising one means removing and re-adding it, which would
+// fire leave/enter events on it. The avatars therefore don't take events at all: the stack does the
+// hit-testing itself, by position.
+fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<String, String>, open_card: OpenCard) -> gtk::Widget {
     let n = members.len();
     if n < 2 {
         let w = avatar(u, title, members.first().map(String::as_str), false);
         if let Some(h) = members.first() {
-            pick(&w, h, title);
+            let (w2, h, t) = (w.clone(), h.clone(), title.to_string());
+            let g = gtk::GestureClick::new();
+            g.connect_released(move |_, _, _, _| open_card(&w2, &h, &t, Rc::new(|_| {})));
+            w.add_controller(g);
+            w.set_cursor_from_name(Some("pointer"));
         }
         return w;
     }
@@ -2500,23 +2561,83 @@ fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<Stri
     o.set_child(Some(&base));
     o.set_halign(gtk::Align::Start);
     o.set_valign(gtk::Align::Center);
+    o.set_cursor_from_name(Some("pointer"));
+    let ws: Rc<Vec<gtk::Widget>> = Rc::new(
+        (0..slots)
+            .map(|i| {
+                let w = if i < shown {
+                    mini_avatar(u, &names.get(&members[i]).cloned().unwrap_or_else(|| pretty_handle(&members[i])), &members[i], d)
+                } else {
+                    more_pill(n - shown, d)
+                };
+                w.add_css_class("stackav");
+                w.set_halign(gtk::Align::Start);
+                w.set_valign(gtk::Align::Center);
+                w.set_margin_start(i as i32 * step);
+                w.set_can_target(false);
+                w
+            })
+            .collect(),
+    );
     // added last = drawn on top, so go from the last slot back to the first
-    for i in (0..slots).rev() {
-        let w = if i < shown {
-            let h = &members[i];
-            let name = names.get(h).cloned().unwrap_or_else(|| pretty_handle(h));
-            let w = mini_avatar(u, &name, h, d);
-            pick(&w, h, &name);
-            w
-        } else {
-            more_pill(n - shown, d)
-        };
-        w.add_css_class("stackav");
-        w.set_halign(gtk::Align::Start);
-        w.set_valign(gtk::Align::Center);
-        w.set_margin_start(i as i32 * step);
-        o.add_overlay(&w);
+    for w in ws.iter().rev() {
+        o.add_overlay(w);
     }
+    let (hover, open): (Slot, Slot) = (Rc::default(), Rc::default());
+    // the usual order (first slot on top), then the slot with its card open, then the hovered one
+    let restack: Rc<dyn Fn()> = {
+        let (o, ws, hover, open) = (o.downgrade(), ws.clone(), hover.clone(), open.clone());
+        Rc::new(move || {
+            let Some(o) = o.upgrade() else { return };
+            let (hv, op) = (hover.get(), open.get());
+            let mut order: Vec<usize> = (0..ws.len()).rev().filter(|i| Some(*i) != hv && Some(*i) != op).collect();
+            order.extend(op);
+            if hv != op {
+                order.extend(hv);
+            }
+            for i in order {
+                o.remove_overlay(&ws[i]);
+                o.add_overlay(&ws[i]);
+            }
+        })
+    };
+    // which slot is under x: a raised one keeps what it covers, else the topmost (lowest index)
+    let hit = {
+        let (hover, open) = (hover.clone(), open.clone());
+        move |x: f64| -> Option<usize> {
+            let inside = |i: usize| x >= (i as i32 * step) as f64 && x < (i as i32 * step + d) as f64;
+            [hover.get(), open.get()].into_iter().flatten().find(|i| inside(*i)).or_else(|| (0..slots).find(|i| inside(*i)))
+        }
+    };
+    let m = gtk::EventControllerMotion::new();
+    let (hit2, hover2, restack2) = (hit.clone(), hover.clone(), restack.clone());
+    m.connect_motion(move |_, x, _| {
+        let now = hit2(x);
+        if now != hover2.get() {
+            hover2.set(now);
+            restack2();
+        }
+    });
+    let (hover2, restack2) = (hover.clone(), restack.clone());
+    m.connect_leave(move |_| {
+        if hover2.replace(None).is_some() {
+            restack2();
+        }
+    });
+    o.add_controller(m);
+    let g = gtk::GestureClick::new();
+    let (members, names, ws2) = (members.to_vec(), names.clone(), ws.clone());
+    g.connect_released(move |_, _, x, _| {
+        if let Some(i) = hit(x).filter(|i| *i < shown) {
+            let name = names.get(&members[i]).cloned().unwrap_or_else(|| pretty_handle(&members[i]));
+            let (open, restack) = (open.clone(), restack.clone());
+            open_card(&ws2[i], &members[i], &name, Rc::new(move |on| {
+                open.set(on.then_some(i));
+                restack();
+            }));
+        }
+    });
+    o.add_controller(g);
     o.upcast()
 }
 
@@ -2535,28 +2656,29 @@ fn chat_avatar(u: &Ui, chat: &Value, title: &str) -> gtk::Widget {
 
 /// The conversation header's avatar; each person in it opens their contact card when clicked.
 fn header_avatar(u: &Rc<Ui>, chat: &Value, title: &str) -> gtk::Widget {
-    let click = |w: &gtk::Widget, handle: &str, name: &str| {
-        let (u, w2, handle, name) = (u.clone(), w.clone(), handle.to_string(), name.to_string());
-        let g = gtk::GestureClick::new();
-        g.connect_released(move |_, _, _, _| show_card(&u, &w2, &handle, &name));
-        w.add_controller(g);
-        w.set_cursor_from_name(Some("pointer"));
+    let click: OpenCard = {
+        let u = u.clone();
+        Rc::new(move |w, handle, name, open| show_card(&u, w, handle, name, open))
     };
     if chat["is_group"].as_bool() == Some(true) {
         let members: Vec<String> = chat["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
         let names = u.st.borrow().names.clone();
-        stacked_avatars(u, title, &members, &names, &click)
+        stacked_avatars(u, title, &members, &names, click)
     } else {
         let w = avatar(u, title, direct_addr(chat), false);
         if let Some(h) = direct_addr(chat) {
-            click(&w, h, title);
+            let (w2, h, t) = (w.clone(), h.to_string(), title.to_string());
+            let g = gtk::GestureClick::new();
+            g.connect_released(move |_, _, _, _| click(&w2, &h, &t, Rc::new(|_| {})));
+            w.add_controller(g);
+            w.set_cursor_from_name(Some("pointer"));
         }
         w
     }
 }
 
 /// Drop a card in under `w` (a header avatar), with an arrow pointing at it.
-fn show_card(u: &Rc<Ui>, w: &gtk::Widget, handle: &str, name: &str) {
+fn show_card(u: &Rc<Ui>, w: &gtk::Widget, handle: &str, name: &str, open: CardOpen) {
     let pop = gtk::Popover::new();
     // On the window, not the header: a popover parented to a Box gets a slot among its children
     // and pushes them over.
@@ -2580,12 +2702,24 @@ fn show_card(u: &Rc<Ui>, w: &gtk::Widget, handle: &str, name: &str) {
         .child(&body)
         .build();
     pop.set_child(Some(&scroll));
-    pop.connect_closed(|p| {
+    let open2 = open.clone();
+    pop.connect_closed(move |p| {
+        open2(false);
         let p = p.clone();
         glib::idle_add_local_once(move || p.unparent());
     });
     pop.popup();
+    open(true);
     body.grab_focus(); // else the first button opens with a focus ring
+}
+
+/// A round icon button for the contact card.
+fn card_button(icon: &str, tip: &str) -> gtk::Button {
+    let b = gtk::Button::from_icon_name(icon);
+    b.add_css_class("card-action");
+    b.set_valign(gtk::Align::Center);
+    b.set_tooltip_text(Some(tip));
+    b
 }
 
 /// A person's details from the address book (or just their number when they aren't in it), with
@@ -2655,14 +2789,7 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
             col.append(&chips);
         }
         row.append(&col);
-        let button = |icon: &str, tip: &str| {
-            let b = gtk::Button::from_icon_name(icon);
-            b.add_css_class("card-action");
-            b.set_valign(gtk::Align::Center);
-            b.set_tooltip_text(Some(tip));
-            b
-        };
-        let msg = button("bf-message-symbolic", "Send a message");
+        let msg = card_button("bf-message-symbolic", "Send a message");
         let (u2, pop2, a2) = (u.clone(), pop.downgrade(), addr.clone());
         msg.connect_clicked(move |_| {
             if let Some(p) = pop2.upgrade() {
@@ -2672,7 +2799,7 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
         });
         row.append(&msg);
         if addr.contains('@') {
-            let mail = button("mail-message-new-symbolic", "Write an email");
+            let mail = card_button("mail-message-new-symbolic", "Write an email");
             let (pop2, win) = (pop.downgrade(), u.win.clone());
             mail.connect_clicked(move |_| {
                 if let Some(p) = pop2.upgrade() {
@@ -2685,8 +2812,12 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
         }
         root.append(&row);
     }
+    let previews = u.st.borrow().cfg.map_previews;
     for (label, lines) in places {
+        let query = lines.join(", ");
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let col = gtk::Box::new(gtk::Orientation::Vertical, 3);
+        col.set_hexpand(true);
         let l = gtk::Label::new(Some(&lines.join("\n")));
         l.set_xalign(0.0);
         l.set_wrap(true);
@@ -2696,7 +2827,20 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
             chips.append(&chip(&label, ""));
             col.append(&chips);
         }
-        root.append(&col);
+        row.append(&col);
+        if previews {
+            row.append(&map_box(u, &query)); // always there, so nothing shifts when the map arrives
+        } else {
+            // no lookups: the maps app searches for the address itself
+            let b = card_button("bf-map-pin-symbolic", "Show on a map");
+            let win = u.win.clone();
+            b.connect_clicked(move |_| {
+                let q = crate::mac::url_encode(&query);
+                open_map(&win, &format!("geo:0,0?q={q}"), &format!("https://www.openstreetmap.org/search?query={q}"));
+            });
+            row.append(&b);
+        }
+        root.append(&row);
     }
     if let Some(b) = birthday {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -2705,6 +2849,204 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
         root.append(&row);
     }
     root
+}
+
+// ---------- address maps ----------
+
+fn map_cache_path(u: &Ui, query: &str) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    query.hash(&mut h);
+    u.store.image_cache.join(format!("{:016x}.map", h.finish()))
+}
+
+/// "lat lon cols rows pin_x pin_y len len...\n" then the PNGs. The file name is a hash, but it still
+/// says where a contact lives.
+fn map_cache_bytes(d: &crate::mac::MapData) -> Vec<u8> {
+    let lens: Vec<String> = d.tiles.iter().map(|t| t.len().to_string()).collect();
+    let mut b = format!("{} {} {} {} {} {} {}\n", d.lat, d.lon, d.cols, d.rows, d.pin_x, d.pin_y, lens.join(" ")).into_bytes();
+    for t in &d.tiles {
+        b.extend_from_slice(t);
+    }
+    b
+}
+
+fn map_view(d: &crate::mac::MapData) -> Option<MapView> {
+    let tiles: Vec<gdk::Texture> = d.tiles.iter().filter_map(|t| texture(t)).collect();
+    (tiles.len() == d.tiles.len() && !tiles.is_empty()).then(|| MapView { lat: d.lat, lon: d.lon, cols: d.cols, pin_x: d.pin_x, pin_y: d.pin_y, tiles })
+}
+
+fn read_map_cache(u: &Ui, query: &str) -> Option<MapView> {
+    let b = std::fs::read(map_cache_path(u, query)).ok()?;
+    let nl = b.iter().position(|c| *c == b'\n')?;
+    let head: Vec<&str> = std::str::from_utf8(&b[..nl]).ok()?.split(' ').collect();
+    let num = |i: usize| head.get(i)?.parse::<f64>().ok();
+    let (cols, rows) = (num(2)? as usize, num(3)? as usize);
+    let mut at = nl + 1;
+    let mut tiles = vec![];
+    for i in 0..cols * rows {
+        let len = num(6 + i)? as usize;
+        tiles.push(b.get(at..at + len)?.to_vec());
+        at += len;
+    }
+    map_view(&crate::mac::MapData { lat: num(0)?, lon: num(1)?, cols, rows, pin_x: num(4)?, pin_y: num(5)?, tiles })
+}
+
+const MAP_BOX: i32 = 96;
+
+/// A rounded square next to a postal address: a map pin until the map arrives (with a small spinner
+/// in the corner while it's being found, or "no preview available" if it can't be), then the map.
+/// Clicking opens the address in a maps app, whichever state it's in.
+fn map_box(u: &Rc<Ui>, query: &str) -> gtk::Overlay {
+    let frame = gtk::Overlay::new();
+    frame.add_css_class("map-box");
+    frame.set_overflow(gtk::Overflow::Hidden);
+    frame.set_size_request(MAP_BOX, MAP_BOX);
+    frame.set_valign(gtk::Align::Start);
+    // set explicitly: the pin icon below expands, and expand flags would otherwise pass up and
+    // stretch the box while it's a placeholder
+    frame.set_hexpand(false);
+    frame.set_vexpand(false);
+    frame.set_halign(gtk::Align::End);
+    frame.set_cursor_from_name(Some("pointer"));
+    frame.set_tooltip_text(Some("Show on a map"));
+    // the box's size comes from this base alone: the map goes in as an overlay, so it can't stretch the box
+    let base = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    base.set_size_request(MAP_BOX, MAP_BOX);
+    // the pin, plus "no preview available" under it if that turns out to be so, centred together
+    let group = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    group.set_valign(gtk::Align::Center);
+    group.set_vexpand(true);
+    let pin = gtk::Image::from_icon_name("bf-map-pin-symbolic");
+    pin.set_pixel_size(36);
+    pin.add_css_class("dim");
+    pin.set_halign(gtk::Align::Center);
+    group.append(&pin);
+    let note = gtk::Label::new(Some("no preview available"));
+    note.set_widget_name("map-note");
+    note.add_css_class("map-note");
+    note.set_wrap(true);
+    note.set_justify(gtk::Justification::Center);
+    note.set_max_width_chars(12);
+    note.set_halign(gtk::Align::Center);
+    note.set_visible(false);
+    group.append(&note);
+    base.append(&group);
+    frame.set_child(Some(&base));
+    let spin = gtk::Spinner::new();
+    spin.set_spinning(true);
+    spin.set_widget_name("map-spin");
+    spin.set_size_request(12, 12);
+    spin.set_halign(gtk::Align::End);
+    spin.set_valign(gtk::Align::Start);
+    spin.set_margin_top(6);
+    spin.set_margin_end(6);
+    frame.add_overlay(&spin);
+    let attr = gtk::Label::new(Some("© OpenStreetMap"));
+    attr.set_widget_name("map-attr");
+    attr.add_css_class("map-attr");
+    attr.set_halign(gtk::Align::End);
+    attr.set_valign(gtk::Align::End);
+    attr.set_visible(false);
+    frame.add_overlay(&attr);
+
+    let loc: Rc<Cell<Option<(f64, f64)>>> = Rc::default();
+    let (win, loc2, q) = (u.win.clone(), loc.clone(), query.to_string());
+    let g = gtk::GestureClick::new();
+    g.connect_released(move |_, _, _, _| match loc2.get() {
+        Some((lat, lon)) => open_map(&win, &format!("geo:{lat},{lon}"), // no q=: apps search for q, and "lat,lon" matches nothing
+             &format!("https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=17/{lat}/{lon}")),
+        None => {
+            let q = crate::mac::url_encode(&q); // not found (yet): the maps app searches for the address itself
+            open_map(&win, &format!("geo:0,0?q={q}"), &format!("https://www.openstreetmap.org/search?query={q}"));
+        }
+    });
+    frame.add_controller(g);
+
+    let known = u.st.borrow().maps.get(query).cloned();
+    let known = known.or_else(|| {
+        let v = read_map_cache(u, query)?;
+        u.st.borrow_mut().maps.insert(query.to_string(), Some(v.clone()));
+        Some(Some(v))
+    });
+    match known {
+        Some(v) => fill_map(&frame, &loc, v.as_ref()),
+        None => {
+            let first = {
+                let mut st = u.st.borrow_mut();
+                let w = st.waiting_map.entry(query.to_string()).or_default();
+                w.push((frame.downgrade(), loc));
+                w.len() == 1
+            };
+            if first {
+                u.send(Cmd::Map(query.to_string()));
+            }
+        }
+    }
+    frame
+}
+
+/// The map arrived (or couldn't be had): swap it in for the pin and stop the spinner.
+fn fill_map(frame: &gtk::Overlay, loc: &Rc<Cell<Option<(f64, f64)>>>, map: Option<&MapView>) {
+    fn find(w: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
+        let mut c = w.first_child();
+        while let Some(ch) = c {
+            if ch.widget_name() == name {
+                return Some(ch);
+            }
+            if let Some(f) = find(&ch, name) {
+                return Some(f);
+            }
+            c = ch.next_sibling();
+        }
+        None
+    }
+    let part = |name: &str| find(frame.upcast_ref(), name);
+    if let Some(w) = part("map-spin") {
+        w.set_visible(false);
+    }
+    let Some(m) = map else {
+        if let Some(w) = part("map-note") {
+            w.set_visible(true);
+        }
+        return;
+    };
+    // the tiles are 256 px; shown at half size, so the 192 px window around the pin fills the box
+    let half = 128;
+    let (ox, oy) = (m.pin_x / 2.0 - f64::from(MAP_BOX) / 2.0, m.pin_y / 2.0 - f64::from(MAP_BOX) / 2.0);
+    let fixed = gtk::Fixed::new();
+    for (i, t) in m.tiles.iter().enumerate() {
+        let pic = gtk::Picture::for_paintable(t);
+        pic.set_can_shrink(true);
+        pic.set_size_request(half, half);
+        fixed.put(&pic, (i % m.cols) as f64 * f64::from(half) - ox, (i / m.cols) as f64 * f64::from(half) - oy);
+    }
+    let pin = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    pin.add_css_class("map-pin");
+    pin.set_size_request(14, 14);
+    fixed.put(&pin, f64::from(MAP_BOX) / 2.0 - 7.0, f64::from(MAP_BOX) / 2.0 - 7.0);
+    if let Some(base) = frame.child().and_downcast::<gtk::Box>()
+        && let Some(icon) = base.first_child()
+    {
+        base.remove(&icon);
+    }
+    frame.add_overlay(&fixed);
+    if let Some(w) = part("map-attr") {
+        w.set_visible(true);
+        frame.remove_overlay(&w); // back on top of the map
+        frame.add_overlay(&w);
+    }
+    loc.set(Some((m.lat, m.lon)));
+}
+
+/// The default maps app via a `geo:` link (GNOME Maps, Marble...); the OpenStreetMap site if none takes it.
+fn open_map(win: &gtk::ApplicationWindow, geo: &str, web: &str) {
+    let (win2, web) = (win.clone(), web.to_string());
+    gtk::UriLauncher::new(geo).launch(Some(win), gio::Cancellable::NONE, move |r| {
+        if r.is_err() {
+            gtk::UriLauncher::new(&web).launch(Some(&win2), gio::Cancellable::NONE, |_| {});
+        }
+    });
 }
 
 /// Open the chat with this number or email, or start a new one to it.
