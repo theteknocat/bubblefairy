@@ -29,7 +29,8 @@ pub enum Cmd {
     Older { id: i64, before: String },
     /// `to`: the other person in a 1:1 chat, sent directly so Messages picks the service (see handle)
     /// `files` go first, one message each, then `text` (if any) as its own message
-    Send { chat_id: i64, to: Option<String>, text: String, files: Vec<PathBuf> },
+    /// `token` names this send, so the answer (`Event::Sent`) can be matched to its waiting bubbles
+    Send { chat_id: i64, to: Option<String>, text: String, files: Vec<PathBuf>, token: u64 },
     /// `full`: the viewer wants the big version (up to 4096 px) instead of the 1200 px chat copy
     Image { path: String, full: bool },
     /// Apple's link preview stored on this message row
@@ -53,7 +54,7 @@ pub enum Event {
     /// The watch stream lost messages; reload everything.
     Resync,
     /// on failure, `text` and `files` are what didn't go out (to put back in the composer)
-    Sent { text: String, files: Vec<PathBuf>, err: Option<String> },
+    Sent { text: String, files: Vec<PathBuf>, err: Option<String>, token: u64 },
     SendSlow,
     Image { path: String, full: bool, bytes: Option<Vec<u8>> },
     Link(i64, Option<LinkPreview>),
@@ -646,7 +647,7 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
                 let _ = ev.send(Event::Preview(id, m));
             }
         }
-        Cmd::Send { chat_id, to, text, files } => {
+        Cmd::Send { chat_id, to, text, files, token } => {
             // chat.db keeps a 1:1 chat's service from whenever it was set (an iMessage chat with some
             // SMS history can stay "SMS"), and a chat_id send uses it. A direct send with "auto" lets
             // Messages choose, as it does on the Mac.
@@ -677,7 +678,7 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
                 }
             }
             let files_left = if err.is_some() { files[sent..].to_vec() } else { Vec::new() };
-            let _ = ev.send(Event::Sent { text: if err.is_some() { text_left } else { String::new() }, files: files_left, err });
+            let _ = ev.send(Event::Sent { text: if err.is_some() { text_left } else { String::new() }, files: files_left, err, token });
         }
         Cmd::Contacts => {
             let _ = ev.send(Event::Contacts(fetch_contacts(&session).await.unwrap_or_default()));
@@ -765,8 +766,8 @@ async fn wait_offline(cmds: &mut mpsc::UnboundedReceiver<Cmd>, ev: &mpsc::Unboun
             _ = &mut sleep => return None,
             c = cmds.recv() => match c? {
                 Cmd::Configure(c) => return Some(c),
-                Cmd::Send { text, files, .. } => {
-                    let _ = ev.send(Event::Sent { text, files, err: Some("not connected to the Mac".into()) });
+                Cmd::Send { text, files, token, .. } => {
+                    let _ = ev.send(Event::Sent { text, files, err: Some("not connected to the Mac".into()), token });
                 }
                 _ => {}
             },

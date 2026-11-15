@@ -29,8 +29,24 @@ pub struct Store {
     pub public_key: String,
 }
 
+/// A message that's been handed to the Mac but hasn't come back through the live stream yet.
+#[derive(Clone)]
+struct Pending {
+    token: u64,
+    chat_id: i64,
+    item: PendingItem,
+}
+
+#[derive(Clone)]
+enum PendingItem {
+    Text(String),
+    File(PathBuf),
+}
+
 #[derive(Default)]
 struct State {
+    /// messages on their way (shown faded with a spinner until the real one arrives)
+    pending: Vec<Pending>,
     cfg: Config,
     chats: Vec<Value>,
     names: HashMap<String, String>,
@@ -111,6 +127,7 @@ pub struct Ui {
     render_queued: Cell<bool>,
     /// writing a new message (To field showing, no chat selected)
     new_mode: Cell<bool>,
+    send_token: Cell<u64>,
 }
 
 impl Ui {
@@ -430,6 +447,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         stacks: RefCell::default(),
         render_queued: Cell::new(false),
         new_mode: Cell::new(false),
+        send_token: Cell::new(0),
     });
 
     // wiring
@@ -890,17 +908,23 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             "Still sending… If this is your first message from BubbleFairy, check your Mac: it may be asking whether to allow control of Messages.",
             false,
         ),
-        Event::Sent { text, files, err } => {
+        Event::Sent { text, files, err, token } => {
             if let Some(err) = err {
                 u.st.borrow_mut().new_pending = None;
+                drop_pending(u, token);
                 show_banner(u, &format!("Message not sent: {err}"), false);
                 let buf = u.compose.buffer();
                 if buf.char_count() == 0 {
                     buf.set_text(&text); // nothing typed is lost
                 }
                 add_files(u, files); // nor any file that didn't go
-            } else if !u.banner_offline.get() {
-                u.banner.set_reveal_child(false);
+            } else {
+                if !u.banner_offline.get() {
+                    u.banner.set_reveal_child(false);
+                }
+                // normally the real messages replace these within a second; if they never show, don't leave spinners
+                let u2 = u.clone();
+                glib::timeout_add_local_once(Duration::from_secs(20), move || drop_pending(&u2, token));
             }
         }
         Event::Link(row, p) => {
@@ -943,10 +967,53 @@ fn on_event(u: &Rc<Ui>, e: Event) {
     }
 }
 
+/// Forget a send's waiting bubbles (it failed, or never showed up).
+fn drop_pending(u: &Rc<Ui>, token: u64) {
+    let (had, sel) = {
+        let mut st = u.st.borrow_mut();
+        let before = st.pending.len();
+        st.pending.retain(|p| p.token != token);
+        (before != st.pending.len(), st.sel)
+    };
+    if had && sel.is_some() {
+        render_conv(u);
+    }
+}
+
+/// My own message came back through the live stream: its waiting bubble is replaced by the real one.
+fn settle_pending(st: &mut State, cid: i64, m: &Value) {
+    let text = clean_text(m);
+    let has_files = m["attachments"].as_array().is_some_and(|a| !a.is_empty());
+    let name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let at = st.pending.iter().position(|p| {
+        p.chat_id == cid
+            && match &p.item {
+                PendingItem::Text(t) => !text.is_empty() && *t == text,
+                PendingItem::File(f) => {
+                    has_files
+                        && m["attachments"].as_array().into_iter().flatten().any(|a| a["transfer_name"].as_str().is_none_or(|n| n == name(f)))
+                }
+            }
+    });
+    if let Some(i) = at {
+        let gone = st.pending.remove(i);
+        if let PendingItem::File(f) = gone.item {
+            // the real photo shows the local picture at once instead of waiting for the fetch back from the Mac
+            let att = m["attachments"].as_array().into_iter().flatten().find(|a| a["transfer_name"].as_str().is_none_or(|n| n == name(&f)));
+            if let (Some(path), Ok(t)) = (att.and_then(|a| a["original_path"].as_str()).filter(|p| !p.is_empty()), gdk::Texture::from_filename(&f)) {
+                st.textures.entry(path.to_string()).or_insert(t);
+            }
+        }
+    }
+}
+
 fn on_message(u: &Rc<Ui>, m: Value) {
     learn_names(u, std::slice::from_ref(&m));
     let Some(cid) = m["chat_id"].as_i64() else { return };
     let mutation = m["type"].as_str().is_some();
+    if !mutation && m["is_from_me"].as_bool() == Some(true) {
+        settle_pending(&mut u.st.borrow_mut(), cid, &m);
+    }
     let (is_sel, known_chat) = {
         let mut st = u.st.borrow_mut();
         if let Some(h) = st.hist.get_mut(&cid) {
@@ -1115,7 +1182,20 @@ fn send_now(u: &Rc<Ui>) {
     let files = take_files(u);
     buf.set_text(""); // also disables the send button (buffer changed)
     u.stick_bottom.set(true);
-    u.send(Cmd::Send { chat_id, to, text, files }); // the messages come back through the live stream
+    let token = u.send_token.get() + 1;
+    u.send_token.set(token);
+    {
+        // a faded bubble per message until the real one comes back through the live stream
+        let mut st = u.st.borrow_mut();
+        for f in &files {
+            st.pending.push(Pending { token, chat_id, item: PendingItem::File(f.clone()) });
+        }
+        if !text.is_empty() {
+            st.pending.push(Pending { token, chat_id, item: PendingItem::Text(text.clone()) });
+        }
+    }
+    u.send(Cmd::Send { chat_id, to, text, files, token });
+    render_conv(u);
 }
 
 // ---------- attachments ----------
@@ -1330,7 +1410,7 @@ fn send_new(u: &Rc<Ui>, text: &str) {
     let files = take_files(u);
     u.compose.buffer().set_text("");
     u.st.borrow_mut().new_pending = Some(to.clone());
-    u.send(Cmd::Send { chat_id: 0, to: Some(to), text: text.to_string(), files });
+    u.send(Cmd::Send { chat_id: 0, to: Some(to), text: text.to_string(), files, token: 0 });
     // the chat opens when the Mac's chat list includes it (Event::Chats)
 }
 
@@ -1509,6 +1589,10 @@ fn render_conv(u: &Rc<Ui>) {
         row.append(&gtk::Label::new(Some("Loading more messages…")));
         u.msgs.append(&row);
     }
+    let pending: Vec<Pending> = {
+        let st = u.st.borrow();
+        st.pending.iter().filter(|p| Some(p.chat_id) == st.sel).cloned().collect()
+    };
     let times: Vec<Option<i64>> = msgs.iter().map(|m| m["created_at"].as_str().and_then(local).map(|d| d.to_unix())).collect();
     let who = |m: &Value| (m["is_from_me"].as_bool() == Some(true), m["sender"].as_str().unwrap_or("").to_string());
     for (i, m) in msgs.iter().enumerate() {
@@ -1529,6 +1613,8 @@ fn render_conv(u: &Rc<Ui>) {
         // a "run" = same sender, close together: shares one name label and one avatar
         let run_prev = !sep && i > 0 && who(&msgs[i - 1]) == who(m) && gap(i - 1, i) < 180;
         let run_next = i + 1 < msgs.len() && who(&msgs[i + 1]) == who(m) && gap(i, i + 1) < 180 && day(times[i]) == day(times[i + 1]);
+        // my messages still on their way continue my last run: no tail on the one above them
+        let run_next = run_next || (i + 1 == msgs.len() && me && !pending.is_empty());
         if group && !me && !run_prev {
             let n = gtk::Label::new(Some(&sender_name(m, &names)));
             n.add_css_class("sender-name");
@@ -1560,6 +1646,21 @@ fn render_conv(u: &Rc<Ui>) {
             line.append(&part);
             u.msgs.append(&line);
         }
+    }
+    for (i, p) in pending.iter().enumerate() {
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        line.add_css_class("msg-line");
+        if i + 1 < pending.len() {
+            line.add_css_class("tight");
+        }
+        line.set_halign(gtk::Align::End);
+        let spin = gtk::Spinner::new();
+        spin.start();
+        spin.set_valign(gtk::Align::Center);
+        spin.set_tooltip_text(Some("Sending…"));
+        line.append(&spin);
+        line.append(&pending_bubble(p, sms, i + 1 == pending.len()));
+        u.msgs.append(&line);
     }
     let photos = u.st.borrow().photos.clone(); // the viewer's hooks borrow State
     u.viewer.refresh(photos);
@@ -1595,6 +1696,36 @@ fn load_seen(path: &std::path::Path) -> HashMap<i64, i64> {
         .filter_map(|l| l.split_once('='))
         .filter_map(|(c, m)| Some((c.parse().ok()?, m.parse().ok()?)))
         .collect()
+}
+
+/// A message on its way: faded, drawn like the real one will be (blue or green, tail on the last).
+fn pending_bubble(p: &Pending, sms: bool, last: bool) -> gtk::Widget {
+    let look = bubble::Look { me: true, sms, tail: last };
+    let w: gtk::Widget = match &p.item {
+        PendingItem::File(f) if is_image("", &f.to_string_lossy()) && gdk::Texture::from_filename(f).is_ok() => {
+            let t = gdk::Texture::from_filename(f).expect("checked");
+            let b = bubble::Bubble::photo(look, 160, 120);
+            show_texture(&b, &t);
+            b.upcast()
+        }
+        item => {
+            let b = bubble::Bubble::new(look);
+            let text = match item {
+                PendingItem::Text(t) => t.clone(),
+                PendingItem::File(f) => format!("📎 {}", f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+            };
+            let l = gtk::Label::new(Some(&text));
+            l.set_wrap(true);
+            l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            l.set_xalign(0.0);
+            l.set_max_width_chars(60);
+            l.add_css_class("text");
+            b.add(&l);
+            b.upcast()
+        }
+    };
+    w.add_css_class("pending");
+    w
 }
 
 /// Photos to show for a message. RCS keeps a converted copy next to a missing original, and some rows

@@ -58,10 +58,10 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
             Cmd::Chats => ev.send(Event::Chats(chats())),
             Cmd::History(id) => ev.send(Event::History(id, history(id))),
             Cmd::Preview(id) => ev.send(Event::Preview(id, history(id).pop().unwrap())),
-            Cmd::Send { chat_id, text, .. } => {
+            Cmd::Send { chat_id, text, token, .. } => {
                 next += 1;
                 let _ = ev.send(Event::Message(msg(chat_id, next, true, "", "", 0, &text)));
-                ev.send(Event::Sent { text: String::new(), files: Vec::new(), err: None })
+                ev.send(Event::Sent { text: String::new(), files: Vec::new(), err: None, token })
             }
             Cmd::Older { id, .. } => ev.send(Event::Older(id, Vec::new())),
             Cmd::Contacts => ev.send(Event::Contacts(Default::default())),
