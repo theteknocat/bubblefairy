@@ -48,6 +48,8 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 
 ### Phase 1.1
 
+- New 1:1 conversations: a "new message" button (Ctrl+N) swaps the conversation header for a To field. As you type, it suggests people you already have chats with (picking one opens that chat). Otherwise it takes a phone number or email, and the first message goes out as `send {to, service: "auto"}`; the app opens the new chat once it appears. imsg can't list the Mac's Contacts, so there's no address-book search.
+  - New group chats aren't possible: imsg's `chats.create` needs its bridge, which needs SIP off (out of scope).
 - Sending attachments, and other attachment types (video, PDF, audio).
 - Link previews:
   - Use Apple's own rich-link data when imsg exposes it.
@@ -84,7 +86,7 @@ The wizard does everything else:
 
 ### Later
 
-Reactions/tapbacks, starting new conversations, search, marking chats read, contact photos, running in the background or in the tray. A Mac companion app is a possibility. An iPhone-only route is unlikely, because iOS gives third-party apps no access to iMessage (not researched).
+Reactions/tapbacks, search, marking chats read, contact photos, running in the background or in the tray. A Mac companion app is a possibility. An iPhone-only route is unlikely, because iOS gives third-party apps no access to iMessage (not researched).
 
 ## Design direction
 

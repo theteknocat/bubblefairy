@@ -47,6 +47,8 @@ struct State {
     /// chats with a history request in flight (header spinner)
     loading: HashSet<i64>,
     older_loading: bool,
+    /// address a new conversation's first message went to; its chat opens once it shows up
+    new_pending: Option<String>,
     /// chats whose whole history is already loaded
     no_more: HashSet<i64>,
 }
@@ -71,6 +73,11 @@ pub struct Ui {
     send_btn: gtk::Button,
     side_stack: gtk::Stack,
     head_spin: gtk::Spinner,
+    head_titles: gtk::Box,
+    to_row: gtk::Box,
+    to_entry: gtk::Entry,
+    suggest: gtk::ListBox,
+    suggest_scroll: gtk::ScrolledWindow,
     status: gtk::Button,
     status_text: gtk::Label,
     banner: gtk::Revealer,
@@ -88,6 +95,8 @@ pub struct Ui {
     group: Cell<bool>,
     /// re-lay photo stacks when the chat width changes (rebuilt with the conversation)
     stacks: RefCell<Vec<Rc<dyn Fn()>>>,
+    /// writing a new message (To field showing, no chat selected)
+    new_mode: Cell<bool>,
 }
 
 impl Ui {
@@ -131,7 +140,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let side_title = gtk::Label::new(Some("Conversations"));
     side_title.add_css_class("side-title");
     side_title.set_xalign(0.0);
-    sidebar.append(&side_title);
+    side_title.set_hexpand(true);
+    let new_btn = gtk::Button::from_icon_name("document-edit-symbolic");
+    new_btn.set_tooltip_text(Some("New message (Ctrl+N)"));
+    new_btn.add_css_class("head-btn");
+    new_btn.add_css_class("new-btn");
+    new_btn.set_valign(gtk::Align::Center);
+    new_btn.set_action_name(Some("app.new-message"));
+    let side_head = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    side_head.append(&side_title);
+    side_head.append(&new_btn);
+    sidebar.append(&side_head);
     let side_loading = gtk::Box::new(gtk::Orientation::Vertical, 10);
     side_loading.set_valign(gtk::Align::Center);
     side_loading.set_halign(gtk::Align::Center);
@@ -172,6 +191,22 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     conv_head.append(&head_avatar);
     conv_head.append(&titles);
     conv_head.append(&head_spin);
+    // new message: the header becomes a To field, the message area a list of people to pick
+    let to_label = gtk::Label::new(Some("To:"));
+    to_label.add_css_class("to-label");
+    let to_entry = gtk::Entry::builder().placeholder_text("Name, phone number or email").hexpand(true).build();
+    to_entry.add_css_class("to-entry");
+    let to_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    to_row.set_hexpand(true);
+    to_row.append(&to_label);
+    to_row.append(&to_entry);
+    to_row.set_visible(false);
+    conv_head.append(&to_row);
+    let suggest = gtk::ListBox::new();
+    suggest.add_css_class("chat-list");
+    suggest.add_css_class("suggest");
+    let suggest_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&suggest).build();
+    suggest_scroll.set_visible(false);
 
     let msgs = gtk::Box::new(gtk::Orientation::Vertical, 0);
     msgs.add_css_class("msgs");
@@ -250,6 +285,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
 
     let conv = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conv.append(&conv_head);
+    conv.append(&suggest_scroll);
     conv.append(&scroller);
     conv.append(&composer);
 
@@ -317,6 +353,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         send_btn,
         side_stack,
         head_spin,
+        head_titles: titles,
+        to_row,
+        to_entry,
+        suggest,
+        suggest_scroll,
         status,
         status_text,
         banner,
@@ -330,6 +371,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         chats_queued: Cell::new(false),
         group: Cell::new(false),
         stacks: RefCell::default(),
+        new_mode: Cell::new(false),
     });
 
     // wiring
@@ -396,6 +438,42 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         }
     });
 
+    let new_msg = gio::SimpleAction::new("new-message", None);
+    let u = ui.clone();
+    new_msg.connect_activate(move |_, _| start_new(&u));
+    app.add_action(&new_msg);
+    app.set_accels_for_action("app.new-message", &["<Control>n"]);
+    let u = ui.clone();
+    ui.to_entry.connect_changed(move |_| render_suggest(&u));
+    let u = ui.clone();
+    ui.to_entry.connect_activate(move |e| {
+        // Enter: open the top suggestion, or move on to the message if it's a new address
+        match ui_first_suggestion(&u) {
+            Some(id) if !e.text().trim().is_empty() => open_chat(&u, id),
+            _ if is_addr(&e.text()) => {
+                u.compose.grab_focus();
+            }
+            _ => {}
+        }
+    });
+    let u = ui.clone();
+    ui.suggest.connect_row_activated(move |_, row| {
+        if let Ok(id) = row.widget_name().parse::<i64>() {
+            open_chat(&u, id);
+        }
+    });
+    let esc = gtk::EventControllerKey::new();
+    let u = ui.clone();
+    esc.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape && u.new_mode.get() {
+            end_new(&u);
+            u.stack.set_visible_child_name("empty");
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    ui.to_entry.add_controller(esc);
+
     let open = gio::SimpleAction::new("open-chat", Some(glib::VariantTy::INT64));
     let u = ui.clone();
     open.connect_activate(move |_, p| {
@@ -450,6 +528,14 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     win.present();
     if let Ok(t) = std::env::var("BF_DRAFT") {
         ui.compose.buffer().set_text(&t.replace("\\n", "\n")); // dev aid: prefill the composer
+    }
+    if let Ok(t) = std::env::var("BF_NEW") {
+        // dev aid: open the new-message view with this typed in the To field
+        let u = ui.clone();
+        glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+            start_new(&u);
+            u.to_entry.set_text(&t);
+        });
     }
     if std::env::var_os("BF_VIEW").is_some() {
         // dev aid: open the viewer on the newest loaded photo shortly before BF_SHOT fires
@@ -537,8 +623,21 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 let st = u.st.borrow();
                 // BF_CHAT=<id>: dev aid to open a given chat first
                 let want = std::env::var("BF_CHAT").ok().and_then(|v| v.parse::<i64>().ok());
-                if st.sel.is_none() { want.or_else(|| st.chats.first().and_then(|c| c["id"].as_i64())) } else { None }
+                if st.sel.is_none() && !u.new_mode.get() {
+                    want.or_else(|| st.chats.first().and_then(|c| c["id"].as_i64()))
+                } else {
+                    None
+                }
             };
+            // a new conversation's chat has appeared: open it
+            let new_chat = {
+                let st = u.st.borrow();
+                st.new_pending.as_deref().and_then(|a| find_direct_chat(&st.chats, a))
+            };
+            if let Some(id) = new_chat {
+                u.st.borrow_mut().new_pending = None;
+                open_chat(u, id);
+            }
             if let Some(id) = first {
                 select_in_list(u, id);
                 select(u, id);
@@ -599,6 +698,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
         ),
         Event::Sent { text, err, .. } => {
             if let Some(err) = err {
+                u.st.borrow_mut().new_pending = None;
                 show_banner(u, &format!("Message not sent: {err}"), false);
                 let buf = u.compose.buffer();
                 if buf.char_count() == 0 {
@@ -732,6 +832,7 @@ fn select_in_list(u: &Ui, id: i64) {
 }
 
 fn select(u: &Rc<Ui>, id: i64) {
+    end_new(u);
     u.viewer.close_now();
     u.st.borrow_mut().sel = Some(id);
     u.stick_bottom.set(true);
@@ -782,24 +883,195 @@ fn load_older(u: &Rc<Ui>) {
     glib::idle_add_local_once(move || render_conv(&u2)); // shows the "Loading more" row; not inside a scroll signal
 }
 
-fn send_now(u: &Ui) {
+fn send_now(u: &Rc<Ui>) {
     let buf = u.compose.buffer();
     let text = buf.text(&buf.start_iter(), &buf.end_iter(), false).trim().to_string();
-    let Some(chat_id) = u.st.borrow().sel else { return };
     if text.is_empty() {
         return;
     }
+    if u.new_mode.get() {
+        send_new(u, &text);
+        return;
+    }
+    let Some(chat_id) = u.st.borrow().sel else { return };
     let to = {
         let st = u.st.borrow();
         st.chats
             .iter()
             .find(|c| c["id"].as_i64() == Some(chat_id))
             .filter(|c| c["is_group"].as_bool() != Some(true))
-            .and_then(|c| c["identifier"].as_str().map(String::from))
+            .and_then(|c| direct_addr(c).map(String::from))
     };
     buf.set_text(""); // also disables the send button (buffer changed)
     u.stick_bottom.set(true);
     u.send(Cmd::Send { chat_id, to, text }); // the message itself comes back through the live stream
+}
+
+// ---------- new conversation ----------
+
+fn start_new(u: &Rc<Ui>) {
+    u.viewer.close_now();
+    u.st.borrow_mut().sel = None;
+    u.selecting.set(true);
+    u.chat_list.unselect_all();
+    u.selecting.set(false);
+    u.new_mode.set(true);
+    for w in [u.head_avatar.upcast_ref::<gtk::Widget>(), u.head_titles.upcast_ref(), u.head_spin.upcast_ref(), u.scroller.upcast_ref()] {
+        w.set_visible(false);
+    }
+    u.to_row.set_visible(true);
+    u.suggest_scroll.set_visible(true);
+    u.to_entry.set_text("");
+    u.compose_hint.set_text("Message");
+    u.send_btn.remove_css_class("sms");
+    u.send_btn.add_css_class("imessage");
+    u.stack.set_visible_child_name("conv");
+    render_suggest(u);
+    u.to_entry.grab_focus();
+}
+
+fn end_new(u: &Ui) {
+    if !u.new_mode.replace(false) {
+        return;
+    }
+    u.head_avatar.set_visible(true);
+    u.head_titles.set_visible(true);
+    u.scroller.set_visible(true);
+    u.to_row.set_visible(false);
+    u.suggest_scroll.set_visible(false);
+    update_spinner(u);
+}
+
+fn open_chat(u: &Rc<Ui>, id: i64) {
+    select_in_list(u, id);
+    select(u, id);
+}
+
+/// 1:1 chats matching what's typed in the To field: (chat id, name, address).
+fn suggestions(u: &Ui) -> Vec<(i64, String, String)> {
+    let q = u.to_entry.text().trim().to_lowercase();
+    let st = u.st.borrow();
+    st.chats
+        .iter()
+        .filter(|c| c["is_group"].as_bool() != Some(true))
+        .filter_map(|c| Some((c["id"].as_i64()?, chat_title(c, &st.names), direct_addr(c)?.to_string())))
+        .filter(|(_, name, addr)| q.is_empty() || name.to_lowercase().contains(&q) || addr.to_lowercase().contains(&q) || same_addr(&q, addr))
+        .take(8)
+        .collect()
+}
+
+fn ui_first_suggestion(u: &Ui) -> Option<i64> {
+    suggestions(u).first().map(|s| s.0)
+}
+
+fn render_suggest(u: &Ui) {
+    while let Some(c) = u.suggest.first_child() {
+        u.suggest.remove(&c);
+    }
+    let typed = u.to_entry.text().trim().to_string();
+    let hint = if is_addr(&typed) {
+        format!("New conversation with {typed}. Write your message below.")
+    } else {
+        "No matching conversations. Type a phone number or email to start a new one.".into()
+    };
+    let none = gtk::Label::new(Some(&hint));
+    none.add_css_class("dim");
+    none.set_wrap(true);
+    none.set_margin_top(24);
+    u.suggest.set_placeholder(Some(&none));
+    for (id, name, addr) in suggestions(u) {
+        let row = gtk::ListBoxRow::new();
+        row.add_css_class("chat-row");
+        row.set_widget_name(&id.to_string());
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        line.append(&avatar(&name, false));
+        let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        text.set_valign(gtk::Align::Center);
+        let n = gtk::Label::new(Some(&name));
+        n.add_css_class("chat-name");
+        n.set_xalign(0.0);
+        let a = gtk::Label::new(Some(&addr));
+        a.add_css_class("chat-preview");
+        a.set_xalign(0.0);
+        text.append(&n);
+        if addr != name {
+            text.append(&a);
+        }
+        line.append(&text);
+        row.set_child(Some(&line));
+        u.suggest.append(&row);
+    }
+}
+
+/// Send the first message of a new conversation (or to an existing one, if the To field names it).
+fn send_new(u: &Rc<Ui>, text: &str) {
+    let typed = u.to_entry.text().trim().to_string();
+    let existing = {
+        let st = u.st.borrow();
+        find_direct_chat(&st.chats, &typed).or_else(|| {
+            st.chats
+                .iter()
+                .filter(|c| c["is_group"].as_bool() != Some(true))
+                .find(|c| chat_title(c, &st.names).eq_ignore_ascii_case(&typed))
+                .and_then(|c| c["id"].as_i64())
+        })
+    };
+    if let Some(id) = existing {
+        open_chat(u, id);
+        send_now(u);
+        return;
+    }
+    if !is_addr(&typed) {
+        show_banner(u, "Who's it to? Pick a conversation or type a phone number or email.", false);
+        u.to_entry.grab_focus();
+        return;
+    }
+    let to = clean_addr(&typed);
+    u.compose.buffer().set_text("");
+    u.st.borrow_mut().new_pending = Some(to.clone());
+    u.send(Cmd::Send { chat_id: 0, to: Some(to), text: text.to_string() });
+    // the chat opens when the Mac's chat list includes it (Event::Chats)
+}
+
+/// The 1:1 chat with this address, if there is one.
+fn find_direct_chat(chats: &[Value], addr: &str) -> Option<i64> {
+    chats
+        .iter()
+        .filter(|c| c["is_group"].as_bool() != Some(true))
+        .find(|c| direct_addr(c).is_some_and(|i| same_addr(addr, i)))
+        .and_then(|c| c["id"].as_i64())
+}
+
+/// The other person's address in a 1:1 chat.
+fn direct_addr(c: &Value) -> Option<&str> {
+    c["identifier"].as_str().or(c["participants"][0].as_str())
+}
+
+/// A phone number or email someone could be messaged at.
+fn is_addr(s: &str) -> bool {
+    let s = s.trim();
+    if let Some((user, host)) = s.split_once('@') {
+        return !user.is_empty() && host.contains('.') && !s.contains(' ');
+    }
+    let digits = s.chars().filter(char::is_ascii_digit).count();
+    digits >= 5 && s.chars().all(|c| c.is_ascii_digit() || " +-().".contains(c))
+}
+
+fn clean_addr(s: &str) -> String {
+    let s = s.trim();
+    if s.contains('@') { s.to_lowercase() } else { s.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect() }
+}
+
+/// Typed address vs a chat identifier: emails ignore case; phone numbers compare their last digits,
+/// so "403 555 1234" matches "+14035551234".
+fn same_addr(typed: &str, ident: &str) -> bool {
+    if typed.contains('@') || ident.contains('@') {
+        return typed.trim().eq_ignore_ascii_case(ident.trim());
+    }
+    let d = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
+    let (a, b) = (d(typed), d(ident));
+    let n = a.len().min(b.len());
+    n >= 5 && (a.len() == b.len() || n >= 7) && a.ends_with(&b[b.len() - n..]) && b.ends_with(&a[a.len() - n..])
 }
 
 // ---------- chat list ----------
@@ -1498,6 +1770,17 @@ fn sep_time(d: &glib::DateTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn addresses() {
+        assert!(is_addr("403 555-1234") && is_addr("a@b.ca") && is_addr("562528"));
+        assert!(!is_addr("Sue") && !is_addr("12") && !is_addr("a@b"));
+        assert!(same_addr("403 555 1234", "+14035551234"));
+        assert!(same_addr("Sue@iCloud.com", "sue@icloud.com"));
+        assert!(!same_addr("562528", "+14035562528"));
+        assert!(!same_addr("4035551234", "+14035551235"));
+        assert_eq!(clean_addr(" +1 (403) 555-1234 "), "+14035551234");
+    }
     use serde_json::json;
 
     #[test]
