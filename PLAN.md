@@ -72,6 +72,15 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 
 A chat bubble with a cartoon magic wand: a stick with a five-point star on the end, drawn in a cartoon style with a few little sparkles around the star. Peter will generate options with Draw Things on his Mac; Claude writes the prompt (a bold, simple, flat-colour sticker look that still reads at 16 px) and later turns the chosen picture into the Flatpak icon set (scalable SVG plus a symbolic version). Needs to be done before Flathub submission.
 
+### Contacts integration (later phase, read-only)
+
+The Mac's Contacts databases are readable over SSH (about 360 contacts on Peter's Mac, with names, organisations, phones, emails, addresses, birthdays, notes and photos), through the same Full Disk Access as chat.db. Editing isn't possible, and isn't wanted. Planned uses:
+
+- Starting a new chat: the To field searches the whole address book by name, number or email, and picks a specific number or email when a contact has several. (Replaces the current suggestions from existing chats only. Earlier notes saying imsg can't list contacts were about imsg; reading the database directly can.)
+- Names for numbers and emails that imsg doesn't name: unsaved senders in group chats, unfamiliar conversations.
+- Contact cards in the conversation info panel (Phase 1.2): phones, emails, address, birthday.
+- Risk: the queries depend on Apple's database layout, which changes between macOS versions. If one breaks, avatars fall back to initials and the search to existing chats. If the address book is ever cached on disk, treat that file as sensitive.
+
 ### Phase 2: setup wizard (no terminal)
 
 The user does only these things on the Mac:
