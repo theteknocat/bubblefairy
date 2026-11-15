@@ -54,6 +54,14 @@ The connection settings (host, user and key path) are entered once in a simple s
   - Otherwise fetch the page from Linux. A setting turns this off.
   - Never fetch automatically for links from unknown senders, because that reveals the user's IP address to the link's owner.
 
+### Phase 1.2: conversation info
+
+- An info button in the conversation header opens a panel for the chat:
+  - Participants (name, handle). Contact cards need the Mac's Contacts, so not for now.
+  - Tabs to browse the whole chat's Photos, Attachments and Links.
+- imsg has no "messages with attachments only" query, so read chat.db directly over SSH (as `mac::add_services` already does): `attachment` joined through `message_attachment_join` and `chat_message_join` for one chat, newest first, paged. Links come from message text.
+- The photo viewer can then walk every photo in the chat, not only the ones loaded in the conversation (for now it stops at the earliest loaded photo).
+
 ### Phase 2: setup wizard (no terminal)
 
 The user does only these things on the Mac:
@@ -92,6 +100,7 @@ Reactions/tapbacks, starting new conversations, search, marking chats read, cont
 - `chats` gives `id` (the rowid used everywhere), `guid`, `identifier`, `participants[]`, `contact_name` (1:1 chats only), `display_name` (often empty), `is_group`, `service` (iMessage, SMS or RCS), `unread_count`, `last_message_at`.
 - `history` returns messages newest first, with `id`, `guid`, `chat_id`, `is_from_me`, `sender`, `text`, `created_at`, `attachments[]`, `reactions[]`.
 - RPC methods: `initialize`, `status`, `chats.list|get|create`, `messages.history|search|after|stats`, `watch.subscribe|unsubscribe` (sends `message`, `edited` and `unsent` events, and a final `watch.overflow`), `send`, `send.tracked`, `message.send_status`. Limits: 128 outstanding requests and 64 subscriptions. The bridge methods (typing indicators, read receipts, edits and so on) need SIP turned off, so they are out of scope.
+- A 1:1 chat's `service` comes from chat.db's `chat.service_name`, which can be stale (Sue's chat says SMS, but its recent messages are all iMessage). The app shows the latest message's service and sends 1:1 messages as `send {to, service: "auto"}` so Messages picks, as on the Mac. VERIFY: the first such send lands in the same conversation.
 - Every release ships a signed `imsg-macos.zip` plus `SHA256SUMS`.
 - Health on 2026-11-14: 1.4k stars, 199 forks, 15 releases between 2026-09-07 and 2026-11-05, and 100 commits in the 10 weeks before. The bus factor is 1: steipete has 367 commits and the next contributor has 31.
 

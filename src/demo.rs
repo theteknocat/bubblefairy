@@ -56,7 +56,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
             Cmd::Chats => ev.send(Event::Chats(chats())),
             Cmd::History(id) => ev.send(Event::History(id, history(id))),
             Cmd::Preview(id) => ev.send(Event::Preview(id, history(id).pop().unwrap())),
-            Cmd::Send { chat_id, text } => {
+            Cmd::Send { chat_id, text, .. } => {
                 next += 1;
                 let _ = ev.send(Event::Message(msg(chat_id, next, true, "", "", 0, &text)));
                 ev.send(Event::Sent { text, err: None })

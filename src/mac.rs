@@ -27,7 +27,8 @@ pub enum Cmd {
     Preview(i64),
     /// Older messages, before the given ISO time (the oldest one loaded).
     Older { id: i64, before: String },
-    Send { chat_id: i64, text: String },
+    /// `to`: the other person in a 1:1 chat, sent directly so Messages picks the service (see handle)
+    Send { chat_id: i64, to: Option<String>, text: String },
     /// `full`: the viewer wants the big version (up to 4096 px) instead of the 1200 px chat copy
     Image { path: String, full: bool },
 }
@@ -400,9 +401,16 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
                 let _ = ev.send(Event::Preview(id, m));
             }
         }
-        Cmd::Send { chat_id, text } => {
+        Cmd::Send { chat_id, to, text } => {
+            // chat.db keeps a 1:1 chat's service from whenever it was set (an iMessage chat with some
+            // SMS history can stay "SMS"), and a chat_id send uses it. A direct send with "auto" lets
+            // Messages choose, as it does on the Mac.
+            let params = match to {
+                Some(to) => json!({"to": to, "text": text, "service": "auto"}),
+                None => json!({"chat_id": chat_id, "text": text}),
+            };
             // The first send ever waits on the Mac's Automation prompt, so allow a long time and say so.
-            let call = rpc.call("send", json!({"chat_id": chat_id, "text": text}), Duration::from_secs(180));
+            let call = rpc.call("send", params, Duration::from_secs(180));
             tokio::pin!(call);
             let r = tokio::select! {
                 r = &mut call => r,

@@ -789,9 +789,17 @@ fn send_now(u: &Ui) {
     if text.is_empty() {
         return;
     }
+    let to = {
+        let st = u.st.borrow();
+        st.chats
+            .iter()
+            .find(|c| c["id"].as_i64() == Some(chat_id))
+            .filter(|c| c["is_group"].as_bool() != Some(true))
+            .and_then(|c| c["identifier"].as_str().map(String::from))
+    };
     buf.set_text(""); // also disables the send button (buffer changed)
     u.stick_bottom.set(true);
-    u.send(Cmd::Send { chat_id, text }); // the message itself comes back through the live stream
+    u.send(Cmd::Send { chat_id, to, text }); // the message itself comes back through the live stream
 }
 
 // ---------- chat list ----------
@@ -872,11 +880,13 @@ fn render_conv(u: &Rc<Ui>) {
     u.stack.set_visible_child_name("conv");
     let title = chat_title(&chat, &names);
     let chat_svc = chat["service"].as_str().unwrap_or("iMessage").to_string();
-    let sms = chat_svc != "iMessage";
-    u.compose_hint.set_text(&if sms { format!("Text Message · {chat_svc}") } else { "iMessage".into() });
+    // chat.db's chat service can be stale (see mac::handle Send); the latest message tells what's in use
+    let now_svc = msgs.iter().rev().find_map(|m| m["service"].as_str()).unwrap_or(&chat_svc).to_string();
+    let sms = now_svc != "iMessage";
+    u.compose_hint.set_text(&if sms { format!("Text Message · {now_svc}") } else { "iMessage".into() });
     let group = chat["is_group"].as_bool() == Some(true);
     u.head_title.set_text(&title);
-    let mut sub = chat["service"].as_str().unwrap_or("").to_string();
+    let mut sub = now_svc.clone();
     if group {
         let people: Vec<String> = chat["participants"]
             .as_array()
