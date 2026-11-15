@@ -2,12 +2,11 @@
 
 BubbleFairy is an open-source (MIT) Linux desktop app for iMessage. The Mac does all of the iMessage work. BubbleFairy is the window on Linux that ferries messages to and from it over the local network.
 
-Status (2026-11-15): Phase 1 is built and running from source against Peter's Mac. Most of Phase 1.1 is built too (new conversations, local read state, sending files, link previews, avatars). Not started: Phase 1.2 (conversation info), the contacts integration, the app icon, and Phase 2 (wizard and Flatpak packaging).
+Status (2026-11-15): Phase 1 is built and running from source against Peter's Mac. Most of Phase 1.1 is built too (new conversations, local read state, sending files, link previews, avatars, a faded "sending" bubble with spinner that shows the local photo until the real one arrives). Not started: Phase 1.2 (conversation info), the contacts integration, the app icon, and Phase 2 (wizard and Flatpak packaging).
 
 ### Not yet checked on a real run
 
 - A message to Sue, sent from the app: does it go as iMessage and land in the same conversation?
-- Sending a file: can Messages read it from the app's `outgoing` folder on the Mac?
 - Clicking a desktop notification opens its chat.
 - Local read state: opening an unread chat clears its dot (the headless test window never counts as focused).
 - A message with a link plus other text, and a link card next to a bubble.
