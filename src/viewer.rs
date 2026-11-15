@@ -2,8 +2,8 @@
 //! its spot in the chat while a black backdrop fades in, and closes the same way in reverse.
 //! - The photo fills the panel on its longest side. The chat's 1200 px copy shows at once; when the
 //!   original is bigger, the full version is fetched and swapped in (small spinner at its top-left).
-//! - Prev/next (buttons, ← →, mouse wheel) walk every loaded photo in the chat and stop at the ends.
-//!   Near the earliest photo it asks the chat to load older messages so more photos can follow.
+//! - Prev/next (buttons, ← →, mouse wheel) walk the photos loaded in the chat so far and stop at
+//!   the ends; older ones appear once the chat is scrolled back to them.
 //! - Controls overlay the photo and fade out after a few seconds without mouse movement.
 
 use std::cell::{Cell, RefCell};
@@ -19,15 +19,11 @@ use crate::bubble::{self, Bubble};
 
 const OPEN_MS: f64 = 240.0;
 const HIDE_AFTER: Duration = Duration::from_millis(2500);
-const PRELOAD_WITHIN: usize = 2; // start loading older messages this many photos from the start
 
 /// What the viewer needs from the chat.
 pub struct Hooks {
     /// fetch the big version of this photo; the answer arrives via `full_ready` / `full_failed`
     pub fetch_full: Box<dyn Fn(&str)>,
-    /// whether older messages may still exist
-    pub has_older: Box<dyn Fn() -> bool>,
-    pub load_older: Box<dyn Fn()>,
 }
 
 pub struct Viewer {
@@ -35,7 +31,6 @@ pub struct Viewer {
     canvas: Canvas,
     prev: gtk::Button,
     next: gtk::Button,
-    older_spin: gtk::Spinner,
     /// (path, widget) for every photo in the chat, in display order
     items: RefCell<Vec<(String, Bubble)>>,
     idx: Cell<usize>,
@@ -67,21 +62,12 @@ impl Viewer {
         let close = nav("window-close-symbolic", gtk::Align::End, "Close (Esc)");
         close.set_valign(gtk::Align::Start);
         close.add_css_class("viewer-close");
-        let older_spin = gtk::Spinner::new();
-        older_spin.add_css_class("viewer-older");
-        older_spin.set_halign(gtk::Align::Start);
-        older_spin.set_valign(gtk::Align::Center);
-        older_spin.set_size_request(28, 28);
-        older_spin.set_tooltip_text(Some("Loading earlier messages…"));
-        older_spin.set_visible(false);
-        root.add_overlay(&older_spin);
 
         let v = Rc::new(Self {
             root,
             canvas,
             prev,
             next,
-            older_spin,
             items: RefCell::default(),
             idx: Cell::new(0),
             full: RefCell::default(),
@@ -209,7 +195,6 @@ impl Viewer {
         self.canvas.imp().from.set(from);
         self.canvas.imp().closing.set(true);
         self.canvas.set_loading(false);
-        self.older_spin.set_visible(false);
         self.root.remove_css_class("controls");
         let root = self.root.clone();
         let canvas = self.canvas.clone();
@@ -270,16 +255,8 @@ impl Viewer {
         self.canvas.queue_draw();
 
         let (i, n) = (self.idx.get(), self.items.borrow().len());
-        let older = hooks.as_ref().is_some_and(|h| (h.has_older)());
         self.prev.set_visible(i > 0);
         self.next.set_visible(i + 1 < n);
-        // at the very start with more history to come: a spinner where "previous" would be
-        let waiting = i == 0 && older;
-        self.older_spin.set_visible(waiting);
-        self.older_spin.set_spinning(waiting);
-        if i < PRELOAD_WITHIN && older && let Some(h) = hooks.as_ref() {
-            (h.load_older)(); // no-op while a load is already running
-        }
     }
 
     fn show_controls(&self) {

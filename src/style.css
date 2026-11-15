@@ -273,6 +273,5 @@ button.send-btn:disabled { filter: saturate(0.25) opacity(0.45); box-shadow: non
 .viewer-nav image { -gtk-icon-size: 22px; }
 .viewer.controls .viewer-nav { opacity: 1; }
 .viewer-nav { transition: opacity 400ms ease, background-color 120ms ease; }
-.viewer-older { margin: 0 28px; color: #ffffff; }
 .viewer-nav:hover { background-color: rgba(255, 255, 255, 0.22); }
 .viewer-close { min-width: 40px; min-height: 40px; margin: 16px; }

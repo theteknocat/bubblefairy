@@ -438,17 +438,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     });
     win.add_controller(keys);
     let w = Rc::downgrade(&ui);
-    let (w2, w3) = (w.clone(), w.clone());
-    ui.viewer.set_hooks(viewer::Hooks {
-        fetch_full: Box::new(move |p| if let Some(u) = w.upgrade() { fetch_full(&u, p) }),
-        has_older: Box::new(move || {
-            w2.upgrade().is_some_and(|u| {
-                let st = u.st.borrow();
-                st.connected && st.sel.is_some_and(|id| !st.no_more.contains(&id))
-            })
-        }),
-        load_older: Box::new(move || if let Some(u) = w3.upgrade() { load_older(&u) }),
-    });
+    ui.viewer.set_hooks(viewer::Hooks { fetch_full: Box::new(move |p| if let Some(u) = w.upgrade() { fetch_full(&u, p) }) });
     let u = ui.clone();
     ui.scroller.hadjustment().connect_page_size_notify(move |_| {
         let fs: Vec<_> = u.stacks.borrow().clone();
