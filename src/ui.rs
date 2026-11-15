@@ -1498,8 +1498,12 @@ fn render_conv(u: &Rc<Ui>) {
         let run_prev = !sep && i > 0 && who(&msgs[i - 1]) == who(m) && gap(i - 1, i) < 180;
         let run_next = i + 1 < msgs.len() && who(&msgs[i + 1]) == who(m) && gap(i, i + 1) < 180 && day(times[i]) == day(times[i + 1]);
         // bubbles only look continuous with bubbles: photos (shown above a message's bubble) break the chain
-        let join_prev = run_prev && has_bubble(&msgs[i - 1]) && !has_photos(m);
-        let join_next = run_next && has_bubble(&msgs[i + 1]) && !has_photos(&msgs[i + 1]);
+        // (a link-preview card is a bubble that never joins: it neither starts nor ends a chain)
+        let join_prev = run_prev && has_bubble(&msgs[i - 1], card_of(u, &msgs[i - 1]).as_ref()) && !has_photos(m) && card_of(u, m).is_none();
+        let join_next = run_next
+            && has_bubble(&msgs[i + 1], card_of(u, &msgs[i + 1]).as_ref())
+            && !has_photos(&msgs[i + 1])
+            && card_of(u, &msgs[i + 1]).is_none();
 
         if group && !me && !run_prev {
             let n = gtk::Label::new(Some(&sender_name(m, &names)));
@@ -1595,8 +1599,14 @@ fn has_photos(m: &Value) -> bool {
 
 /// Whether a message draws a bubble: text, "unsent", or an attachment row (a file, or a photo the
 /// Mac never downloaded). Photo-only messages don't.
-fn has_bubble(m: &Value) -> bool {
-    if m["unsent_at"].as_str().is_some() || m["type"].as_str() == Some("unsent") || !clean_text(m).is_empty() {
+/// Does this message have a text/file bubble (apart from its photos and link card)? `link`: the
+/// message's link-preview card, whose address doesn't count as text.
+fn has_bubble(m: &Value, link: Option<&crate::mac::LinkPreview>) -> bool {
+    let text = match link {
+        Some(l) => without_url(&clean_text(m), l),
+        None => clean_text(m),
+    };
+    if m["unsent_at"].as_str().is_some() || m["type"].as_str() == Some("unsent") || !text.is_empty() {
         return true;
     }
     let atts = m["attachments"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
@@ -1654,7 +1664,7 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
     let link = preview_row(m).and_then(|r| link_for(u, r));
     let mut text = clean_text(m);
     if let Some(l) = &link {
-        text = without_url(&text, &l.url); // the card shows the link; any other words follow it
+        text = without_url(&text, l); // the card shows the link; any other words follow it
     }
     let has_bubble = !text.is_empty() || !others.is_empty();
     if !photos.is_empty() {
@@ -1662,11 +1672,12 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
         out.push(photo_stack(u, &photos, bubble::Look { me, sms, tail, ..Default::default() }));
     }
     if let Some(l) = &link {
-        let card = bubble::Look { me, sms, tail: end_of_run && !has_bubble, join_prev: join_prev && photos.is_empty(), join_next: has_bubble };
+        // a card keeps its own full corners: it never joins a neighbouring bubble
+        let card = bubble::Look { me, sms, tail: end_of_run && !has_bubble, join_prev: false, join_next: false };
         out.push(link_card(u, l, card));
     }
     if has_bubble {
-        let b = bubble::Bubble::new(look((join_prev && photos.is_empty()) || link.is_some()));
+        let b = bubble::Bubble::new(look(join_prev && photos.is_empty() && link.is_none()));
         for l in others {
             b.add(&l);
         }
@@ -1692,11 +1703,27 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
     out
 }
 
-/// `text` with the link removed (it's shown as the preview card instead).
-fn without_url(text: &str, url: &str) -> String {
-    let t = text.replace(url, "").replace(url.trim_end_matches('/'), "");
-    let t = t.trim();
+/// `text` with the link removed (it's shown as the preview card instead). The text can hold a
+/// different form of the address than the preview saved (tracking parameters, a redirect), so any
+/// link to the same site goes too.
+fn without_url(text: &str, l: &crate::mac::LinkPreview) -> String {
+    let host = |u: &str| u.split('/').nth(2).unwrap_or("").trim_start_matches("www.").to_lowercase();
+    let want = host(&l.url);
+    let mut out = String::new();
+    for word in text.split_inclusive(char::is_whitespace) {
+        let w = word.trim();
+        let is_link = w.starts_with("http") && !want.is_empty() && host(w) == want;
+        if !is_link {
+            out.push_str(word);
+        }
+    }
+    let t = out.trim();
     if t.chars().all(|c| c == '/') { String::new() } else { t.to_string() }
+}
+
+/// The saved preview for a message, if it has arrived.
+fn card_of(u: &Ui, m: &Value) -> Option<crate::mac::LinkPreview> {
+    preview_row(m).and_then(|r| u.st.borrow().links.get(&r).cloned().flatten())
 }
 
 /// The row holding Apple's preview for this message: folded in by imsg (`url_preview`), or the
@@ -2155,10 +2182,15 @@ mod tests {
 
     #[test]
     fn url_removed_from_text() {
-        assert_eq!(without_url("https://a.com/x", "https://a.com/x"), "");
-        assert_eq!(without_url("look https://a.com/ nice", "https://a.com/"), "look  nice");
-        assert_eq!(without_url("https://a.com/", "https://a.com"), "");
-        assert_eq!(without_url("hello", "https://a.com"), "hello");
+        let l = |u: &str| crate::mac::LinkPreview { url: u.into(), ..Default::default() };
+        assert_eq!(without_url("https://a.com/x", &l("https://a.com/x")), "");
+        assert_eq!(without_url("look https://a.com/ nice", &l("https://a.com/")), "look nice");
+        assert_eq!(without_url("https://a.com/", &l("https://a.com")), "");
+        assert_eq!(without_url("hello", &l("https://a.com")), "hello");
+        // the typed address carried tracking parameters; the text holds the clean one
+        assert_eq!(without_url("https://www.cabidor.com/", &l("https://www.cabidor.com/?srsltid=AYC")), "");
+        // a link to some other site stays
+        assert_eq!(without_url("see https://b.com/y", &l("https://a.com/x")), "see https://b.com/y");
     }
 
     #[test]

@@ -376,6 +376,8 @@ async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LinkPreview {
     pub url: String,
+    /// the other saved address, when it differs (the message text usually holds this one)
+    pub alt_url: Option<String>,
     pub title: String,
     pub site: String,
     pub image: Option<String>,
@@ -429,9 +431,11 @@ pub fn parse_link(bytes: &[u8], files: &[String]) -> Option<LinkPreview> {
         let i = get(meta.get(k)?)?.as_dictionary()?.get("richLinkImageAttachmentSubstituteIndex")?.as_unsigned_integer()?;
         files.get(i as usize).cloned()
     };
-    let url = text("originalURL").or_else(|| text("URL"))?; // original = what was typed
+    let (typed, resolved) = (text("originalURL"), text("URL"));
+    let url = typed.clone().or_else(|| resolved.clone())?;
+    let alt_url = resolved.filter(|r| *r != url).or(typed.filter(|t| *t != url));
     let site = text("siteName").unwrap_or_else(|| url.split('/').nth(2).unwrap_or("").trim_start_matches("www.").to_string());
-    Some(LinkPreview { title: text("title").unwrap_or_default(), site, image: file("image"), icon: file("icon"), url })
+    Some(LinkPreview { title: text("title").unwrap_or_default(), site, image: file("image"), icon: file("icon"), url, alt_url })
 }
 
 /// One `send` call: `target` plus `key` = `value` (a text or a file path on the Mac).
