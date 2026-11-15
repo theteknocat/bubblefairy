@@ -216,13 +216,20 @@ picture.loading {
 .composer {
   background-color: var(--field);
   border-radius: 24px;
-  padding: 5px 6px 5px 14px;
+  padding: 4px 5px 4px 12px;
   margin: 6px 14px 14px;
+  border: 1px solid transparent;
   box-shadow: inset 0 1px 3px var(--shadow), 0 1px rgba(255, 255, 255, 0.45), 0 4px 14px var(--shadow);
+  transition: box-shadow 160ms ease, border-color 160ms ease;
+}
+.composer:focus-within {
+  border-color: alpha(#7b5cff, 0.55);
+  box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(#7b5cff, 0.18), 0 4px 14px var(--shadow);
 }
 .composer scrolledwindow { background: transparent; }
-textview.compose, textview.compose > text { background: transparent; color: var(--ink); font-size: 1.02em; }
-.emoji-btn > button { min-width: 34px; min-height: 34px; padding: 0; }
+textview.compose, textview.compose > text { background: transparent; color: var(--ink); font-size: 1.02em; caret-color: #7b5cff; }
+.compose-hint { color: alpha(var(--ink-soft), 0.8); font-size: 1.02em; }
+.emoji-btn > button { min-width: 36px; min-height: 36px; padding: 0; }
 button.send-btn {
   min-width: 36px;
   min-height: 36px;
@@ -240,7 +247,7 @@ button.send-btn.sms {
 }
 button.send-btn:hover { filter: brightness(1.08); }
 button.send-btn:active { filter: brightness(0.94); }
-button.send-btn:disabled { filter: saturate(0.4) opacity(0.7); }
+button.send-btn:disabled { filter: saturate(0.25) opacity(0.45); box-shadow: none; }
 
 /* warnings banner */
 .banner {
@@ -256,4 +263,3 @@ button.send-btn:disabled { filter: saturate(0.4) opacity(0.7); }
 .dim { color: var(--ink-soft); }
 .loading-text { color: var(--ink-soft); font-weight: 600; }
 .loading-more { color: var(--ink-soft); font-size: 0.85em; font-weight: 600; margin: 8px 0; }
-.compose-hint { color: alpha(var(--ink-soft), 0.75); margin-left: 4px; }

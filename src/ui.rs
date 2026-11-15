@@ -15,6 +15,8 @@ use tokio::sync::mpsc;
 use crate::bubble;
 use crate::mac::{Cmd, Config, Event};
 
+const COMPOSE_PAD_X: i32 = 4;
+const COMPOSE_PAD_Y: i32 = 9;
 const OBJ: char = '\u{FFFC}'; // what imsg puts in `text` for attachment-only messages
 
 pub struct Store {
@@ -173,8 +175,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         .wrap_mode(gtk::WrapMode::WordChar)
         .hexpand(true)
         .accepts_tab(false)
-        .top_margin(7)
-        .bottom_margin(7)
+        .top_margin(COMPOSE_PAD_Y)
+        .bottom_margin(COMPOSE_PAD_Y)
+        .left_margin(COMPOSE_PAD_X)
+        .right_margin(COMPOSE_PAD_X)
         .build();
     compose.add_css_class("compose");
     let compose_scroll = gtk::ScrolledWindow::builder()
@@ -184,10 +188,25 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         .child(&compose)
         .hexpand(true)
         .build();
+    // A ScrolledWindow's own minimum height (its scrollbar) is taller than one line of text, so the
+    // field only scrolls once the text outgrows the max height; until then it hugs the text.
+    compose_scroll.set_vscrollbar_policy(gtk::PolicyType::External);
+    let (cs, cv) = (compose_scroll.clone(), compose.clone());
+    compose.buffer().connect_changed(move |_| {
+        let (cs, cv) = (cs.clone(), cv.clone());
+        glib::idle_add_local_once(move || {
+            let (_, natural, _, _) = cv.measure(gtk::Orientation::Vertical, cv.width());
+            let tall = natural > cs.max_content_height();
+            cs.set_vscrollbar_policy(if tall { gtk::PolicyType::Automatic } else { gtk::PolicyType::External });
+        });
+    });
     let compose_hint = gtk::Label::new(None);
     compose_hint.add_css_class("compose-hint");
+    // sits exactly where the first line of text starts, so the caret and the hint line up
     compose_hint.set_halign(gtk::Align::Start);
-    compose_hint.set_valign(gtk::Align::Center);
+    compose_hint.set_valign(gtk::Align::Start);
+    compose_hint.set_margin_top(COMPOSE_PAD_Y);
+    compose_hint.set_margin_start(COMPOSE_PAD_X);
     compose_hint.set_can_target(false);
     let compose_box = gtk::Overlay::new();
     compose_box.set_child(Some(&compose_scroll));
@@ -195,8 +214,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     compose_box.set_hexpand(true);
     let hint = compose_hint.clone();
     compose.buffer().connect_changed(move |b| hint.set_visible(b.char_count() == 0));
+    compose_box.set_valign(gtk::Align::Center);
     let emoji = gtk::MenuButton::new();
-    emoji.set_icon_name("face-smile-symbolic");
+    let smile = gtk::Image::from_icon_name("face-smile-symbolic");
+    smile.set_pixel_size(20);
+    emoji.set_child(Some(&smile));
     emoji.set_tooltip_text(Some("Emoji"));
     emoji.add_css_class("emoji-btn");
     emoji.set_valign(gtk::Align::End);
@@ -206,6 +228,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     chooser.connect_emoji_picked(move |_, e| buf.insert_at_cursor(e));
     let send_btn = gtk::Button::from_icon_name("go-up-symbolic");
     send_btn.add_css_class("send-btn");
+    send_btn.set_sensitive(false); // enabled once there's something to send
+    let sb = send_btn.clone();
+    compose.buffer().connect_changed(move |b| sb.set_sensitive(b.char_count() > 0));
     send_btn.set_tooltip_text(Some("Send (Enter)"));
     send_btn.set_valign(gtk::Align::End);
     let composer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -385,6 +410,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     app.connect_window_added(move |_, _| a4(&gtk::Settings::default().unwrap()));
 
     win.present();
+    if let Ok(t) = std::env::var("BF_DRAFT") {
+        ui.compose.buffer().set_text(&t.replace("\\n", "\n")); // dev aid: prefill the composer
+    }
     if let Some(out) = std::env::var_os("BF_SHOT") {
         // dev aid: save the window to a PNG and quit (used with BF_DEMO in a headless compositor)
         let w = win.clone();
@@ -519,7 +547,6 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             false,
         ),
         Event::Sent { text, err, .. } => {
-            u.send_btn.set_sensitive(true);
             if let Some(err) = err {
                 show_banner(u, &format!("Message not sent: {err}"), false);
                 let buf = u.compose.buffer();
@@ -702,8 +729,7 @@ fn send_now(u: &Ui) {
     if text.is_empty() {
         return;
     }
-    buf.set_text("");
-    u.send_btn.set_sensitive(false);
+    buf.set_text(""); // also disables the send button (buffer changed)
     u.stick_bottom.set(true);
     u.send(Cmd::Send { chat_id, text }); // the message itself comes back through the live stream
 }
@@ -846,14 +872,14 @@ fn render_conv(u: &Rc<Ui>) {
             l.add_css_class("time-sep");
             u.msgs.append(&l);
         }
-        let join_prev = !sep && i > 0 && who(&msgs[i - 1]) == who(m) && gap(i - 1, i) < 180;
-        let join_next = i + 1 < msgs.len()
-            && who(&msgs[i + 1]) == who(m)
-            && gap(i, i + 1) < 180
-            && day(times[i]) == day(times[i + 1])
-            && gap(i, i + 1) <= 30 * 60;
+        // a "run" = same sender, close together: shares one name label and one avatar
+        let run_prev = !sep && i > 0 && who(&msgs[i - 1]) == who(m) && gap(i - 1, i) < 180;
+        let run_next = i + 1 < msgs.len() && who(&msgs[i + 1]) == who(m) && gap(i, i + 1) < 180 && day(times[i]) == day(times[i + 1]);
+        // bubbles only look continuous with bubbles: photos (shown above a message's bubble) break the chain
+        let join_prev = run_prev && has_bubble(&msgs[i - 1]) && !has_photos(m);
+        let join_next = run_next && has_bubble(&msgs[i + 1]) && !has_photos(&msgs[i + 1]);
 
-        if group && !me && !join_prev {
+        if group && !me && !run_prev {
             let n = gtk::Label::new(Some(&sender_name(m, &names)));
             n.add_css_class("sender-name");
             n.set_xalign(0.0);
@@ -871,7 +897,7 @@ fn render_conv(u: &Rc<Ui>) {
             }
             line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
             if group && !me {
-                if last && !join_next {
+                if last && !run_next {
                     let a = avatar(&sender_name(m, &names), true);
                     a.set_valign(gtk::Align::End);
                     line.append(&a);
@@ -885,6 +911,45 @@ fn render_conv(u: &Rc<Ui>) {
             u.msgs.append(&line);
         }
     }
+}
+
+/// Photos to show for a message. RCS keeps a converted copy next to a missing original, and some rows
+/// carry the same photo twice in different folders, so keep one present file per name stem.
+fn photo_paths(m: &Value) -> Vec<String> {
+    let mut seen = HashSet::new();
+    m["attachments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["missing"].as_bool() != Some(true))
+        .filter_map(|a| {
+            let path = a["original_path"].as_str().filter(|p| !p.is_empty())?;
+            if !is_image(a["mime_type"].as_str().unwrap_or(""), path) {
+                return None;
+            }
+            let name = path.rsplit('/').next().unwrap_or(path);
+            seen.insert(name.split('.').next().unwrap_or(name).to_string()).then(|| path.to_string())
+        })
+        .collect()
+}
+
+fn has_photos(m: &Value) -> bool {
+    !photo_paths(m).is_empty()
+}
+
+/// Whether a message draws a bubble: text, "unsent", or an attachment row (a file, or a photo the
+/// Mac never downloaded). Photo-only messages don't.
+fn has_bubble(m: &Value) -> bool {
+    if m["unsent_at"].as_str().is_some() || m["type"].as_str() == Some("unsent") || !clean_text(m).is_empty() {
+        return true;
+    }
+    let atts = m["attachments"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    let any_present = atts.iter().any(|a| a["missing"].as_bool() != Some(true));
+    // same filter as message_parts: missing duplicates hide when a present copy exists
+    atts.iter().filter(|a| !any_present || a["missing"].as_bool() != Some(true)).any(|a| {
+        let path = a["original_path"].as_str().unwrap_or("");
+        a["missing"].as_bool() == Some(true) || path.is_empty() || !is_image(a["mime_type"].as_str().unwrap_or(""), path)
+    })
 }
 
 /// One message as display rows: its photos (as cards, outside any bubble), then a bubble with the
@@ -901,13 +966,13 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
     let atts: Vec<&Value> = m["attachments"].as_array().into_iter().flatten().collect();
     // RCS/SMS photos often come as a converted copy plus a missing original; show only what's there
     let any_present = atts.iter().any(|a| a["missing"].as_bool() != Some(true));
-    let mut photos = Vec::new();
+    let photos = photo_paths(m);
     let mut others = Vec::new();
     for a in atts.into_iter().filter(|a| !any_present || a["missing"].as_bool() != Some(true)) {
         let path = a["original_path"].as_str().unwrap_or("");
         let mime = a["mime_type"].as_str().unwrap_or("");
         if is_image(mime, path) && !path.is_empty() && a["missing"].as_bool() != Some(true) {
-            photos.push(path.to_string());
+            continue; // shown as a photo card (photo_paths)
         } else {
             let name = a["transfer_name"].as_str().or(a["filename"].as_str()).unwrap_or("Attachment");
             let (icon, label) = if a["missing"].as_bool() == Some(true) && is_image(mime, name) {

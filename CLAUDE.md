@@ -12,7 +12,7 @@ A Linux desktop iMessage app: Rust + GTK4 with its own CSS look, shipped as a Fl
 
 - The host has no GTK dev packages, so cargo runs inside the GNOME 51 Flatpak SDK: `scripts/dev.sh build|run|test|clippy`. The output goes to `target/sdk/`.
 - `scripts/dev.sh` points the XDG dirs at `~/.var/app/io.github.theteknocat.BubbleFairy/{data,config,cache}`, the same folders the real Flatpak will use. Without that, the SDK sandbox throws away anything written to `~/.local`.
-- Dev switches: `BF_DEMO=1` (invented chats, no Mac), `BF_SHOT=<file.png>` (save the window after 2.5 s, then quit), `BF_DARK=1` / `BF_LIGHT=1` (force a scheme). For headless screenshots: `WLR_BACKENDS=headless cage -- sh -c "env BF_DEMO=1 BF_SHOT=... scripts/dev.sh run"`.
+- Dev switches: `BF_DEMO=1` (invented chats, no Mac), `BF_SHOT=<file.png>` (save the window after 2.5 s, then quit), `BF_DARK=1` / `BF_LIGHT=1` (force a scheme), `BF_CHAT=<id>` (open that chat), `BF_SHOT_MS=<ms>` (shot delay), `BF_DRAFT=<text>` (prefill the composer, `\\n` = newline). Screenshot runs are NON_UNIQUE so they never hand off to a running copy. For headless screenshots: `WLR_BACKENDS=headless cage -- sh -c "env BF_DEMO=1 BF_SHOT=... scripts/dev.sh run"`.
 - GTK CSS `@media (prefers-color-scheme)` did not fire for an app provider (GTK 4.24), so dark mode is a `window.dark` class set from `gtk-interface-color-scheme` in `ui.rs`.
 
 ## Layout
