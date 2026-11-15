@@ -237,7 +237,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // The field's height is worked out here from the text itself (Pango, at the field's width) rather
     // than taken from the TextView, whose reported height runs a line tall while new lines are still
     // being laid out. Past COMPOSE_MAX it stops growing and scrolls.
-    let (cs, cv) = (compose_scroll.clone(), compose.clone());
+    let fits = Rc::new(Cell::new(true)); // all the text fits without scrolling
+    let (cs, cv, fits2) = (compose_scroll.clone(), compose.clone(), fits.clone());
     let fit = Rc::new(move || {
         let w = cv.width() - cv.left_margin() - cv.right_margin();
         if w <= 0 {
@@ -249,6 +250,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         layout.set_wrap(gtk::pango::WrapMode::WordChar);
         let need = layout.pixel_size().1 + cv.top_margin() + cv.bottom_margin();
         let shown = need.min(COMPOSE_MAX);
+        fits2.set(need <= COMPOSE_MAX);
         if cs.min_content_height() != shown {
             cs.set_min_content_height(-1);
             cs.set_max_content_height(shown);
@@ -272,6 +274,14 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     });
     let f = fit.clone();
     compose.buffer().connect_changed(move |_| f());
+    // A key press that adds a line makes the TextView scroll to the cursor while the field is still
+    // the old height; once it grows, that scroll would linger and push the text up. While everything
+    // fits, stay at the top.
+    compose_scroll.vadjustment().connect_value_changed(move |a| {
+        if fits.get() && a.value() != 0.0 {
+            a.set_value(0.0);
+        }
+    });
     let f = fit.clone();
     compose_scroll.hadjustment().connect_page_size_notify(move |_| f()); // width changed: rewrap
     let compose_hint = gtk::Label::new(None);
