@@ -23,6 +23,8 @@ pub struct Store {
     pub config_file: PathBuf,
     pub known_host: PathBuf,
     pub image_cache: PathBuf,
+    /// newest message seen in BubbleFairy per chat (`chat_id=message_id` lines)
+    pub seen_file: PathBuf,
     pub public_key: String,
 }
 
@@ -47,6 +49,8 @@ struct State {
     /// chats with a history request in flight (header spinner)
     loading: HashSet<i64>,
     older_loading: bool,
+    /// chat id -> newest message id seen in BubbleFairy; hides the unread dot the Mac can't clear
+    seen: HashMap<i64, i64>,
     /// address a new conversation's first message went to; its chat opens once it shows up
     new_pending: Option<String>,
     /// chats whose whole history is already loaded
@@ -334,13 +338,14 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     root.append(&paned);
     win.set_child(Some(&root));
 
+    let seen = load_seen(&store.seen_file);
     let ui = Rc::new(Ui {
         app: app.clone(),
         win: win.clone(),
         store,
         cmd,
         viewer,
-        st: RefCell::new(State { cfg, ..Default::default() }),
+        st: RefCell::new(State { cfg, seen, ..Default::default() }),
         chat_list,
         msgs,
         scroller,
@@ -474,6 +479,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     });
     ui.to_entry.add_controller(esc);
 
+    // coming back to the window counts as seeing the open chat
+    let u = ui.clone();
+    ui.win.connect_is_active_notify(move |_| mark_seen(&u));
     // read state changes (chats read on other devices) don't come through the live stream
     let w = Rc::downgrade(&ui);
     glib::timeout_add_seconds_local(60, move || {
@@ -1099,7 +1107,9 @@ fn render_chats(u: &Rc<Ui>) {
                     let s = summary(m);
                     if m["is_from_me"].as_bool() == Some(true) { format!("You: {s}") } else { s }
                 });
-                let unread = c["unread_count"].as_i64().unwrap_or(0) > 0;
+                // read here but not on the Mac (imsg can't mark read): trust what we've shown
+                let seen_here = p.and_then(|m| m["id"].as_i64()).is_some_and(|last| st.seen.get(&id).is_some_and(|s| *s >= last));
+                let unread = c["unread_count"].as_i64().unwrap_or(0) > 0 && !seen_here;
                 (chat_title(c, &st.names), text.unwrap_or_default(), when.unwrap_or_default(), unread, id)
             })
             .collect()
@@ -1274,6 +1284,38 @@ fn render_conv(u: &Rc<Ui>) {
     }
     let photos = u.st.borrow().photos.clone(); // the viewer's hooks borrow State
     u.viewer.refresh(photos);
+    mark_seen(u);
+}
+
+/// The open chat's newest message has been seen (window focused): remember it, clear its dot.
+fn mark_seen(u: &Rc<Ui>) {
+    if !u.win.is_active() {
+        return;
+    }
+    let changed = {
+        let mut st = u.st.borrow_mut();
+        let Some(id) = st.sel else { return };
+        let Some(last) = st.hist.get(&id).and_then(|h| h.iter().filter_map(|m| m["id"].as_i64()).max()) else { return };
+        let old = st.seen.insert(id, last);
+        old.is_none_or(|o| o < last)
+    };
+    if changed {
+        let st = u.st.borrow();
+        let text: String = st.seen.iter().map(|(c, m)| format!("{c}={m}\n")).collect();
+        let _ = std::fs::create_dir_all(u.store.seen_file.parent().unwrap());
+        let _ = std::fs::write(&u.store.seen_file, text);
+        drop(st);
+        render_chats(u);
+    }
+}
+
+fn load_seen(path: &std::path::Path) -> HashMap<i64, i64> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .filter_map(|(c, m)| Some((c.parse().ok()?, m.parse().ok()?)))
+        .collect()
 }
 
 /// Photos to show for a message. RCS keeps a converted copy next to a missing original, and some rows
