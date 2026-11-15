@@ -1,0 +1,462 @@
+//! Talking to the Mac: one SSH session (russh) running `imsg rpc` (JSON-RPC, one JSON object per line),
+//! plus short extra exec channels for fetching images. Runs on tokio; the UI only sees `Cmd` and `Event`.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
+use russh::{ChannelMsg, client};
+use serde_json::{Value, json};
+use tokio::sync::{mpsc, oneshot};
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Config {
+    pub host: String,
+    pub user: String,
+    pub imsg: String,
+}
+
+pub enum Cmd {
+    Configure(Config),
+    Chats,
+    History(i64),
+    /// Just the newest message, for the chat list's preview line.
+    Preview(i64),
+    Send { chat_id: i64, text: String },
+    Image { path: String },
+}
+
+pub enum Event {
+    Connecting,
+    Connected,
+    Offline(String),
+    /// Connected, but something on the Mac needs fixing (e.g. Full Disk Access).
+    Warn(String),
+    HostKey(String),
+    Chats(Vec<Value>),
+    History(i64, Vec<Value>),
+    Preview(i64, Value),
+    Message(Value),
+    /// The watch stream lost messages; reload everything.
+    Resync,
+    Sent { text: String, err: Option<String> },
+    SendSlow,
+    Image { path: String, bytes: Option<Vec<u8>> },
+}
+
+pub struct Paths {
+    pub key: PathBuf,
+    pub known_host: PathBuf,
+}
+
+type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
+
+#[derive(Clone)]
+struct Rpc {
+    tx: mpsc::UnboundedSender<String>,
+    pending: Pending,
+    next: Arc<AtomicU64>,
+}
+
+impl Rpc {
+    async fn call(&self, method: &str, params: Value, wait: Duration) -> Result<Value, String> {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().unwrap().insert(id, tx);
+        let line = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string() + "\n";
+        if self.tx.send(line).is_err() {
+            self.pending.lock().unwrap().remove(&id);
+            return Err("not connected".into());
+        }
+        match tokio::time::timeout(wait, rx).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => Err("connection lost".into()),
+            Err(_) => {
+                self.pending.lock().unwrap().remove(&id);
+                Err("the Mac took too long to answer".into())
+            }
+        }
+    }
+}
+
+struct Handler {
+    known: Option<String>,
+    seen: Arc<Mutex<Option<String>>>,
+}
+
+impl client::Handler for Handler {
+    type Error = russh::Error;
+
+    async fn check_server_key(&mut self, key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+        let PublicKeyOrCertificate::PublicKey { key, .. } = key else { return Ok(false) };
+        let line = key.to_openssh().unwrap_or_default();
+        *self.seen.lock().unwrap() = Some(line.clone());
+        // ponytail: trust on first use, like ssh's StrictHostKeyChecking=accept-new
+        Ok(self.known.as_deref().is_none_or(|k| k == line))
+    }
+}
+
+/// Quote for the Mac's shell (zsh/sh): everything inside single quotes, `'` becomes `'\''`.
+pub fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Load the app's own ed25519 key, creating it on first run. Returns the public key line.
+pub fn ensure_key(path: &PathBuf) -> std::io::Result<String> {
+    use russh::keys::ssh_key::{LineEnding, private::Ed25519Keypair};
+    if !path.exists() {
+        let mut seed = [0u8; 32];
+        std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut seed)?;
+        let key = PrivateKey::new(Ed25519Keypair::from_seed(&seed).into(), "BubbleFairy")
+            .map_err(std::io::Error::other)?;
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        let pem = key.to_openssh(LineEnding::LF).map_err(std::io::Error::other)?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+        std::io::Write::write_all(&mut f, pem.as_bytes())?;
+    }
+    let key = russh::keys::load_secret_key(path, None).map_err(std::io::Error::other)?;
+    key.public_key().to_openssh().map_err(std::io::Error::other)
+}
+
+pub fn fingerprint(openssh_line: &str) -> String {
+    russh::keys::PublicKey::from_openssh(openssh_line)
+        .map(|k| k.fingerprint(HashAlg::Sha256).to_string())
+        .unwrap_or_default()
+}
+
+async fn resolve(host: &str) -> Result<std::net::SocketAddr, String> {
+    if let Ok(mut it) = tokio::net::lookup_host((host, 22)).await
+        && let Some(a) = it.next()
+    {
+        return Ok(a);
+    }
+    // Flatpak runtimes can't resolve `.local` names (no nss-mdns), so ask the network ourselves.
+    if host.ends_with(".local") {
+        let h = format!("{host}.");
+        let ip = tokio::task::spawn_blocking(move || {
+            let d = mdns_sd::ServiceDaemon::new().ok()?;
+            let rx = d.resolve_hostname(&h, Some(3000)).ok()?;
+            let mut found = None;
+            while let Ok(ev) = rx.recv_timeout(Duration::from_millis(3500)) {
+                match ev {
+                    mdns_sd::HostnameResolutionEvent::AddressesFound(_, ips) => {
+                        // prefer IPv4: IPv6 link-local needs a scope id
+                        found = ips.iter().map(|i| i.to_ip_addr()).min_by_key(|ip| ip.is_ipv6());
+                        break;
+                    }
+                    mdns_sd::HostnameResolutionEvent::SearchTimeout(_) => break,
+                    _ => {}
+                }
+            }
+            let _ = d.shutdown();
+            found
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some(ip) = ip {
+            return Ok((ip, 22).into());
+        }
+    }
+    Err(format!("can't find {host} on the network (is the Mac awake?)"))
+}
+
+struct Conn {
+    session: Arc<client::Handle<Handler>>,
+    rpc: Rpc,
+    dead: oneshot::Receiver<()>,
+}
+
+async fn connect(cfg: &Config, paths: &Paths, ev: &mpsc::UnboundedSender<Event>) -> Result<Conn, String> {
+    let addr = resolve(&cfg.host).await?;
+    let known = std::fs::read_to_string(&paths.known_host).ok().map(|s| s.trim().to_string());
+    let seen = Arc::new(Mutex::new(None));
+    let config = client::Config {
+        keepalive_interval: Some(Duration::from_secs(15)),
+        keepalive_max: 3,
+        nodelay: true,
+        ..Default::default()
+    };
+    let handler = Handler { known: known.clone(), seen: seen.clone() };
+    let conn = tokio::time::timeout(Duration::from_secs(10), client::connect(Arc::new(config), addr, handler)).await;
+    let mut session = match conn {
+        Err(_) => return Err(format!("{} didn't answer (is Remote Login on?)", cfg.host)),
+        Ok(Err(russh::Error::UnknownKey)) => {
+            return Err("the Mac's identity changed since the first connection. If you reinstalled or replaced the Mac, \
+                        delete the saved host key in Settings and connect again."
+                .into());
+        }
+        Ok(Err(e)) => return Err(format!("couldn't connect: {e}")),
+        Ok(Ok(s)) => s,
+    };
+    let seen = seen.lock().unwrap().clone().unwrap_or_default();
+    let _ = ev.send(Event::HostKey(seen.clone()));
+
+    let key = russh::keys::load_secret_key(&paths.key, None).map_err(|e| format!("can't read the app's key: {e}"))?;
+    let auth = session
+        .authenticate_publickey(&cfg.user, PrivateKeyWithHashAlg::new(Arc::new(key), None))
+        .await
+        .map_err(|e| format!("login failed: {e}"))?;
+    if !auth.success() {
+        return Err("the Mac refused BubbleFairy's key. Add the public key from Settings to ~/.ssh/authorized_keys on the Mac.".into());
+    }
+    if known.is_none() {
+        let _ = std::fs::write(&paths.known_host, &seen);
+    }
+
+    let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
+    channel
+        .exec(true, format!("{} rpc", sh_quote(&cfg.imsg)))
+        .await
+        .map_err(|e| e.to_string())?;
+    let (mut rd, wr) = channel.split();
+
+    let (tx, mut lines) = mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Some(l) = lines.recv().await {
+            if wr.data(l.as_bytes()).await.is_err() {
+                break;
+            }
+        }
+        // dropping the write half closes imsg's stdin, and imsg exits cleanly on EOF
+        let _ = wr.eof().await;
+    });
+
+    let pending: Pending = Default::default();
+    let (dead_tx, dead) = oneshot::channel();
+    let (p, ev2) = (pending.clone(), ev.clone());
+    tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let mut stderr = String::new();
+        while let Some(msg) = rd.wait().await {
+            match msg {
+                ChannelMsg::Data { data } => {
+                    buf.extend_from_slice(&data);
+                    while let Some(n) = buf.iter().position(|&b| b == b'\n') {
+                        let line: Vec<u8> = buf.drain(..=n).collect();
+                        if let Ok(v) = serde_json::from_slice::<Value>(&line) {
+                            dispatch(v, &p, &ev2);
+                        }
+                    }
+                }
+                ChannelMsg::ExtendedData { data, .. } => {
+                    stderr.push_str(&String::from_utf8_lossy(&data));
+                }
+                ChannelMsg::ExitStatus { exit_status } if exit_status != 0 => {
+                    let tail: String = stderr.trim().lines().last().unwrap_or("").into();
+                    let why = if exit_status == 127 { "imsg isn't installed at the configured path".into() } else { tail };
+                    eprintln!("imsg rpc exited {exit_status}: {stderr}");
+                    let _ = ev2.send(Event::Warn(format!("imsg stopped: {why}")));
+                }
+                ChannelMsg::Eof | ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        for (_, tx) in p.lock().unwrap().drain() {
+            let _ = tx.send(Err("connection lost".into()));
+        }
+        let _ = dead_tx.send(());
+    });
+
+    Ok(Conn { session: Arc::new(session), rpc: Rpc { tx, pending, next: Arc::new(AtomicU64::new(1)) }, dead })
+}
+
+fn dispatch(v: Value, pending: &Pending, ev: &mpsc::UnboundedSender<Event>) {
+    if let Some(id) = v.get("id").and_then(Value::as_u64) {
+        if let Some(tx) = pending.lock().unwrap().remove(&id) {
+            let r = match v.get("error") {
+                Some(e) => Err(e.get("message").and_then(Value::as_str).unwrap_or("error").to_string()),
+                None => Ok(v.get("result").cloned().unwrap_or(Value::Null)),
+            };
+            let _ = tx.send(r);
+        }
+        return;
+    }
+    match v.get("method").and_then(Value::as_str) {
+        Some("message") => {
+            if let Some(m) = v.pointer("/params/message") {
+                let _ = ev.send(Event::Message(m.clone()));
+            }
+        }
+        Some("watch.overflow") => {
+            let _ = ev.send(Event::Resync);
+        }
+        _ => {}
+    }
+}
+
+/// Fetch an image from the Mac, shrunk and converted to JPEG there (handles HEIC, saves bandwidth).
+async fn fetch_image(session: &client::Handle<Handler>, path: &str) -> Option<Vec<u8>> {
+    // ponytail: animated GIFs arrive as a still frame; keep them as-is when animation matters
+    let cmd = format!(
+        "d=$(mktemp -d) && sips -s format jpeg -Z 1600 {} --out \"$d/i.jpg\" >/dev/null 2>&1 && cat \"$d/i.jpg\"; rm -rf \"$d\"",
+        sh_quote(path)
+    );
+    let mut ch = session.channel_open_session().await.ok()?;
+    ch.exec(true, cmd).await.ok()?;
+    let mut out = Vec::new();
+    while let Some(msg) = ch.wait().await {
+        match msg {
+            ChannelMsg::Data { data } => out.extend_from_slice(&data),
+            ChannelMsg::Eof | ChannelMsg::Close => break,
+            _ => {}
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+const READ: Duration = Duration::from_secs(30);
+
+async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: mpsc::UnboundedSender<Event>) {
+    match cmd {
+        Cmd::Chats => match rpc.call("chats.list", json!({"limit": 100}), READ).await {
+            Ok(r) => {
+                let chats = r.get("chats").and_then(Value::as_array).cloned().unwrap_or_default();
+                let _ = ev.send(Event::Chats(chats));
+            }
+            Err(e) => {
+                let _ = ev.send(Event::Warn(e));
+            }
+        },
+        Cmd::History(id) => {
+            let r = rpc.call("messages.history", json!({"chat_id": id, "limit": 150, "attachments": true}), READ).await;
+            if let Ok(r) = r {
+                let mut msgs = r.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
+                msgs.reverse(); // imsg returns newest first
+                let _ = ev.send(Event::History(id, msgs));
+            }
+        }
+        Cmd::Preview(id) => {
+            let r = rpc.call("messages.history", json!({"chat_id": id, "limit": 1, "attachments": true}), READ).await;
+            if let Some(m) = r.ok().and_then(|r| r.pointer("/messages/0").cloned()) {
+                let _ = ev.send(Event::Preview(id, m));
+            }
+        }
+        Cmd::Send { chat_id, text } => {
+            // The first send ever waits on the Mac's Automation prompt, so allow a long time and say so.
+            let call = rpc.call("send", json!({"chat_id": chat_id, "text": text}), Duration::from_secs(180));
+            tokio::pin!(call);
+            let r = tokio::select! {
+                r = &mut call => r,
+                _ = tokio::time::sleep(Duration::from_secs(6)) => {
+                    let _ = ev.send(Event::SendSlow);
+                    call.await
+                }
+            };
+            let _ = ev.send(Event::Sent { text, err: r.err() });
+        }
+        Cmd::Image { path } => {
+            let bytes = fetch_image(&session, &path).await;
+            let _ = ev.send(Event::Image { path, bytes });
+        }
+        Cmd::Configure(_) => {}
+    }
+}
+
+/// The backend loop: connect, serve commands, reconnect every few seconds when the link drops.
+pub async fn run(mut cfg: Config, paths: Paths, mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSender<Event>) {
+    loop {
+        if cfg.host.is_empty() || cfg.user.is_empty() {
+            let _ = ev.send(Event::Offline("set up your Mac in Settings".into()));
+            match wait_offline(&mut cmds, &ev, None).await {
+                Some(c) => cfg = c,
+                None => return,
+            }
+            continue;
+        }
+        let _ = ev.send(Event::Connecting);
+        let mut conn = match connect(&cfg, &paths, &ev).await {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = ev.send(Event::Offline(e));
+                match wait_offline(&mut cmds, &ev, Some(Duration::from_secs(5))).await {
+                    Some(c) => cfg = c,
+                    None if cmds.is_closed() => return,
+                    None => {}
+                }
+                continue;
+            }
+        };
+
+        let status = conn.rpc.call("status", json!({}), READ).await;
+        match status {
+            Ok(s) if s.pointer("/database/ready").and_then(Value::as_bool) == Some(false) => {
+                let _ = ev.send(Event::Warn(
+                    "your Mac won't let BubbleFairy read Messages. On the Mac, open System Settings → General → Sharing, \
+                     click ⓘ next to Remote Login and turn on \"Allow full disk access for remote users\"."
+                        .into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                let _ = ev.send(Event::Offline(format!("imsg didn't start: {e}")));
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+        }
+        let sub = conn.rpc.call("watch.subscribe", json!({"attachments": true}), READ).await;
+        if let Err(e) = sub {
+            let _ = ev.send(Event::Warn(format!("live updates unavailable: {e}")));
+        }
+        let _ = ev.send(Event::Connected);
+
+        loop {
+            tokio::select! {
+                _ = &mut conn.dead => break,
+                c = cmds.recv() => match c {
+                    None => return,
+                    Some(Cmd::Configure(c)) if c != cfg => { cfg = c; break; }
+                    Some(Cmd::Configure(_)) => {}
+                    Some(c) => { tokio::spawn(handle(c, conn.rpc.clone(), conn.session.clone(), ev.clone())); }
+                },
+            }
+        }
+        let _ = conn.session.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        let _ = ev.send(Event::Offline("lost the connection to the Mac, retrying".into()));
+    }
+}
+
+/// While offline: fail sends right away, drop reads (the UI reloads on Connected), wake on new settings.
+async fn wait_offline(cmds: &mut mpsc::UnboundedReceiver<Cmd>, ev: &mpsc::UnboundedSender<Event>, wait: Option<Duration>) -> Option<Config> {
+    let sleep = tokio::time::sleep(wait.unwrap_or(Duration::MAX / 4));
+    tokio::pin!(sleep);
+    loop {
+        tokio::select! {
+            _ = &mut sleep => return None,
+            c = cmds.recv() => match c? {
+                Cmd::Configure(c) => return Some(c),
+                Cmd::Send { text, .. } => {
+                    let _ = ev.send(Event::Sent { text, err: Some("not connected to the Mac".into()) });
+                }
+                _ => {}
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quoting_survives_shell_tricks() {
+        assert_eq!(sh_quote("$(rm -rf ~)"), "'$(rm -rf ~)'");
+        assert_eq!(sh_quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn dispatch_routes_replies_and_notifications() {
+        let pending: Pending = Default::default();
+        let (tx, mut rx) = oneshot::channel();
+        pending.lock().unwrap().insert(7, tx);
+        let (ev, mut evs) = mpsc::unbounded_channel();
+        dispatch(json!({"jsonrpc":"2.0","id":7,"result":{"ok":true}}), &pending, &ev);
+        assert_eq!(rx.try_recv().unwrap().unwrap(), json!({"ok":true}));
+        dispatch(json!({"jsonrpc":"2.0","method":"message","params":{"subscription":1,"message":{"id":5}}}), &pending, &ev);
+        assert!(matches!(evs.try_recv(), Ok(Event::Message(m)) if m["id"] == 5));
+    }
+}

@@ -7,6 +7,13 @@
 
 > **Status: early development.** There is nothing to install yet.
 
+> ### 🤖 Fully vibe coded
+> **Every line of this project was written by AI.** I'm building BubbleFairy entirely by describing what I want to
+> [Claude Code](https://claude.com/claude-code) (Anthropic's AI coding tool) and testing the result by using it.
+> I'm being upfront about that so anyone reading or reviewing the code knows what they are looking at. It works
+> well for me, but it has not had a professional audit, and some of the code will look like what it is. Reviews,
+> bug reports and pull requests are very welcome.
+
 ## How it works
 
 ```text

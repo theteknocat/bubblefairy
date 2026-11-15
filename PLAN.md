@@ -103,17 +103,23 @@ Reactions/tapbacks, starting new conversations, search, marking chats read, cont
 4. The first send triggers the Automation prompt on the Mac, and the send blocks until someone clicks Allow. The UI must say "check your Mac".
 5. Non-interactive SSH doesn't load Homebrew's PATH. Always call imsg by its full path.
 6. Quote every argument that goes through the remote shell. With `rpc`, message text travels inside JSON over the pipe and never reaches the shell.
-7. Killing the SSH client may leave the remote process running. Make sure `imsg rpc` exits when its stdin closes, and if it doesn't, wrap it as the proof of concept did (`… & read; kill $!`).
+7. Killing the SSH client used to leave `imsg watch` running on the Mac. `imsg rpc` exits when its stdin closes (documented), so closing the channel is enough.
 8. Debounce history fetches when switching chats quickly (about 150 ms).
 
 ## To verify before or while building
 
-- Does each message carry its own `service`? This matters for colouring individual bubbles when a chat falls back to SMS.
-- Does imsg expose Apple's rich-link preview payload?
-- Exact rpc parameters and responses (`docs/rpc.md` in the imsg repo).
+Answered from imsg's `docs/rpc.md` and `docs/json.md` (v0.21.0):
+
+- Messages carry no `service` field, so only chats do. Bubble colour follows the chat's service. A chat that falls back to SMS partway through stays one colour.
+- Apple's link previews are exposed. When imsg folds the preview row into its text message, that message carries `url_preview` (and `balloon_bundle_id` = `com.apple.messages.URLBalloonProvider`). That's the source for Phase 1.1.
+- `imsg rpc` exits cleanly when its stdin closes, so closing the SSH channel is enough and no wrapper is needed.
+- Messages include `sender_name` (from Contacts), `edited_at`, `unsent_at` and `reply_to_guid`. Live updates add `type: edited|unsent`.
+- Attachments have `original_path` on the Mac. Phase 1 fetches images over an extra SSH exec channel, converting them to JPEG at a maximum of 1600 px with `sips` (which also handles HEIC).
+
+Still open:
+
 - Is `imsg-macos.zip` a universal build (arm64 plus x86_64)?
 - Does "full disk access for remote users" cover a binary in the app dir? Expected yes, because the permission belongs to the SSH session.
-- `russh`: password auth, ed25519 key generation and host key pinning, plus its licence (expected Apache-2.0).
 
 ## Risks
 
