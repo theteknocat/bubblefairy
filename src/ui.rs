@@ -50,6 +50,9 @@ struct State {
     /// chats with a history request in flight (header spinner)
     loading: HashSet<i64>,
     older_loading: bool,
+    /// the Mac's contact photos (asked for once per connection) and the decoded pictures
+    contacts: Option<crate::mac::Contacts>,
+    avatar_tex: HashMap<String, Option<gdk::Texture>>,
     /// link previews by message row: None = asked for, or the Mac had none
     links: HashMap<i64, Option<crate::mac::LinkPreview>>,
     /// files waiting in the composer
@@ -752,7 +755,21 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
 fn on_event(u: &Rc<Ui>, e: Event) {
     match e {
         Event::Connecting => set_status(u, "connecting", "Connecting", None),
+        Event::Contacts(c) => {
+            {
+                let mut st = u.st.borrow_mut();
+                st.contacts = Some(c);
+                st.avatar_tex.clear();
+            }
+            render_chats(u);
+            if u.st.borrow().sel.is_some() {
+                render_conv(u);
+            }
+        }
         Event::Connected => {
+            if u.st.borrow().contacts.is_none() {
+                u.send(Cmd::Contacts);
+            }
             u.st.borrow_mut().connected = true;
             set_status(u, "online", "Connected", None);
             if u.banner_offline.get() {
@@ -1267,7 +1284,7 @@ fn render_suggest(u: &Ui) {
         row.add_css_class("chat-row");
         row.set_widget_name(&id.to_string());
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        line.append(&avatar(&name, false));
+        line.append(&avatar(u, &name, Some(&addr), false));
         let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
         text.set_valign(gtk::Align::Center);
         let n = gtk::Label::new(Some(&name));
@@ -1361,7 +1378,7 @@ fn same_addr(typed: &str, ident: &str) -> bool {
 // ---------- chat list ----------
 
 fn render_chats(u: &Rc<Ui>) {
-    let rows: Vec<(String, String, String, bool, i64)> = {
+    let rows: Vec<(String, String, String, bool, i64, Option<String>)> = {
         let st = u.st.borrow();
         st.chats
             .iter()
@@ -1376,14 +1393,15 @@ fn render_chats(u: &Rc<Ui>) {
                 // read here but not on the Mac (imsg can't mark read): trust what we've shown
                 let seen_here = p.and_then(|m| m["id"].as_i64()).is_some_and(|last| st.seen.get(&id).is_some_and(|s| *s >= last));
                 let unread = c["unread_count"].as_i64().unwrap_or(0) > 0 && !seen_here;
-                (chat_title(c, &st.names), text.unwrap_or_default(), when.unwrap_or_default(), unread, id)
+                let handle = (c["is_group"].as_bool() != Some(true)).then(|| direct_addr(c).map(String::from)).flatten();
+                (chat_title(c, &st.names), text.unwrap_or_default(), when.unwrap_or_default(), unread, id, handle)
             })
             .collect()
     };
     let sel = u.st.borrow().sel;
     u.selecting.set(true);
     u.chat_list.remove_all();
-    for (title, preview, when, unread, id) in rows {
+    for (title, preview, when, unread, id, handle) in rows {
         let name = gtk::Label::new(Some(&title));
         name.add_css_class("chat-name");
         name.set_xalign(0.0);
@@ -1405,7 +1423,7 @@ fn render_chats(u: &Rc<Ui>) {
         texts.append(&top);
         texts.append(&prev);
         let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 11);
-        row_box.append(&avatar(&title, false));
+        row_box.append(&avatar(u, &title, handle.as_deref(), false));
         row_box.append(&texts);
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         dot.set_valign(gtk::Align::Center);
@@ -1469,7 +1487,8 @@ fn render_conv(u: &Rc<Ui>) {
     while let Some(c) = u.head_avatar.first_child() {
         u.head_avatar.remove(&c);
     }
-    u.head_avatar.append(&avatar(&title, false));
+    let head_handle = (!group).then(|| direct_addr(&chat).map(String::from)).flatten();
+    u.head_avatar.append(&avatar(u, &title, head_handle.as_deref(), false));
     for c in ["sms", "imessage"] {
         u.send_btn.remove_css_class(c);
     }
@@ -1531,7 +1550,7 @@ fn render_conv(u: &Rc<Ui>) {
             line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
             if group && !me {
                 if last && !run_next {
-                    let a = avatar(&sender_name(m, &names), true);
+                    let a = avatar(u, &sender_name(m, &names), m["sender"].as_str(), true);
                     a.set_valign(gtk::Align::End);
                     line.append(&a);
                 } else {
@@ -2139,7 +2158,36 @@ pub fn initials(name: &str) -> String {
     name.split_whitespace().filter_map(|w| w.chars().find(|c| c.is_alphanumeric())).take(2).flat_map(char::to_uppercase).collect()
 }
 
-fn avatar(name: &str, small: bool) -> gtk::Label {
+/// The contact's photo for a phone number or email, if the Mac has one.
+fn photo_for(u: &Ui, handle: &str) -> Option<gdk::Texture> {
+    let key = crate::mac::addr_key(handle)?;
+    let mut st = u.st.borrow_mut();
+    if let Some(t) = st.avatar_tex.get(&key) {
+        return t.clone();
+    }
+    let t = st.contacts.as_ref().and_then(|c| c.photo(handle)).and_then(texture);
+    st.avatar_tex.insert(key, t.clone());
+    t
+}
+
+/// A round avatar: the contact's photo if there is one, otherwise their initials on a colour.
+fn avatar(u: &Ui, name: &str, handle: Option<&str>, small: bool) -> gtk::Widget {
+    if let Some(t) = handle.and_then(|h| photo_for(u, h)) {
+        let size = if small { 28 } else { 44 };
+        let b = bubble::Bubble::disc(size);
+        b.set_texture(Some(&t));
+        b.add_css_class("avatar");
+        b.add_css_class("photo");
+        if small {
+            b.add_css_class("small");
+        }
+        b.set_halign(gtk::Align::Center);
+        return b.upcast();
+    }
+    initials_avatar(name, small).upcast()
+}
+
+fn initials_avatar(name: &str, small: bool) -> gtk::Label {
     let b = gtk::Label::new(Some(&initials(name)));
     b.set_halign(gtk::Align::Center);
     b.add_css_class("avatar");

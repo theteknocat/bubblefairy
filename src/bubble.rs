@@ -80,6 +80,13 @@ impl Bubble {
         b
     }
 
+    /// A round picture of a fixed size (an avatar), cropped to fill the circle.
+    pub fn disc(size: i32) -> Self {
+        let b = Self::thumb(size);
+        b.imp().disc.set(true);
+        b
+    }
+
     pub fn set_photo_size(&self, w: i32, h: i32) {
         self.set_size_request(w + TAIL as i32, h);
     }
@@ -179,6 +186,7 @@ mod imp {
         pub is_photo: Cell<bool>,
         pub is_card: Cell<bool>,
         pub flat: Cell<bool>,
+        pub disc: Cell<bool>,
         pub card_h: Cell<f32>,
         pub tex: RefCell<Option<gdk::Texture>>,
     }
@@ -200,9 +208,17 @@ mod imp {
             if self.flat.get() && width > 0.0 && height > 0.0 {
                 let bounds = graphene::Rect::new(0.0, 0.0, width, height);
                 let b = gsk::PathBuilder::new();
-                b.add_rounded_rect(&gsk::RoundedRect::from_rect(bounds, 12.0));
+                let disc = self.disc.get();
+                b.add_rounded_rect(&gsk::RoundedRect::from_rect(bounds, if disc { width.min(height) / 2.0 } else { 12.0 }));
                 let path = b.to_path();
                 s.push_fill(&path, gsk::FillRule::Winding);
+                if disc {
+                    if let Some(t) = self.tex.borrow().as_ref() {
+                        draw_cover(s, t, &bounds);
+                    }
+                    s.pop();
+                    return;
+                }
                 s.append_color(&rgba(0xffffff, 1.0), &bounds); // a white tile, so a transparent logo reads
                 if let Some(t) = self.tex.borrow().as_ref() {
                     // the whole logo, never cropped, with a little margin

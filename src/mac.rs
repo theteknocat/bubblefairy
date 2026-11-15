@@ -34,6 +34,8 @@ pub enum Cmd {
     Image { path: String, full: bool },
     /// Apple's link preview stored on this message row
     Link(i64),
+    /// The Mac's contact photos, to use as avatars
+    Contacts,
 }
 
 pub enum Event {
@@ -55,6 +57,7 @@ pub enum Event {
     SendSlow,
     Image { path: String, full: bool, bytes: Option<Vec<u8>> },
     Link(i64, Option<LinkPreview>),
+    Contacts(Contacts),
 }
 
 pub struct Paths {
@@ -372,6 +375,75 @@ async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
     }
 }
 
+/// Contact photos from the Mac's Contacts, found by phone number or email.
+#[derive(Default)]
+pub struct Contacts {
+    index: HashMap<String, usize>,
+    photos: Vec<Vec<u8>>,
+}
+
+impl Contacts {
+    /// The photo (JPEG/PNG bytes) for a phone number or email address, if the contact has one.
+    pub fn photo(&self, handle: &str) -> Option<&[u8]> {
+        self.index.get(&addr_key(handle)?).map(|i| &self.photos[*i][..])
+    }
+}
+
+/// What two spellings of the same address share: an email lowercased, a phone number's last ten
+/// digits ("(403) 555-1234" and "+14035551234" match). Short codes have no key.
+pub fn addr_key(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.contains('@') {
+        return Some(s.to_lowercase());
+    }
+    let d: String = s.chars().filter(char::is_ascii_digit).collect();
+    (d.len() >= 10).then(|| d[d.len() - 10..].to_string())
+}
+
+/// Read every Contacts database on the Mac (iCloud and local accounts each have one): the photo of
+/// each contact that has one, plus the numbers and emails that point at it.
+async fn fetch_contacts(session: &client::Handle<Handler>) -> Option<Contacts> {
+    let sql = "select 'K|'||p.ZOWNER||'|'||p.ZFULLNUMBER from ZABCDPHONENUMBER p join ZABCDRECORD r on r.Z_PK=p.ZOWNER \
+               where r.ZTHUMBNAILIMAGEDATA is not null and p.ZFULLNUMBER is not null \
+               union all select 'K|'||e.ZOWNER||'|'||lower(e.ZADDRESS) from ZABCDEMAILADDRESS e join ZABCDRECORD r on r.Z_PK=e.ZOWNER \
+               where r.ZTHUMBNAILIMAGEDATA is not null and e.ZADDRESS is not null \
+               union all select 'P|'||Z_PK||'|'||hex(ZTHUMBNAILIMAGEDATA) from ZABCDRECORD where ZTHUMBNAILIMAGEDATA is not null";
+    let cmd = format!(
+        "q={}; find \"$HOME/Library/Application Support/AddressBook\" -name AddressBook-v22.abcddb | {{ i=0; \
+         while read -r db; do i=$((i+1)); sqlite3 -readonly \"$db\" \"$q\" 2>/dev/null | sed \"s/^\\([KP]\\)|/\\1|$i:/\"; done; }}",
+        sh_quote(sql)
+    );
+    let out = exec(session, cmd).await?;
+    Some(parse_contacts(&String::from_utf8_lossy(&out)))
+}
+
+/// `P|<db>:<contact>|<hex photo>` and `K|<db>:<contact>|<number or email>` lines -> lookup table.
+/// Photos are stored as a type byte (1 = an ordinary image file) followed by the image.
+pub fn parse_contacts(out: &str) -> Contacts {
+    let mut c = Contacts::default();
+    let mut owner_photo: HashMap<&str, usize> = HashMap::new();
+    for l in out.lines() {
+        let mut f = l.splitn(3, '|');
+        if let (Some("P"), Some(owner), Some(h)) = (f.next(), f.next(), f.next())
+            && let Some(b) = hex(h)
+            && b.len() > 4
+            && b[0] == 1
+        {
+            owner_photo.insert(owner, c.photos.len());
+            c.photos.push(b[1..].to_vec());
+        }
+    }
+    for l in out.lines() {
+        let mut f = l.splitn(3, '|');
+        if let (Some("K"), Some(owner), Some(raw)) = (f.next(), f.next(), f.next())
+            && let (Some(i), Some(k)) = (owner_photo.get(owner), addr_key(raw))
+        {
+            c.index.entry(k).or_insert(*i);
+        }
+    }
+    c
+}
+
 /// What Messages saved about a shared link. `image` / `icon` are payload files on the Mac.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LinkPreview {
@@ -608,6 +680,9 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let files_left = if err.is_some() { files[sent..].to_vec() } else { Vec::new() };
             let _ = ev.send(Event::Sent { text: if err.is_some() { text_left } else { String::new() }, files: files_left, err });
         }
+        Cmd::Contacts => {
+            let _ = ev.send(Event::Contacts(fetch_contacts(&session).await.unwrap_or_default()));
+        }
         Cmd::Link(rowid) => {
             let _ = ev.send(Event::Link(rowid, link_preview(&session, rowid).await));
         }
@@ -750,6 +825,14 @@ mod link_tests {
         assert_eq!(p.image.as_deref(), Some("big.jpg"));
         assert_eq!(p.icon, None);
         assert_eq!(super::hex("0aff"), Some(vec![10, 255]));
+        let c = super::parse_contacts(
+            "P|1:7|01FFD8FF00\nP|1:8|02424633AA\nK|1:7|(403) 555-1234\nK|1:7|Sue@iCloud.com\nK|1:8|403 555 9999\nK|2:7|+1 555 000 1111\n",
+        );
+        assert_eq!(c.photo("+14035551234"), Some(&[0xFF, 0xD8, 0xFF, 0x00][..]));
+        assert_eq!(c.photo("sue@icloud.com"), c.photo("+14035551234"));
+        assert_eq!(c.photo("+14035559999"), None); // that contact's photo isn't an image file
+        assert_eq!(c.photo("562528"), None); // short code
+        assert_eq!(c.photo("+15550001111"), None); // same contact number, different database
         assert_eq!(super::parse_size("/x/y.png\n  pixelWidth: 286\n  pixelHeight: 142\n"), Some((286, 142)));
         // sizes seen in Jo's chat: logos and icons are small, previews are big
         assert!(!super::is_preview_size(286, 142) && !super::is_preview_size(180, 180));

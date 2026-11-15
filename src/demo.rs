@@ -62,6 +62,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
                 ev.send(Event::Sent { text: String::new(), files: Vec::new(), err: None })
             }
             Cmd::Older { id, .. } => ev.send(Event::Older(id, Vec::new())),
+            Cmd::Contacts => ev.send(Event::Contacts(Default::default())),
             Cmd::Link(id) => ev.send(Event::Link(id, None)),
             Cmd::Image { path, full } => ev.send(Event::Image { path, full, bytes: None }),
             Cmd::Configure(_) => Ok(()),
