@@ -50,6 +50,7 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 
 - New 1:1 conversations: a "new message" button (Ctrl+N) swaps the conversation header for a To field. As you type, it suggests people you already have chats with (picking one opens that chat). Otherwise it takes a phone number or email, and the first message goes out as `send {to, service: "auto"}`; the app opens the new chat once it appears. imsg can't list the Mac's Contacts, so there's no address-book search.
   - New group chats aren't possible: imsg's `chats.create` needs its bridge, which needs SIP off (out of scope).
+- Read state, kept locally. The unread dots mirror the Mac's chat.db (`unread_count`), so a chat read only on the iPhone stays unread until the Mac catches up. Marking read on the Mac isn't possible: imsg's `read` needs SIP off, and Messages has no AppleScript for it. So the app remembers, per chat, the newest message seen in BubbleFairy, and hides the dot until something newer arrives. Nothing goes back to the Mac.
 - Sending attachments, and other attachment types (video, PDF, audio).
 - Link previews:
   - Use Apple's own rich-link data when imsg exposes it.
@@ -86,7 +87,7 @@ The wizard does everything else:
 
 ### Later
 
-Reactions/tapbacks, search, marking chats read, contact photos, running in the background or in the tray. A Mac companion app is a possibility. An iPhone-only route is unlikely, because iOS gives third-party apps no access to iMessage (not researched).
+Reactions/tapbacks, search, contact photos, running in the background or in the tray. A Mac companion app is a possibility. An iPhone-only route is unlikely, because iOS gives third-party apps no access to iMessage (not researched).
 
 ## Design direction
 
