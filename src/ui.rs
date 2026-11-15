@@ -660,6 +660,32 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             if left.get() == 0 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
         });
     }
+    if let Some(ms) = std::env::var("BF_LINK").ok().and_then(|v| v.parse::<u64>().ok()) {
+        // dev aid: every `ms`, scroll the open chat to its first link card with a picture
+        let u = ui.clone();
+        glib::timeout_add_local(Duration::from_millis(ms), move || {
+            fn find(w: &gtk::Widget) -> Option<gtk::Widget> {
+                if w.has_css_class("linkcard") && w.has_css_class("fixed") {
+                    return Some(w.clone());
+                }
+                let mut c = w.first_child();
+                while let Some(x) = c {
+                    if let Some(f) = find(&x) {
+                        return Some(f);
+                    }
+                    c = x.next_sibling();
+                }
+                None
+            }
+            if let Some(card) = find(u.msgs.upcast_ref())
+                && let Some(p) = card.compute_point(&u.msgs, &gtk::graphene::Point::new(0.0, 0.0))
+            {
+                u.stick_bottom.set(false);
+                u.scroller.vadjustment().set_value(p.y() as f64 - 200.0);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
     if let Ok(t) = std::env::var("BF_ATTACH") {
         // dev aid: put these files (colon-separated) in the composer
         let u = ui.clone();
@@ -1627,16 +1653,20 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
     let mut out: Vec<gtk::Widget> = Vec::new();
     let link = preview_row(m).and_then(|r| link_for(u, r));
     let mut text = clean_text(m);
-    if link.as_ref().is_some_and(|l| text.trim().trim_end_matches('/') == l.url.trim_end_matches('/')) {
-        text.clear(); // just the link: the card says it all
+    if let Some(l) = &link {
+        text = without_url(&text, &l.url); // the card shows the link; any other words follow it
     }
     let has_bubble = !text.is_empty() || !others.is_empty();
     if !photos.is_empty() {
         let tail = end_of_run && !has_bubble && link.is_none();
         out.push(photo_stack(u, &photos, bubble::Look { me, sms, tail, ..Default::default() }));
     }
+    if let Some(l) = &link {
+        let card = bubble::Look { me, sms, tail: end_of_run && !has_bubble, join_prev: join_prev && photos.is_empty(), join_next: has_bubble };
+        out.push(link_card(u, l, card));
+    }
     if has_bubble {
-        let b = bubble::Bubble::new(bubble::Look { tail: end_of_run && link.is_none(), ..look(join_prev && photos.is_empty()) });
+        let b = bubble::Bubble::new(look((join_prev && photos.is_empty()) || link.is_some()));
         for l in others {
             b.add(&l);
         }
@@ -1659,10 +1689,14 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, join_prev: bool, jo
         }
         out.push(b.upcast());
     }
-    if let Some(l) = link {
-        out.push(link_card(u, &l, bubble::Look { me, sms, tail: end_of_run, join_prev: false, join_next }));
-    }
     out
+}
+
+/// `text` with the link removed (it's shown as the preview card instead).
+fn without_url(text: &str, url: &str) -> String {
+    let t = text.replace(url, "").replace(url.trim_end_matches('/'), "");
+    let t = t.trim();
+    if t.chars().all(|c| c == '/') { String::new() } else { t.to_string() }
 }
 
 /// The row holding Apple's preview for this message: folded in by imsg (`url_preview`), or the
@@ -1685,20 +1719,14 @@ fn link_for(u: &Ui, row: i64) -> Option<crate::mac::LinkPreview> {
 
 const LINK_W: i32 = 300;
 
-/// A shared link as Apple saved it: the preview image (if any) above a strip with the title and
-/// site. Clicking opens it in the browser.
+/// A shared link as Apple saved it, as one bubble: the preview image (if any) across the top, then
+/// the title and site. Clicking opens it in the browser.
 fn link_card(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look) -> gtk::Widget {
-    let col = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    col.add_css_class("link-card");
+    let img_h = if l.image.is_some() { LINK_W * 52 / 100 } else { 0 };
+    let b = bubble::Bubble::card(look, LINK_W, img_h);
     if let Some(img) = &l.image {
-        let p = bubble::Bubble::photo(bubble::Look { tail: false, join_next: true, ..look }, LINK_W, LINK_W * 52 / 100);
-        p.add_css_class("fixed");
-        load_texture(u, &p, img);
-        col.append(&p);
-    }
-    let b = bubble::Bubble::new(bubble::Look { join_prev: l.image.is_some(), ..look });
-    if l.image.is_some() {
-        b.set_size_request(LINK_W + bubble::TAIL as i32, -1);
+        b.add_css_class("fixed"); // keeps its card size instead of taking the photo's shape
+        load_texture(u, &b, img);
     }
     if !l.title.is_empty() {
         let t = gtk::Label::new(Some(&l.title));
@@ -1718,17 +1746,16 @@ fn link_card(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look) -> gtk
     site.set_ellipsize(gtk::pango::EllipsizeMode::End);
     site.set_max_width_chars(34);
     b.add(&site);
-    col.append(&b);
-    col.set_tooltip_text(Some(&l.url));
-    col.set_cursor_from_name(Some("pointer"));
+    b.set_tooltip_text(Some(&l.url));
+    b.set_cursor_from_name(Some("pointer"));
     let click = gtk::GestureClick::new();
     let (u2, url) = (u.clone(), l.url.clone());
     click.connect_released(move |g, _, _, _| {
         g.set_state(gtk::EventSequenceState::Claimed);
         gtk::UriLauncher::new(&url).launch(Some(&u2.win), gio::Cancellable::NONE, |_| {});
     });
-    col.add_controller(click);
-    col.upcast()
+    b.add_controller(click);
+    b.upcast()
 }
 
 const CARD: i32 = 210; // stacked photo card size
@@ -2125,6 +2152,14 @@ fn sep_time(d: &glib::DateTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_removed_from_text() {
+        assert_eq!(without_url("https://a.com/x", "https://a.com/x"), "");
+        assert_eq!(without_url("look https://a.com/ nice", "https://a.com/"), "look  nice");
+        assert_eq!(without_url("https://a.com/", "https://a.com"), "");
+        assert_eq!(without_url("hello", "https://a.com"), "hello");
+    }
 
     #[test]
     fn addresses() {

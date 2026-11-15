@@ -194,7 +194,8 @@ row.unread .chat-preview { color: var(--ink); }
 .bubble .edited, .bubble .unsent { font-size: 0.78em; font-style: italic; opacity: 0.8; }
 .bubble label selection { background-color: rgba(255, 255, 255, 0.35); }
 
-/* link previews */
+/* link previews: off-white card with soft dark text, in both colour schemes */
+.bubble.linkcard.me, .bubble.linkcard.them { color: #35353d; }
 .link-title { font-weight: 700; }
 .link-site { font-size: 0.85em; opacity: 0.8; }
 

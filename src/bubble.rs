@@ -55,6 +55,23 @@ impl Bubble {
         b
     }
 
+    /// A link preview: one bubble, off-white whoever sent it, with the preview image (if `img_h` > 0)
+    /// across the top, clipped to the bubble's outline, and the title and site below it.
+    /// Set the picture with `set_texture`; content goes in with `add`.
+    pub fn card(look: Look, w: i32, img_h: i32) -> Self {
+        let b = Self::new(look);
+        b.imp().is_card.set(true);
+        b.imp().card_h.set(img_h as f32);
+        b.set_size_request(w + TAIL as i32, -1);
+        if let Some(inner) = b.first_child().and_downcast::<gtk::Box>()
+            && img_h > 0
+        {
+            inner.set_margin_top(img_h + 10);
+        }
+        b.add_css_class("linkcard");
+        b
+    }
+
     pub fn set_photo_size(&self, w: i32, h: i32) {
         self.set_size_request(w + TAIL as i32, h);
     }
@@ -93,6 +110,11 @@ pub fn draw_cover(s: &gtk::Snapshot, t: &gdk::Texture, r: &graphene::Rect) {
     t.snapshot(s, dw as f64, dh as f64);
     s.restore();
     s.pop();
+}
+
+/// Link-preview cards: soft off-white in light and dark mode alike (dark grey text, set in CSS).
+fn card_palette() -> (gdk::RGBA, gdk::RGBA, gdk::RGBA, f32, Option<gdk::RGBA>) {
+    (rgba(0xfbfaf6, 1.0), rgba(0xeeece6, 1.0), rgba(0x0a0528, 0.30), 0.7, Some(rgba(0x000000, 0.10)))
 }
 
 fn rgba(hex: u32, a: f32) -> gdk::RGBA {
@@ -148,6 +170,8 @@ mod imp {
     pub struct Bubble {
         pub look: Cell<Look>,
         pub is_photo: Cell<bool>,
+        pub is_card: Cell<bool>,
+        pub card_h: Cell<f32>,
         pub tex: RefCell<Option<gdk::Texture>>,
     }
 
@@ -190,7 +214,7 @@ mod imp {
             if width > TAIL && height > 0.0 {
                 let look = self.look.get();
                 let dark = w.root().is_some_and(|r| r.has_css_class("dark"));
-                let (top, bottom, shadow, hi, border) = palette(look, dark);
+                let (top, bottom, shadow, hi, border) = if self.is_card.get() { card_palette() } else { palette(look, dark) };
                 let path = outline(look, width, height);
                 let bounds = graphene::Rect::new(0.0, 0.0, width, height);
 
@@ -204,6 +228,18 @@ mod imp {
                 );
                 s.pop();
                 s.pop();
+
+                if self.is_card.get() && self.card_h.get() > 0.0 {
+                    // the preview image across the top, shaped by the bubble's outline
+                    let x = if look.me { 0.0 } else { TAIL };
+                    let r = graphene::Rect::new(x, 0.0, width - TAIL, self.card_h.get());
+                    s.push_fill(&path, gsk::FillRule::Winding);
+                    match self.tex.borrow().as_ref() {
+                        Some(t) => draw_cover(s, t, &r),
+                        None => s.append_color(&rgba(0x8a7cc8, 0.22), &r),
+                    }
+                    s.pop();
+                }
 
                 // glassy rim: the outline nudged down 1px and clipped to the shape lights the top edge
                 s.push_fill(&path, gsk::FillRule::Winding);
