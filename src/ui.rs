@@ -664,20 +664,35 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         // dev aid: every `ms`, scroll the open chat to its first link card with a picture
         let u = ui.clone();
         glib::timeout_add_local(Duration::from_millis(ms), move || {
-            fn find(w: &gtk::Widget) -> Option<gtk::Widget> {
-                if w.has_css_class("linkcard") && w.has_css_class("fixed") {
+            // BF_LINK_TITLE=<text> picks the card whose title has that text; else the first with a big picture
+            fn has_text(w: &gtk::Widget, needle: &str) -> bool {
+                if w.downcast_ref::<gtk::Label>().is_some_and(|l| l.text().contains(needle)) {
+                    return true;
+                }
+                let mut c = w.first_child();
+                while let Some(x) = c {
+                    if has_text(&x, needle) {
+                        return true;
+                    }
+                    c = x.next_sibling();
+                }
+                false
+            }
+            fn find(w: &gtk::Widget, title: Option<&str>) -> Option<gtk::Widget> {
+                if w.has_css_class("linkcard") && title.map_or(w.has_css_class("fixed"), |t| has_text(w, t)) {
                     return Some(w.clone());
                 }
                 let mut c = w.first_child();
                 while let Some(x) = c {
-                    if let Some(f) = find(&x) {
+                    if let Some(f) = find(&x, title) {
                         return Some(f);
                     }
                     c = x.next_sibling();
                 }
                 None
             }
-            if let Some(card) = find(u.msgs.upcast_ref())
+            let title = std::env::var("BF_LINK_TITLE").ok();
+            if let Some(card) = find(u.msgs.upcast_ref(), title.as_deref())
                 && let Some(p) = card.compute_point(&u.msgs, &gtk::graphene::Point::new(0.0, 0.0))
             {
                 u.stick_bottom.set(false);
@@ -1709,12 +1724,16 @@ const LINK_W: i32 = 300;
 /// A shared link as Apple saved it, as one bubble: the preview image (if any) across the top, then
 /// the title and site. Clicking opens it in the browser.
 fn link_card(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look) -> gtk::Widget {
-    let img_h = if l.image.is_some() { LINK_W * 52 / 100 } else { 0 };
-    let b = bubble::Bubble::card(look, LINK_W, img_h);
-    if let Some(img) = &l.image {
+    // a real preview picture goes across the top; a small one (the site's logo) sits beside the text
+    let big = l.image.is_some() && l.image_size.is_none_or(|(w, h)| crate::mac::is_preview_size(w, h));
+    let b = bubble::Bubble::card(look, LINK_W, if big { LINK_W * 52 / 100 } else { 0 });
+    if big && let Some(img) = &l.image {
         b.add_css_class("fixed"); // keeps its card size instead of taking the photo's shape
         load_texture(u, &b, img);
     }
+    let texts = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    texts.set_hexpand(true);
+    texts.set_valign(gtk::Align::Center);
     if !l.title.is_empty() {
         let t = gtk::Label::new(Some(&l.title));
         t.add_css_class("link-title");
@@ -1723,16 +1742,27 @@ fn link_card(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look) -> gtk
         t.set_wrap_mode(gtk::pango::WrapMode::WordChar);
         t.set_lines(2);
         t.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        t.set_max_width_chars(34);
-        b.add(&t);
+        t.set_max_width_chars(if big || l.image.is_none() { 34 } else { 24 });
+        texts.append(&t);
     }
     // ponytail: the site's icon (l.icon) isn't drawn; a link glyph stands in
     let site = gtk::Label::new(Some(&format!("🔗 {}", if l.site.is_empty() { &l.url } else { &l.site })));
     site.add_css_class("link-site");
     site.set_xalign(0.0);
     site.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    site.set_max_width_chars(34);
-    b.add(&site);
+    site.set_max_width_chars(if big || l.image.is_none() { 34 } else { 24 });
+    texts.append(&site);
+    if !big && let Some(img) = &l.image {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row.append(&texts);
+        let icon = bubble::Bubble::thumb(56);
+        icon.add_css_class("fixed");
+        load_texture(u, &icon, img);
+        row.append(&icon);
+        b.add(&row);
+    } else {
+        b.add(&texts);
+    }
     b.set_tooltip_text(Some(&l.url));
     b.set_cursor_from_name(Some("pointer"));
     let click = gtk::GestureClick::new();

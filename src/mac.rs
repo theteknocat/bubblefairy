@@ -381,7 +381,20 @@ pub struct LinkPreview {
     pub title: String,
     pub site: String,
     pub image: Option<String>,
+    /// the picture's size in pixels; Messages shows small ones (a site logo) as an icon, not a preview
+    pub image_size: Option<(i32, i32)>,
     pub icon: Option<String>,
+}
+
+/// A picture big enough to show as a preview above the title (rather than a logo or icon beside it).
+pub fn is_preview_size(w: i32, h: i32) -> bool {
+    w >= 400 && h >= 200
+}
+
+/// `sips -g pixelWidth -g pixelHeight` output -> (width, height)
+fn parse_size(out: &str) -> Option<(i32, i32)> {
+    let get = |k: &str| out.lines().find_map(|l| l.trim().strip_prefix(k)?.trim().parse::<i32>().ok());
+    Some((get("pixelWidth:")?, get("pixelHeight:")?))
 }
 
 /// The preview row's `payload_data` (an NSKeyedArchiver plist) plus its payload files, in the order
@@ -397,7 +410,13 @@ async fn link_preview(session: &client::Handle<Handler>, rowid: i64) -> Option<L
     let mut lines = text.lines();
     let bytes = hex(lines.next()?)?;
     let files: Vec<String> = lines.map(String::from).collect();
-    parse_link(&bytes, &files)
+    let mut p = parse_link(&bytes, &files)?;
+    if let Some(img) = &p.image {
+        let path = img.strip_prefix("~/").map(|r| format!("\"$HOME\"/{}", sh_quote(r))).unwrap_or_else(|| sh_quote(img));
+        let out = exec(session, format!("sips -g pixelWidth -g pixelHeight {path}")).await;
+        p.image_size = out.and_then(|o| parse_size(&String::from_utf8_lossy(&o)));
+    }
+    Some(p)
 }
 
 fn hex(s: &str) -> Option<Vec<u8>> {
@@ -435,7 +454,7 @@ pub fn parse_link(bytes: &[u8], files: &[String]) -> Option<LinkPreview> {
     let url = typed.clone().or_else(|| resolved.clone())?;
     let alt_url = resolved.filter(|r| *r != url).or(typed.filter(|t| *t != url));
     let site = text("siteName").unwrap_or_else(|| url.split('/').nth(2).unwrap_or("").trim_start_matches("www.").to_string());
-    Some(LinkPreview { title: text("title").unwrap_or_default(), site, image: file("image"), icon: file("icon"), url, alt_url })
+    Some(LinkPreview { title: text("title").unwrap_or_default(), site, image: file("image"), image_size: None, icon: file("icon"), url, alt_url })
 }
 
 /// One `send` call: `target` plus `key` = `value` (a text or a file path on the Mac).
@@ -731,5 +750,9 @@ mod link_tests {
         assert_eq!(p.image.as_deref(), Some("big.jpg"));
         assert_eq!(p.icon, None);
         assert_eq!(super::hex("0aff"), Some(vec![10, 255]));
+        assert_eq!(super::parse_size("/x/y.png\n  pixelWidth: 286\n  pixelHeight: 142\n"), Some((286, 142)));
+        // sizes seen in Jo's chat: logos and icons are small, previews are big
+        assert!(!super::is_preview_size(286, 142) && !super::is_preview_size(180, 180));
+        assert!(super::is_preview_size(1024, 496) && super::is_preview_size(740, 923));
     }
 }

@@ -69,6 +69,17 @@ impl Bubble {
         b
     }
 
+    /// A small square picture with its own rounded corners and no tail (a link's logo or icon).
+    pub fn thumb(size: i32) -> Self {
+        let b: Self = glib::Object::new();
+        b.imp().is_photo.set(true);
+        b.imp().flat.set(true);
+        b.set_size_request(size, size);
+        b.set_valign(gtk::Align::Center);
+        b.add_css_class("photo");
+        b
+    }
+
     pub fn set_photo_size(&self, w: i32, h: i32) {
         self.set_size_request(w + TAIL as i32, h);
     }
@@ -167,6 +178,7 @@ mod imp {
         pub look: Cell<Look>,
         pub is_photo: Cell<bool>,
         pub is_card: Cell<bool>,
+        pub flat: Cell<bool>,
         pub card_h: Cell<f32>,
         pub tex: RefCell<Option<gdk::Texture>>,
     }
@@ -185,6 +197,26 @@ mod imp {
         fn snapshot(&self, s: &gtk::Snapshot) {
             let w = self.obj();
             let (width, height) = (w.width() as f32, w.height() as f32);
+            if self.flat.get() && width > 0.0 && height > 0.0 {
+                let bounds = graphene::Rect::new(0.0, 0.0, width, height);
+                let b = gsk::PathBuilder::new();
+                b.add_rounded_rect(&gsk::RoundedRect::from_rect(bounds, 12.0));
+                let path = b.to_path();
+                s.push_fill(&path, gsk::FillRule::Winding);
+                s.append_color(&rgba(0xffffff, 1.0), &bounds); // a white tile, so a transparent logo reads
+                if let Some(t) = self.tex.borrow().as_ref() {
+                    // the whole logo, never cropped, with a little margin
+                    let (tw, th) = (t.width().max(1) as f32, t.height().max(1) as f32);
+                    let k = ((width - 8.0) / tw).min((height - 8.0) / th);
+                    s.save();
+                    s.translate(&graphene::Point::new((width - tw * k) / 2.0, (height - th * k) / 2.0));
+                    t.snapshot(s, (tw * k) as f64, (th * k) as f64);
+                    s.restore();
+                }
+                s.pop();
+                s.append_stroke(&path, &gsk::Stroke::new(1.0), &rgba(0x000000, 0.12));
+                return;
+            }
             if self.is_photo.get() && width > TAIL && height > 0.0 {
                 let look = self.look.get();
                 let path = outline(look, width, height);
