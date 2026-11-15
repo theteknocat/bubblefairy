@@ -16,6 +16,7 @@ use crate::{bubble, viewer};
 use crate::mac::{Cmd, Config, Event};
 
 const COMPOSE_PAD_X: i32 = 4;
+const COMPOSE_MAX: i32 = 160; // composer stops growing here and scrolls
 const COMPOSE_PAD_Y: i32 = 9;
 const OBJ: char = '\u{FFFC}'; // what imsg puts in `text` for attachment-only messages
 
@@ -232,25 +233,47 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         .right_margin(COMPOSE_PAD_X)
         .build();
     compose.add_css_class("compose");
-    let compose_scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .propagate_natural_height(true)
-        .max_content_height(160)
-        .child(&compose)
-        .hexpand(true)
-        .build();
-    // A ScrolledWindow's own minimum height (its scrollbar) is taller than one line of text, so the
-    // field only scrolls once the text outgrows the max height; until then it hugs the text.
-    compose_scroll.set_vscrollbar_policy(gtk::PolicyType::External);
+    let compose_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&compose).hexpand(true).build();
+    // The field's height is worked out here from the text itself (Pango, at the field's width) rather
+    // than taken from the TextView, whose reported height runs a line tall while new lines are still
+    // being laid out. Past COMPOSE_MAX it stops growing and scrolls.
     let (cs, cv) = (compose_scroll.clone(), compose.clone());
-    compose.buffer().connect_changed(move |_| {
-        let (cs, cv) = (cs.clone(), cv.clone());
-        glib::idle_add_local_once(move || {
-            let (_, natural, _, _) = cv.measure(gtk::Orientation::Vertical, cv.width());
-            let tall = natural > cs.max_content_height();
-            cs.set_vscrollbar_policy(if tall { gtk::PolicyType::Automatic } else { gtk::PolicyType::External });
-        });
+    let fit = Rc::new(move || {
+        let w = cv.width() - cv.left_margin() - cv.right_margin();
+        if w <= 0 {
+            return;
+        }
+        let buf = cv.buffer();
+        let layout = cv.create_pango_layout(Some(&buf.text(&buf.start_iter(), &buf.end_iter(), false)));
+        layout.set_width(w * gtk::pango::SCALE);
+        layout.set_wrap(gtk::pango::WrapMode::WordChar);
+        let need = layout.pixel_size().1 + cv.top_margin() + cv.bottom_margin();
+        let shown = need.min(COMPOSE_MAX);
+        if cs.min_content_height() != shown {
+            cs.set_min_content_height(-1);
+            cs.set_max_content_height(shown);
+            cs.set_min_content_height(shown);
+        }
+        // External: no scrollbar (its own minimum height is taller than one line) until it's needed
+        cs.set_vscrollbar_policy(if need > COMPOSE_MAX { gtk::PolicyType::Automatic } else { gtk::PolicyType::External });
+        if need > COMPOSE_MAX {
+            let (cv, cs) = (cv.clone(), cs.clone());
+            glib::idle_add_local_once(move || {
+                // after the new size applies; at the end, go all the way down so the bottom padding shows
+                let buf = cv.buffer();
+                if buf.iter_at_mark(&buf.get_insert()).is_end() {
+                    let a = cs.vadjustment();
+                    a.set_value(a.upper() - a.page_size());
+                } else {
+                    cv.scroll_mark_onscreen(&buf.get_insert());
+                }
+            });
+        }
     });
+    let f = fit.clone();
+    compose.buffer().connect_changed(move |_| f());
+    let f = fit.clone();
+    compose_scroll.hadjustment().connect_page_size_notify(move |_| f()); // width changed: rewrap
     let compose_hint = gtk::Label::new(None);
     compose_hint.add_css_class("compose-hint");
     // sits exactly where the first line of text starts, so the caret and the hint line up
@@ -599,6 +622,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     });
 
     win.present();
+    if let Ok(t) = std::env::var("BF_TYPE") {
+        // dev aid: type this into the composer one character every 25 ms (`\\n` = Shift+Enter)
+        let chars: Vec<char> = t.replace("\\n", "\n").chars().collect();
+        let (i, c) = (Cell::new(0), ui.compose.clone());
+        glib::timeout_add_local(Duration::from_millis(25), move || {
+            let Some(ch) = chars.get(i.get()) else { return glib::ControlFlow::Break };
+            c.buffer().insert_at_cursor(&ch.to_string());
+            i.set(i.get() + 1);
+            glib::ControlFlow::Continue
+        });
+    }
     if let Ok(t) = std::env::var("BF_DRAFT") {
         ui.compose.buffer().set_text(&t.replace("\\n", "\n")); // dev aid: prefill the composer
     }
