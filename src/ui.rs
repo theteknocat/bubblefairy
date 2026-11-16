@@ -158,10 +158,8 @@ pub struct Ui {
     banner: gtk::Revealer,
     banner_text: gtk::Label,
     // flags poked from signal handlers, so kept out of the RefCell
-    stick_bottom: Cell<bool>,
+    stick_bottom: Rc<Cell<bool>>,
     /// when not pinned to the bottom, keep this distance from the bottom while content changes above
-    from_bottom: Cell<f64>,
-    last_upper: Cell<f64>,
     selecting: Cell<bool>,
     sel_gen: Cell<u32>,
     banner_offline: Cell<bool>,
@@ -334,9 +332,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let msgs = gtk::Box::new(gtk::Orientation::Vertical, 0);
     msgs.add_css_class("msgs");
     msgs.set_valign(gtk::Align::End);
-    // natural height: pictures can shrink to nothing, so their minimum height would understate the content
-    let viewport = gtk::Viewport::builder().child(&msgs).vscroll_policy(gtk::ScrollablePolicy::Natural).build();
-    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&viewport).build();
+    // anchored to the bottom (see chatscroll.rs); `stick` is true while the view follows the newest message
+    let stick = Rc::new(Cell::new(true));
+    let anchored = crate::chatscroll::ChatScroll::new(&msgs, stick.clone());
+    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&anchored).build();
 
     let compose = gtk::TextView::builder()
         .wrap_mode(gtk::WrapMode::WordChar)
@@ -555,9 +554,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         status_text,
         banner,
         banner_text,
-        stick_bottom: Cell::new(true),
-        from_bottom: Cell::new(0.0),
-        last_upper: Cell::new(0.0),
+        stick_bottom: stick.clone(),
         selecting: Cell::new(false),
         sel_gen: Cell::new(0),
         banner_offline: Cell::new(false),
@@ -619,31 +616,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         }
     });
 
-    // keep the conversation pinned to the newest message unless the user scrolled up
-    let adj = ui.scroller.vadjustment();
+    // scrolled near the top: fetch older messages (the view itself stays put, see chatscroll.rs)
     let u = ui.clone();
-    adj.connect_changed(move |a| {
-        u.last_upper.set(a.upper());
-        // "changed" fires while GTK is laying out the viewport; a value set now moves the adjustment but
-        // the viewport misses the redraw (the old "last bubble cut off" bug), so reposition right after
-        let (a, u) = (a.clone(), u.clone());
-        glib::idle_add_local_once(move || {
-            if u.stick_bottom.get() {
-                a.set_value(a.upper() - a.page_size());
-            } else {
-                a.set_value(a.upper() - u.from_bottom.get());
-            }
-        });
-    });
-    let u = ui.clone();
-    adj.connect_value_changed(move |a| {
-        // GTK moves the value while it resizes the content; only react to scrolls at a settled size,
-        // otherwise a half-laid-out frame would unpin us from the bottom
-        if a.upper() != u.last_upper.get() {
-            return;
-        }
-        u.stick_bottom.set(a.value() >= a.upper() - a.page_size() - 40.0);
-        u.from_bottom.set(a.upper() - a.value());
+    ui.scroller.vadjustment().connect_value_changed(move |a| {
         if a.value() < 400.0 && a.upper() > a.page_size() {
             load_older(&u);
         }

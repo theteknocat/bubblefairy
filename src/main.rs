@@ -1,4 +1,5 @@
 mod bubble;
+mod chatscroll;
 mod demo;
 mod mac;
 mod ui;
