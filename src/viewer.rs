@@ -1,4 +1,4 @@
-//! Full-size photo viewer covering the conversation panel. Opens by zooming the clicked photo up from
+//! Full-size photo viewer, a panel of its own covering the sidebar and the chat. Opens by zooming the clicked photo up from
 //! its spot in the chat while a black backdrop fades in, and closes the same way in reverse.
 //! - The photo fills the panel on its longest side. The chat's 1200 px copy shows at once; when the
 //!   original is bigger, the full version is fetched and swapped in (small spinner at its top-left).
@@ -47,6 +47,7 @@ impl Viewer {
         let root = gtk::Overlay::new();
         root.set_child(Some(&canvas));
         root.add_css_class("viewer");
+        root.set_overflow(gtk::Overflow::Hidden); // rounded corners clip the photo and backdrop
         root.set_visible(false);
         let nav = |icon: &str, align: gtk::Align, tip: &str| {
             let b = gtk::Button::from_icon_name(icon);
@@ -271,11 +272,10 @@ impl Viewer {
         });
     }
 
-    /// Where the photo sits in the chat, in the viewer's coordinates (the viewer covers its parent).
+    /// Where the photo sits in the chat (or the info panel), in the viewer's coordinates.
     fn source_rect(&self, b: &Bubble) -> graphene::Rect {
-        let parent = self.root.parent().unwrap_or_else(|| self.root.clone().upcast());
         let body = b.body();
-        b.compute_point(&parent, &graphene::Point::new(body.x(), body.y()))
+        b.compute_point(&self.canvas, &graphene::Point::new(body.x(), body.y()))
             .map(|p| graphene::Rect::new(p.x(), p.y(), body.width(), body.height()))
             .unwrap_or_else(|| graphene::Rect::new(0.0, 0.0, 1.0, 1.0))
     }

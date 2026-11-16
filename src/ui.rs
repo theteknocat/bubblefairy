@@ -75,7 +75,6 @@ struct State {
     /// messages we've already set a "look for its link preview" timer for
     preview_watch: HashSet<String>,
     /// how much the window was widened to fit the info panel (and is narrowed by when it closes)
-    widened_by: i32,
     /// the sidebar width the user has chosen (0: the default); the info panel may squeeze it meanwhile
     side_pref: i32,
     /// the chat the info panel shows (None: panel closed)
@@ -181,8 +180,6 @@ pub struct Ui {
     side_title: gtk::Label,
     side_toggle: gtk::Button,
     conv_panel: gtk::Box,
-    /// empty room beside the chat that the info panel sits over (so the chat is pushed over, not covered)
-    spacer: gtk::Revealer,
     /// the window is too narrow for the full sidebar beside the chat
     narrow: Cell<bool>,
     /// narrow window, and the sidebar is expanded over the chat (forgotten when the window gets wide again)
@@ -464,14 +461,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     stack.add_named(&conv, Some("conv"));
     let conv_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conv_panel.add_css_class("conv");
-    // the photo viewer covers the whole panel (header and composer too)
     let viewer = viewer::Viewer::new();
-    let conv_overlay = gtk::Overlay::new();
-    conv_overlay.set_child(Some(&stack));
-    conv_overlay.add_overlay(&viewer.root);
-    conv_overlay.set_vexpand(true);
-    conv_panel.set_overflow(gtk::Overflow::Hidden); // keeps the viewer inside the panel's rounded corners
-    conv_panel.append(&conv_overlay);
+    conv_panel.set_overflow(gtk::Overflow::Hidden); // rounded corners clip the content
+    conv_panel.append(&stack);
     stack.set_vexpand(true);
     let _ = &stack;
 
@@ -491,20 +483,12 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
 
     let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
     paned.set_start_child(Some(&sidebar));
-    // the info panel sits beside the chat and pushes it over
     conv_panel.set_hexpand(true);
     sidebar.set_size_request(COLLAPSED_W - 20, -1); // minus its margins; the window's narrowest
     conv_panel.set_size_request(CHAT_MIN - 20, -1);
-    // the info panel either pushes the chat over (an empty `spacer` makes the room) or, when the three
-    // panels can't fit, slides over the chat's right side
-    let spacer = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideLeft).reveal_child(false).build();
-    spacer.set_child(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
-    spacer.set_hexpand(false);
-    let beside = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    beside.append(&conv_panel);
-    beside.append(&spacer);
+    // the info panel slides over the chat's right side
     let right = gtk::Overlay::new();
-    right.set_child(Some(&beside));
+    right.set_child(Some(&conv_panel));
     info.revealer.set_halign(gtk::Align::End);
     right.add_overlay(&info.revealer);
     paned.set_end_child(Some(&right));
@@ -519,7 +503,26 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     paned.set_vexpand(true);
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&banner);
-    root.append(&paned);
+    // the photo viewer is a panel of its own over the sidebar and the chat, edge to edge with them (the panels'
+    // outer margins), so a photo opened from the info panel isn't hidden under anything
+    let stage = gtk::Overlay::new();
+    stage.set_child(Some(&paned));
+    stage.set_vexpand(true);
+    viewer.root.set_margin_top(2);
+    viewer.root.set_margin_bottom(14);
+    viewer.root.set_margin_start(14);
+    viewer.root.set_margin_end(14);
+    stage.add_overlay(&viewer.root);
+    let w = win.clone();
+    viewer.root.connect_visible_notify(move |r| {
+        // the panels under it lose their shadows and bevels, so they don't add to the viewer's
+        if r.is_visible() {
+            w.add_css_class("viewing");
+        } else {
+            w.remove_css_class("viewing");
+        }
+    });
+    root.append(&stage);
     win.set_child(Some(&root));
 
     let seen = load_seen(&store.seen_file);
@@ -570,7 +573,6 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         side_title: side_title.clone(),
         side_toggle: side_toggle.clone(),
         conv_panel: conv_panel.clone(),
-        spacer: spacer.clone(),
         narrow: Cell::new(false),
         side_open: Cell::new(false),
         collapsed: Cell::new(false),
@@ -800,6 +802,21 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let a4 = apply.clone();
     app.connect_window_added(move |_, _| a4(&gtk::Settings::default().unwrap()));
 
+    // a click outside the info panel closes it (the "i" button itself toggles; popovers and the viewer keep it)
+    let click = gtk::GestureClick::new();
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let u = ui.clone();
+    click.connect_pressed(move |_, _, x, y| {
+        if !u.info.revealer.reveals_child() || u.viewer.is_open() {
+            return;
+        }
+        let Some(hit) = u.win.pick(x, y, gtk::PickFlags::DEFAULT) else { return };
+        let inside = |w: &gtk::Widget| hit == *w || hit.is_ancestor(w);
+        if !inside(u.info.panel.upcast_ref()) && !inside(u.info.btn.upcast_ref()) && hit.ancestor(gtk::Popover::static_type()).is_none() {
+            close_info(&u);
+        }
+    });
+    ui.win.add_controller(click);
     // viewer keys: at window level so they work whatever has focus
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -2869,36 +2886,20 @@ fn relayout(u: &Rc<Ui>, total: i32) {
     if crossed {
         u.side_open.set(false); // the expanded state is forgotten whenever the window crosses the line
     }
-    let open = u.info.revealer.reveals_child();
     let pref = match u.st.borrow().side_pref {
         0 => 340,
         p => p,
     };
-    let (mut cols, mut overlay) = (3, false);
     let side = if narrow {
-        overlay = true;
         // expanded: the chat's 6 px margin and the 2 px divider lie beyond the window edge, so the sidebar's own 6 px
         // right margin leaves it 14 px from the edge, the same as on the left
         if u.side_open.get() { total - 8 } else { COLLAPSED_W }
-    } else if open {
-        match [3, 2, 1].into_iter().map(|n| (pref.min(total - CHAT_MIN - info_w(n)), n)).find(|(side, _)| *side >= SIDEBAR_MIN) {
-            Some((side, n)) => {
-                cols = n;
-                side
-            }
-            None => {
-                overlay = true;
-                pref.clamp(SIDEBAR_MIN, total - CHAT_MIN)
-            }
-        }
     } else {
         pref.clamp(SIDEBAR_MIN, total - CHAT_MIN)
     };
-    if overlay {
-        // never wider than the room over the chat
-        let room = total - side;
-        cols = [3, 2, 1].into_iter().find(|n| info_w(*n) <= room).unwrap_or(1);
-    }
+    // the info panel slides over the chat: as many photo columns (3 at most) as fit in it
+    let room = total - side;
+    let cols = [3, 2, 1].into_iter().find(|n| info_w(*n) <= room).unwrap_or(1);
     // crossing the line slides the sidebar to its new width (not on the first layout)
     let animate = u.animate.replace(false) || (crossed && u.last_pos.get() != 0);
     move_side(u, side, animate);
@@ -2925,23 +2926,8 @@ fn relayout(u: &Rc<Ui>, total: i32) {
         settle(u);
     }
     // info panel
-    let beside = open && !overlay;
-    if let Some(room) = u.spacer.child() {
-        room.set_size_request(info_w(cols), -1);
-    }
-    u.spacer.set_reveal_child(beside);
-    if beside {
-        u.conv_panel.add_css_class("with-info"); // less gap between the two panels
-    } else {
-        u.conv_panel.remove_css_class("with-info");
-    }
     let info = &u.info;
     info.panel.set_size_request(info_w(cols), -1); // the CSS margin counts inside it
-    if overlay {
-        info.panel.add_css_class("over"); // opaque: it covers the chat
-    } else {
-        info.panel.remove_css_class("over");
-    }
     // three tabs in a row fit from 2 photo columns up (measuring StackSwitcher gave nonsense widths)
     let wide = cols >= 2;
     info.switcher.set_visible(wide);
@@ -3057,36 +3043,16 @@ fn wire_info(u: &Rc<Ui>) {
     }
 }
 
-/// The panel pushes the chat over; if the screen has room, the window widens by its width instead
-/// of squeezing the chat, and narrows again on close.
+/// The panel slides over the chat from the right; a click anywhere outside it closes it.
 fn open_info(u: &Rc<Ui>) {
-    let (w, h) = (u.win.width(), u.win.height());
-    let monitor_w = u.win.surface().and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s)).map(|m| m.geometry().width());
-    // widen by as much of the panel's full width as the screen allows, before squeezing anything
-    let grow = match monitor_w {
-        Some(m) if !u.win.is_maximized() && !u.win.is_fullscreen() && !u.narrow.get() => (m - w).clamp(0, info_w(3)),
-        _ => 0,
-    };
-    if grow > 0 {
-        u.win.set_default_size(w + grow, h);
-    }
-    u.st.borrow_mut().widened_by = grow;
     u.info.revealer.set_reveal_child(true);
-    relayout(u, w + grow);
+    relayout(u, u.paned.width());
     refresh_info(u);
 }
 
 fn close_info(u: &Rc<Ui>) {
     u.info.revealer.set_reveal_child(false);
-    let grew = {
-        let mut st = u.st.borrow_mut();
-        st.info_chat = None;
-        std::mem::take(&mut st.widened_by)
-    };
-    if grew > 0 {
-        u.win.set_default_size((u.win.width() - grew).max(CHAT_MIN + SIDEBAR_MIN), u.win.height());
-    }
-    relayout(u, u.paned.width()); // the sidebar gets back the width it gave up
+    u.st.borrow_mut().info_chat = None;
 }
 
 fn clear(b: &impl IsA<gtk::Widget>) {
