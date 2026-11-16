@@ -812,6 +812,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             u.to_entry.set_text(&t);
         });
     }
+    if let Some(ms) = std::env::var("BF_INFO").ok().and_then(|v| v.parse::<u64>().ok()) {
+        // dev aid: open the info panel after <ms> (e.g. with BF_CHAT, in a headless compositor)
+        let u = ui.clone();
+        glib::timeout_add_local_once(Duration::from_millis(ms), move || open_info(&u));
+    }
     if std::env::var_os("BF_VIEW").is_some() {
         // dev aid: open the viewer on the newest loaded photo shortly before BF_SHOT fires
         // BF_VIEW=<ms> sets when it opens; otherwise 0.9 s before the shot
@@ -2550,12 +2555,15 @@ fn stack_room(u: &Ui) -> f64 {
 #[derive(Clone)]
 struct Info {
     revealer: gtk::Revealer,
-    scroll: gtk::ScrolledWindow,
+    /// the panel itself (its width is set by `layout_info`)
+    panel: gtk::Box,
     btn: gtk::Button,
     refresh: gtk::Button,
     close: gtk::Button,
-    title: gtk::Label,
-    people: gtk::Box,
+    /// the three tabs side by side, when there's room for them...
+    switcher: gtk::Box,
+    /// ...else the current tab's name with carets to move between them
+    carets: gtk::Box,
     photos: gtk::FlowBox,
     files: gtk::Box,
     links: gtk::FlowBox,
@@ -2582,18 +2590,9 @@ fn build_info() -> Info {
     refresh.add_css_class("head-btn");
     refresh.set_valign(gtk::Align::Center);
     refresh.set_tooltip_text(Some("Reload this conversation from the Mac"));
-    let title = gtk::Label::new(None);
-    title.add_css_class("card-name");
-    title.set_xalign(0.0);
-    title.set_hexpand(true);
-    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     let close = gtk::Button::from_icon_name("window-close-symbolic");
-    close.add_css_class("flat");
+    close.add_css_class("head-btn");
     close.set_valign(gtk::Align::Center);
-    let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    top.append(&title);
-    top.append(&close);
-    let people = gtk::Box::new(gtk::Orientation::Vertical, 2);
     let photos = gtk::FlowBox::new();
     photos.set_selection_mode(gtk::SelectionMode::None);
     photos.set_min_children_per_line(1);
@@ -2621,37 +2620,126 @@ fn build_info() -> Info {
         b
     };
     let stack = gtk::Stack::new();
+    stack.set_vhomogeneous(false); // else a short tab scrolls as far as the tallest one
     stack.add_titled(&tab(photos.upcast_ref(), &more[0]), Some("photos"), "Photos");
     stack.add_titled(&tab(files.upcast_ref(), &more[1]), Some("files"), "Files");
     stack.add_titled(&tab(links.upcast_ref(), &more[2]), Some("links"), "Links");
-    let switcher = gtk::StackSwitcher::new();
-    switcher.set_stack(Some(&stack));
-    switcher.set_halign(gtk::Align::Center);
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 14);
-    body.set_margin_top(14);
-    body.set_margin_bottom(14);
-    body.set_margin_start(14);
-    body.set_margin_end(14);
-    body.append(&top);
-    body.append(&people);
-    body.append(&switcher);
-    body.append(&stack);
-    let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&body).build();
-    scroll.set_size_request(info_w(3) - 14, -1); // the CSS margin makes up the rest
-    scroll.set_hexpand(false);
-    scroll.set_overflow(gtk::Overflow::Hidden); // the rounded corners clip it
-    scroll.add_css_class("info-panel");
-    let revealer = gtk::Revealer::builder().child(&scroll).transition_type(gtk::RevealerTransitionType::SlideLeft).reveal_child(false).build();
+    // our own tabs: StackSwitcher's buttons measured far wider than their labels
+    let switcher = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    switcher.add_css_class("linked");
+    switcher.set_homogeneous(true); // equal widths, filling the row
+    switcher.set_hexpand(true);
+    let mut group: Option<gtk::ToggleButton> = None;
+    let mut tabs = Vec::new();
+    for (name, label) in [("photos", "Photos"), ("files", "Files"), ("links", "Links")] {
+        let t = gtk::ToggleButton::with_label(label);
+        t.add_css_class("info-tab");
+        t.set_hexpand(true);
+        t.set_group(group.as_ref());
+        t.set_active(name == "photos");
+        let stack = stack.clone();
+        t.connect_toggled(move |t| {
+            if t.is_active() {
+                stack.set_visible_child_name(name);
+            }
+        });
+        switcher.append(&t);
+        group.get_or_insert_with(|| t.clone());
+        tabs.push((name, t));
+    }
+    stack.connect_visible_child_name_notify(move |st| {
+        if let Some(n) = st.visible_child_name() {
+            for (name, t) in &tabs {
+                t.set_active(*name == n);
+            }
+        }
+    });
+    // narrow panel: "‹ Photos ›". Both carets take the same room even when one is hidden, so the name stays centred.
+    let prev = gtk::Button::from_icon_name("pan-start-symbolic");
+    let next = gtk::Button::from_icon_name("pan-end-symbolic");
+    let name = gtk::Label::new(Some("Photos"));
+    name.add_css_class("tab-name");
+    name.set_hexpand(true);
+    name.set_xalign(0.5);
+    let carets = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    for b in [&prev, &next] {
+        b.add_css_class("head-btn");
+        b.set_valign(gtk::Align::Center);
+    }
+    carets.append(&prev);
+    carets.append(&name);
+    carets.append(&next);
+    carets.set_hexpand(true);
+    carets.set_visible(false);
+    const TABS: [&str; 3] = ["photos", "files", "links"];
+    let show = {
+        let (stack, prev, next, name) = (stack.clone(), prev.clone(), next.clone(), name.clone());
+        move || {
+            let i = stack.visible_child_name().and_then(|n| TABS.iter().position(|t| *t == n)).unwrap_or(0);
+            name.set_text(["Photos", "Files", "Links"][i]);
+            let names = ["Photos", "Files", "Links"];
+            prev.set_tooltip_text(i.checked_sub(1).map(|j| names[j]));
+            next.set_tooltip_text(names.get(i + 1).copied());
+            for (b, on) in [(&prev, i > 0), (&next, i + 1 < TABS.len())] {
+                b.set_opacity(if on { 1.0 } else { 0.0 });
+                b.set_can_target(on);
+                b.set_can_focus(on);
+            }
+        }
+    };
+    show();
+    stack.connect_visible_child_name_notify(move |_| show());
+    for (b, step) in [(&prev, -1i32), (&next, 1)] {
+        let stack = stack.clone();
+        b.connect_clicked(move |_| {
+            let i = stack.visible_child_name().and_then(|n| TABS.iter().position(|t| *t == n)).unwrap_or(0) as i32;
+            if let Some(t) = TABS.get((i + step).max(0) as usize) {
+                stack.set_visible_child_name(t);
+            }
+        });
+    }
+    // one row: the tabs, and the close button
+    let head = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    head.set_margin_top(12);
+    head.set_margin_bottom(8);
+    head.set_margin_start(14);
+    head.set_margin_end(14);
+    // an invisible twin of the close button on the left, so the carets' label is centred on the whole row
+    let twin = gtk::Button::from_icon_name("window-close-symbolic");
+    twin.add_css_class("head-btn");
+    twin.set_opacity(0.0);
+    twin.set_can_target(false);
+    twin.set_can_focus(false);
+    twin.set_focusable(false);
+    carets.bind_property("visible", &twin, "visible").sync_create().build();
+    head.append(&twin);
+    head.append(&switcher);
+    head.append(&carets);
+    head.append(&close);
+    // only the tab's content scrolls
+    stack.set_margin_start(14);
+    stack.set_margin_end(14);
+    stack.set_margin_bottom(14);
+    let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&stack).build();
+    let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    panel.append(&head);
+    panel.append(&scroll);
+    panel.set_size_request(info_w(3), -1);
+    panel.set_hexpand(false);
+    panel.set_overflow(gtk::Overflow::Hidden); // the rounded corners clip it
+    panel.add_css_class("info-panel");
+    let revealer = gtk::Revealer::builder().child(&panel).transition_type(gtk::RevealerTransitionType::SlideLeft).reveal_child(false).build();
     // expand flags pass up from the children: without this, the closed panel still takes a share of the width
     revealer.set_hexpand(false);
-    Info { revealer, scroll, btn, refresh, close, title, people, photos, files, links, more }
+    Info { revealer, panel, btn, refresh, close, switcher, carets, photos, files, links, more }
 }
 
 const THUMB: i32 = 92;
 
 /// Width the panel takes beside the chat for `n` columns of photos (3 at most), margin included.
 fn info_w(n: i32) -> i32 {
-    n * THUMB + (n - 1) * 4 + 28 + 14
+    // each grid cell measures THUMB + 6; one column still needs room for the header (measured: caret row = 223 + margin)
+    (n * (THUMB + 6) + (n - 1) * 4 + 28 + 14).max(223 + 14)
 }
 
 /// Share the window between sidebar, chat and info panel: the panel keeps as many photo columns (3 at
@@ -2668,7 +2756,12 @@ fn layout_info(u: &Rc<Ui>, total: i32) {
         .find(|(side, _)| *side >= SIDEBAR_MIN)
         .unwrap_or((SIDEBAR_MIN, 1));
     u.paned.set_position(side);
-    u.info.scroll.set_size_request(info_w(cols) - 14, -1);
+    u.info.panel.set_size_request(info_w(cols), -1); // the CSS margin counts inside it
+    // three tabs in a row fit from 2 photo columns up (measuring StackSwitcher gave nonsense widths)
+    let info = &u.info;
+    let wide = cols >= 2;
+    info.switcher.set_visible(wide);
+    info.carets.set_visible(!wide);
 
 }
 
@@ -2747,12 +2840,7 @@ fn clear(b: &impl IsA<gtk::Widget>) {
 
 /// Fill the panel for the open chat: its people now, its photos, files and links as they arrive.
 fn refresh_info(u: &Rc<Ui>) {
-    let (id, chat, names) = {
-        let st = u.st.borrow();
-        let Some(id) = st.sel else { return };
-        (id, st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).cloned(), st.names.clone())
-    };
-    let Some(chat) = chat else { return };
+    let Some(id) = u.st.borrow().sel else { return };
     {
         let mut st = u.st.borrow_mut();
         st.info_chat = Some(id);
@@ -2760,33 +2848,6 @@ fn refresh_info(u: &Rc<Ui>) {
         st.info_links.clear();
         st.link_waiters.clear();
         st.media.retain(|k, _| k.0 != id);
-    }
-    u.info.title.set_text(&chat_title(&chat, &names));
-    clear(&u.info.people);
-    let members: Vec<String> = chat["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
-    for h in &members {
-        let name = names.get(h).cloned().unwrap_or_else(|| pretty_handle(h));
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        row.add_css_class("info-person");
-        row.append(&avatar(u, &name, Some(h), true));
-        let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        text.set_valign(gtk::Align::Center);
-        let n = gtk::Label::new(Some(&name));
-        n.set_xalign(0.0);
-        text.append(&n);
-        if pretty_handle(h) != name {
-            let a = gtk::Label::new(Some(&pretty_handle(h)));
-            a.add_css_class("dim");
-            a.set_xalign(0.0);
-            text.append(&a);
-        }
-        row.append(&text);
-        row.set_cursor_from_name(Some("pointer"));
-        let (u2, row2, h2, name2) = (u.clone(), row.clone(), h.clone(), name.clone());
-        let g = gtk::GestureClick::new();
-        g.connect_released(move |_, _, _, _| show_card(&u2, row2.upcast_ref(), &h2, &name2, Rc::new(|_| {})));
-        row.add_controller(g);
-        u.info.people.append(&row);
     }
     u.info.photos.remove_all();
     clear(&u.info.files);

@@ -152,6 +152,8 @@ row.unread .chat-name { font-weight: 800; }
 .file-chip { background-color: rgba(128, 118, 200, 0.22); border-radius: 14px; padding: 8px 12px; }
 .file-chip.missing { opacity: 0.5; }
 .info-missing { background-color: rgba(128, 118, 200, 0.14); border-radius: 12px; }
+.info-tab { padding: 4px 10px; min-width: 0; }
+.tab-name { font-weight: 700; }
 .info-person { padding: 4px 0; }
 .text link, .text link:visited, .text link:hover { color: inherit; text-decoration: underline; }
 .info-link { color: #5b8def; }
