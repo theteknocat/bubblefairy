@@ -59,14 +59,32 @@ impl Bubble {
         let b = Self::new(look);
         b.imp().is_card.set(true);
         b.imp().card_h.set(img_h as f32);
+        b.imp().card_w.set(w + TAIL as i32);
+        // the title's expand flag would otherwise pass up and stretch the card across the whole chat
+        b.set_hexpand(false);
         b.set_size_request(w + TAIL as i32, -1);
         if let Some(inner) = b.first_child().and_downcast::<gtk::Box>()
             && img_h > 0
         {
-            inner.set_margin_top(img_h + 10);
+            // reserves the picture's space (the content starts at img_h + 10) and holds the loading spinner
+            let slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            slot.set_widget_name("card-slot");
+            slot.set_size_request(-1, img_h - 4);
+            inner.prepend(&slot);
         }
         b.add_css_class("linkcard");
         b
+    }
+
+    /// The card's picture couldn't be had: give back its space, so the card is just title and site.
+    pub fn drop_card_image(&self) {
+        self.imp().card_h.set(0.0);
+        if let Some(slot) = self.first_child().and_then(|i| i.first_child())
+            && slot.widget_name() == "card-slot"
+        {
+            slot.set_visible(false);
+        }
+        self.queue_resize();
     }
 
     /// A small square picture with its own rounded corners and no tail (a link's logo or icon).
@@ -77,6 +95,14 @@ impl Bubble {
         b.set_size_request(size, size);
         b.set_valign(gtk::Align::Center);
         b.add_css_class("photo");
+        b
+    }
+
+    /// A rounded square of a fixed size with the picture cropped to fill it (a thumbnail in a grid).
+    /// Unlike `photo`, it reserves no room for a tail.
+    pub fn tile(size: i32) -> Self {
+        let b = Self::thumb(size);
+        b.imp().cover.set(true);
         b
     }
 
@@ -188,7 +214,11 @@ mod imp {
         pub is_card: Cell<bool>,
         pub flat: Cell<bool>,
         pub disc: Cell<bool>,
+        /// a rounded square cropped to fill (a grid thumbnail)
+        pub cover: Cell<bool>,
         pub card_h: Cell<f32>,
+        /// a card's width: it may be narrower (long titles ellipsize) but never wider
+        pub card_w: Cell<i32>,
         pub tex: RefCell<Option<gdk::Texture>>,
     }
 
@@ -203,6 +233,15 @@ mod imp {
     impl BoxImpl for Bubble {}
 
     impl WidgetImpl for Bubble {
+        fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            let (min, nat, min_base, nat_base) = self.parent_measure(orientation, for_size);
+            let cap = self.card_w.get();
+            if orientation == gtk::Orientation::Horizontal && cap > 0 {
+                return (min, nat.min(cap).max(min), min_base, nat_base);
+            }
+            (min, nat, min_base, nat_base)
+        }
+
         fn snapshot(&self, s: &gtk::Snapshot) {
             let w = self.obj();
             let (width, height) = (w.width() as f32, w.height() as f32);
@@ -213,18 +252,28 @@ mod imp {
                 b.add_rounded_rect(&gsk::RoundedRect::from_rect(bounds, if disc { width.min(height) / 2.0 } else { 12.0 }));
                 let path = b.to_path();
                 s.push_fill(&path, gsk::FillRule::Winding);
-                if disc {
+                let kids = |s: &gtk::Snapshot| {
+                    let mut c = w.first_child();
+                    while let Some(ch) = c {
+                        w.snapshot_child(&ch, s);
+                        c = ch.next_sibling();
+                    }
+                };
+                if disc || self.cover.get() {
                     if let Some(t) = self.tex.borrow().as_ref() {
                         draw_cover(s, t, &bounds);
                     }
                     s.pop();
+                    kids(s); // the loading spinner, if any
                     return;
                 }
                 s.append_color(&rgba(0xffffff, 1.0), &bounds); // a white tile, so a transparent logo reads
                 if let Some(t) = self.tex.borrow().as_ref() {
-                    // the whole logo, never cropped, with a little margin
-                    let (tw, th) = (t.width().max(1) as f32, t.height().max(1) as f32);
-                    let k = ((width - 8.0) / tw).min((height - 8.0) / th);
+                    // the whole logo, never cropped, with a little margin: shrunk to fit if it's too big, and at
+                    // its own size (one picture pixel per device pixel, so it stays sharp) if it's small
+                    let sf = w.scale_factor().max(1) as f32;
+                    let (tw, th) = (t.width().max(1) as f32 / sf, t.height().max(1) as f32 / sf);
+                    let k = ((width - 8.0) / tw).min((height - 8.0) / th).min(1.0);
                     s.save();
                     s.translate(&graphene::Point::new((width - tw * k) / 2.0, (height - th * k) / 2.0));
                     t.snapshot(s, (tw * k) as f64, (th * k) as f64);
@@ -232,6 +281,7 @@ mod imp {
                 }
                 s.pop();
                 s.append_stroke(&path, &gsk::Stroke::new(1.0), &rgba(0x000000, 0.12));
+                kids(s);
                 return;
             }
             if self.is_photo.get() && width > TAIL && height > 0.0 {

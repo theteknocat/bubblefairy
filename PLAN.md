@@ -77,6 +77,12 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 - imsg has no "messages with attachments only" query, so read chat.db directly over SSH (as `mac::add_services` already does): `attachment` joined through `message_attachment_join` and `chat_message_join` for one chat, newest first, paged. Links come from message text.
 - The photo viewer can then walk every photo in the chat, not only the ones loaded in the conversation (for now it stops at the earliest loaded photo).
 
+### Polish (later)
+
+- All text in the app should be selectable to copy (message text already is; contact cards, the info panel, headers and so on aren't).
+- Contact cards: a copy-to-clipboard button on each phone number and email, next to the message and email buttons.
+- Info panel: open or save a file from the Files tab (they live on the Mac), and a way to scroll the photo viewer past the loaded photos.
+
 ### App icon (before the first release)
 
 A chat bubble with a cartoon magic wand: a stick with a five-point star on the end, drawn in a cartoon style with a few little sparkles around the star. Peter will generate options with Draw Things on his Mac; Claude writes the prompt (a bold, simple, flat-colour sticker look that still reads at 16 px) and later turns the chosen picture into the Flatpak icon set (scalable SVG plus a symbolic version). Needs to be done before Flathub submission.

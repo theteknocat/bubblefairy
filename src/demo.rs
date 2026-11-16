@@ -56,7 +56,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
     while let Some(c) = cmds.recv().await {
         let _ = match c {
             Cmd::Chats => ev.send(Event::Chats(chats())),
-            Cmd::History(id) => ev.send(Event::History(id, history(id))),
+            Cmd::History(id, _) => ev.send(Event::History(id, history(id))),
             Cmd::Preview(id) => ev.send(Event::Preview(id, history(id).pop().unwrap())),
             Cmd::Send { chat_id, text, token, .. } => {
                 next += 1;
@@ -67,7 +67,11 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
             Cmd::Contacts => ev.send(Event::Contacts(Default::default())),
             Cmd::Link(id) => ev.send(Event::Link(id, None)),
             Cmd::Image { path, full } => ev.send(Event::Image { path, full, bytes: None }),
+            Cmd::Recent(id) => ev.send(Event::Recent(id, Vec::new())),
+            Cmd::Download { path, dest } => ev.send(Event::Downloaded { path, dest, err: Some("demo".into()) }),
+            Cmd::Bulk(path) => ev.send(Event::Image { path, full: false, bytes: None }),
             Cmd::Map(q) => ev.send(Event::Map(q, None)),
+            Cmd::Media { chat_id, kind, offset } => ev.send(Event::Media { chat_id, kind, offset, items: Vec::new(), next: offset, more: false }),
             Cmd::Configure(_) => Ok(()),
         };
     }

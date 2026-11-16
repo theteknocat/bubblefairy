@@ -24,7 +24,8 @@ pub struct Config {
 pub enum Cmd {
     Configure(Config),
     Chats,
-    History(i64),
+    /// the chat's newest `limit` messages
+    History(i64, usize),
     /// Just the newest message, for the chat list's preview line.
     Preview(i64),
     /// Older messages, before the given ISO time (the oldest one loaded).
@@ -33,6 +34,11 @@ pub enum Cmd {
     /// `files` go first, one message each, then `text` (if any) as its own message
     /// `token` names this send, so the answer (`Event::Sent`) can be matched to its waiting bubbles
     Send { chat_id: i64, to: Option<String>, text: String, files: Vec<PathBuf>, token: u64 },
+    /// Copy a file of a chat from the Mac to `dest` (to open it on this computer)
+    Download { path: String, dest: PathBuf },
+    /// A chat copy for the info panel's grid: same as `Image` but at most two at a time, so a screenful
+    /// of thumbnails can't crowd out the conversation's own pictures, previews and maps
+    Bulk(String),
     /// `full`: the viewer wants the big version (up to 4096 px) instead of the 1200 px chat copy
     Image { path: String, full: bool },
     /// Apple's link preview stored on this message row
@@ -41,7 +47,39 @@ pub enum Cmd {
     Contacts,
     /// A small OpenStreetMap picture of this postal address (see `map_for`)
     Map(String),
+    /// One page of a chat's photos, files or links, newest first, read from chat.db (for the info panel)
+    Media { chat_id: i64, kind: Kind, offset: usize },
+    /// The chat's newest few messages, to merge in by guid (e.g. a sent link once Messages has made its preview)
+    Recent(i64),
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind {
+    Photos,
+    Files,
+    Links,
+}
+
+/// One photo, file or link of a chat.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MediaItem {
+    /// attachment path on the Mac (photos, files)
+    pub path: String,
+    pub name: String,
+    pub size: i64,
+    /// unix seconds
+    pub date: i64,
+    pub url: String,
+    /// the file isn't on the Mac (Messages hasn't downloaded it from iCloud, or it was deleted)
+    pub missing: bool,
+    /// links: the message row, and whether it is Apple's link-preview row (`Cmd::Link` can load the card)
+    pub row: i64,
+    pub preview: bool,
+}
+
+pub const MEDIA_PAGE: usize = 60;
+const PHOTO_PAGE: usize = 30;
+static BULK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 pub enum Event {
     Connecting,
@@ -64,6 +102,11 @@ pub enum Event {
     Link(i64, Option<LinkPreview>),
     Contacts(Contacts),
     Map(String, Option<MapData>),
+    /// `next`: where the following page starts; `more`: whether there is one
+    Media { chat_id: i64, kind: Kind, offset: usize, items: Vec<MediaItem>, next: usize, more: bool },
+    /// oldest first
+    Recent(i64, Vec<Value>),
+    Downloaded { path: String, dest: PathBuf, err: Option<String> },
 }
 
 pub struct Paths {
@@ -583,6 +626,160 @@ fn clean_label(l: &str) -> String {
     l.trim().trim_start_matches("_$!<").trim_end_matches(">!$_").trim().to_lowercase()
 }
 
+/// Copy a file from the Mac to `dest` (through a `.part` file, so a half copy is never mistaken for it).
+async fn download(session: &client::Handle<Handler>, path: &str, dest: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let _permit = CHANNELS.acquire().await.map_err(|_| "busy".to_string())?;
+    let remote = path.strip_prefix("~/").map(|p| format!("\"$HOME\"/{}", sh_quote(p))).unwrap_or_else(|| sh_quote(path));
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let part = dest.with_file_name(format!("{}.part", dest.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
+    let mut f = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+    let mut ch = session.channel_open_session().await.map_err(|e| e.to_string())?;
+    ch.exec(true, format!("cat {remote}")).await.map_err(|e| e.to_string())?;
+    let mut got = 0usize;
+    while let Some(msg) = ch.wait().await {
+        match msg {
+            ChannelMsg::Data { data } => {
+                f.write_all(&data).map_err(|e| e.to_string())?;
+                got += data.len();
+            }
+            ChannelMsg::Eof | ChannelMsg::Close => break,
+            _ => {}
+        }
+    }
+    drop(f);
+    // ponytail: a cut connection halfway looks like a short file; compare with the size from chat.db if that bites
+    if got == 0 {
+        let _ = std::fs::remove_file(&part);
+        return Err("the file isn't on the Mac (or is empty)".into());
+    }
+    std::fs::rename(&part, dest).map_err(|e| e.to_string())
+}
+
+/// `http(s)://` words in some message text, minus the punctuation a sentence puts after a link.
+pub fn urls_in(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .filter_map(|w| Some(w[scheme_at(w)?..].trim_end_matches(['.', ',', ')', '>', '"', '\'', '!', '?', ';']).to_string()))
+        .collect()
+}
+
+/// Where `http://` or `https://` starts in a word (also after other characters, as in "see:https://...").
+pub fn scheme_at(w: &str) -> Option<usize> {
+    match (w.find("https://"), w.find("http://")) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The link of a message that has exactly one, and ends with it: Messages shows such a link as its own
+/// little card under the text. With several links, or one in the middle, the text stays as it is.
+pub fn single_link(text: &str) -> Option<String> {
+    let urls = urls_in(text);
+    let [u] = &urls[..] else { return None };
+    text.trim_end().trim_end_matches(['.', ',', ')', '>', '"', '\'', '!', '?', ';']).ends_with(u.as_str()).then(|| u.clone())
+}
+
+/// `text` without its trailing `url` (and what follows it).
+pub fn strip_url(text: &str, url: &str) -> String {
+    text.rfind(url).map_or(text, |p| &text[..p]).trim().to_string()
+}
+
+/// The message text out of an `attributedBody` blob (a typedstream: the string follows "NSString",
+/// a `+`, then its length), for newer messages that keep no plain `text`.
+// ponytail: handles the 1-byte and 2-byte length forms; longer messages give None (their links are skipped)
+fn text_from_blob(b: &[u8]) -> Option<String> {
+    let at = b.windows(8).position(|w| w == b"NSString")? + 8;
+    let plus = b.get(at..at + 8)?.iter().position(|c| *c == 0x2b)? + at + 1;
+    let (len, start) = match *b.get(plus)? {
+        n if n < 0x80 => (usize::from(n), plus + 1),
+        0x81 => (usize::from(u16::from_le_bytes([*b.get(plus + 1)?, *b.get(plus + 2)?])), plus + 3),
+        _ => return None,
+    };
+    Some(String::from_utf8_lossy(b.get(start..start + len)?).into_owned())
+}
+
+fn hex_text(s: &str) -> String {
+    hex(s).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
+}
+
+/// A page of a chat's attachments (`Photos` = images, `Files` = the rest) or of the links in its
+/// message text, newest first, straight from chat.db: imsg can't list these. `offset` counts rows
+/// (messages, for links). Returns the items, where the next page starts and whether there is one.
+// ponytail: links come from `message.text` only; newer macOS keeps some text only in `attributedBody`
+async fn chat_media(session: &client::Handle<Handler>, chat_id: i64, kind: Kind, offset: usize) -> Option<(Vec<MediaItem>, usize, bool)> {
+    let join = "join chat_message_join c on c.message_id=m.ROWID";
+    let page = if kind == Kind::Photos { PHOTO_PAGE } else { MEDIA_PAGE };
+    let sql = match kind {
+        Kind::Links => format!(
+            "select m.ROWID, m.date/1000000000+978307200, hex(coalesce(m.text,'')), coalesce(m.balloon_bundle_id,''), \
+             case when coalesce(m.text,'')='' then hex(coalesce(m.attributedBody,'')) else '' end \
+             from message m {join} where c.chat_id={chat_id} and (m.text like '%http%' or hex(coalesce(m.attributedBody,'')) like '%68747470%') \
+             order by m.date desc limit {} offset {offset}",
+            page + 1
+        ),
+        _ => {
+            let cond = if kind == Kind::Photos {
+                "a.mime_type like 'image/%'"
+            } else {
+                "coalesce(a.mime_type,'') not like 'image/%' and a.filename not like '%.pluginPayloadAttachment'"
+            };
+            format!(
+                "select m.date/1000000000+978307200, coalesce(a.total_bytes,0), hex(a.filename), hex(coalesce(a.transfer_name,'')) \
+                 from attachment a join message_attachment_join j on j.attachment_id=a.ROWID join message m on m.ROWID=j.message_id {join} \
+                 where c.chat_id={chat_id} and a.filename is not null and {cond} order by m.date desc, a.ROWID desc limit {} offset {offset}",
+                page + 1
+            )
+        }
+    };
+    let out = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await;
+    let text = out.map(|o| String::from_utf8_lossy(&o).into_owned()).unwrap_or_default();
+    let rows: Vec<Vec<&str>> = text.lines().map(|l| l.split('|').collect()).collect();
+    let more = rows.len() > page;
+    let mut items = vec![];
+    for r in rows.iter().take(page) {
+        if kind == Kind::Links {
+            let row = r.first().and_then(|d| d.parse().ok()).unwrap_or(0);
+            let date = r.get(1).and_then(|d| d.parse().ok()).unwrap_or(0);
+            let mut text = hex_text(r.get(2).copied().unwrap_or(""));
+            if text.is_empty() {
+                text = hex(r.get(4).copied().unwrap_or("")).and_then(|b| text_from_blob(&b)).unwrap_or_default();
+            }
+            if r.get(3) == Some(&"com.apple.messages.URLBalloonProvider") {
+                items.push(MediaItem { url: urls_in(&text).first().cloned().unwrap_or_default(), date, row, preview: true, ..Default::default() });
+            } else if let Some(url) = single_link(&text) {
+                // like the chat itself: a message with exactly one link, ending with it; others are just text
+                items.push(MediaItem { url, date, row, ..Default::default() });
+            }
+            continue;
+        }
+        let date = r.first().and_then(|d| d.parse().ok()).unwrap_or(0);
+        if let (Some(size), Some(path), Some(name)) = (r.get(1), r.get(2), r.get(3)) {
+            let path = hex_text(path);
+            let name = hex_text(name);
+            let name = if name.is_empty() { path.rsplit('/').next().unwrap_or("").to_string() } else { name };
+            items.push(MediaItem { path, name, size: size.parse().unwrap_or(0), date, ..Default::default() });
+        }
+    }
+    if kind == Kind::Links {
+        // a link with a preview card shouldn't also be listed as plain text
+        let cards: std::collections::HashSet<String> = items.iter().filter(|i| i.preview).map(|i| i.url.clone()).collect();
+        items.retain(|i| i.preview || !cards.contains(&i.url));
+    } else if !items.is_empty() {
+        // which of them are actually on the Mac
+        let list = items.iter().map(|i| sh_quote(&i.path)).collect::<Vec<_>>().join(" ");
+        let script = format!(r#"for p in {list}; do case "$p" in "~/"*) p="$HOME/${{p#\~/}}";; esac; if [ -e "$p" ]; then echo 1; else echo 0; fi; done"#);
+        if let Some(out) = exec(session, script).await {
+            for (it, here) in items.iter_mut().zip(String::from_utf8_lossy(&out).lines()) {
+                it.missing = here.trim() == "0";
+            }
+        }
+    }
+    // a query that failed (empty output, e.g. no Full Disk Access) looks like "no items": fine for a panel
+    Some((items, offset + rows.len().min(page), more))
+}
+
 /// OpenStreetMap tiles around an address, as a `cols` x `rows` grid (row by row), and where the
 /// address sits on the grid (pixels, 256 per tile).
 #[derive(Clone)]
@@ -697,6 +894,7 @@ pub struct LinkPreview {
     /// the picture's size in pixels; Messages shows small ones (a site logo) as an icon, not a preview
     pub image_size: Option<(i32, i32)>,
     pub icon: Option<String>,
+    pub icon_size: Option<(i32, i32)>,
 }
 
 /// A picture big enough to show as a preview above the title (rather than a logo or icon beside it).
@@ -724,11 +922,14 @@ async fn link_preview(session: &client::Handle<Handler>, rowid: i64) -> Option<L
     let bytes = hex(lines.next()?)?;
     let files: Vec<String> = lines.map(String::from).collect();
     let mut p = parse_link(&bytes, &files)?;
-    if let Some(img) = &p.image {
-        let path = img.strip_prefix("~/").map(|r| format!("\"$HOME\"/{}", sh_quote(r))).unwrap_or_else(|| sh_quote(img));
+    let measure = |f: Option<String>| async move {
+        let img = f?;
+        let path = img.strip_prefix("~/").map(|r| format!("\"$HOME\"/{}", sh_quote(r))).unwrap_or_else(|| sh_quote(&img));
         let out = exec(session, format!("sips -g pixelWidth -g pixelHeight {path}")).await;
-        p.image_size = out.and_then(|o| parse_size(&String::from_utf8_lossy(&o)));
-    }
+        out.and_then(|o| parse_size(&String::from_utf8_lossy(&o)))
+    };
+    p.image_size = measure(p.image.clone()).await;
+    p.icon_size = measure(p.icon.clone()).await;
     Some(p)
 }
 
@@ -767,7 +968,7 @@ pub fn parse_link(bytes: &[u8], files: &[String]) -> Option<LinkPreview> {
     let url = typed.clone().or_else(|| resolved.clone())?;
     let alt_url = resolved.filter(|r| *r != url).or(typed.filter(|t| *t != url));
     let site = text("siteName").unwrap_or_else(|| url.split('/').nth(2).unwrap_or("").trim_start_matches("www.").to_string());
-    Some(LinkPreview { title: text("title").unwrap_or_default(), site, image: file("image"), image_size: None, icon: file("icon"), url, alt_url })
+    Some(LinkPreview { title: text("title").unwrap_or_default(), site, image: file("image"), image_size: None, icon: file("icon"), icon_size: None, url, alt_url })
 }
 
 /// One `send` call: `target` plus `key` = `value` (a text or a file path on the Mac).
@@ -862,8 +1063,8 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
                 let _ = ev.send(Event::Warn(e));
             }
         },
-        Cmd::History(id) => {
-            let r = rpc.call("messages.history", json!({"chat_id": id, "limit": 150, "attachments": true}), READ).await;
+        Cmd::History(id, limit) => {
+            let r = rpc.call("messages.history", json!({"chat_id": id, "limit": limit, "attachments": true}), READ).await;
             if let Ok(r) = r {
                 let mut msgs = r.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
                 msgs.reverse(); // imsg returns newest first
@@ -880,6 +1081,15 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             msgs.reverse();
             add_services(&session, &mut msgs).await;
             let _ = ev.send(Event::Older(id, msgs));
+        }
+        Cmd::Recent(id) => {
+            let r = rpc.call("messages.history", json!({"chat_id": id, "limit": 10, "attachments": true}), READ).await;
+            if let Ok(r) = r {
+                let mut msgs = r.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
+                msgs.reverse();
+                add_services(&session, &mut msgs).await;
+                let _ = ev.send(Event::Recent(id, msgs));
+            }
         }
         Cmd::Preview(id) => {
             let r = rpc.call("messages.history", json!({"chat_id": id, "limit": 1, "attachments": true}), READ).await;
@@ -927,9 +1137,22 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
         Cmd::Link(rowid) => {
             let _ = ev.send(Event::Link(rowid, link_preview(&session, rowid).await));
         }
+        Cmd::Download { path, dest } => {
+            let err = download(&session, &path, &dest).await.err();
+            let _ = ev.send(Event::Downloaded { path, dest, err });
+        }
+        Cmd::Bulk(path) => {
+            let _lane = BULK.acquire().await;
+            let bytes = fetch_image(&session, &path, CHAT_PX).await;
+            let _ = ev.send(Event::Image { path, full: false, bytes });
+        }
         Cmd::Image { path, full } => {
             let bytes = fetch_image(&session, &path, if full { FULL_PX } else { CHAT_PX }).await;
             let _ = ev.send(Event::Image { path, full, bytes });
+        }
+        Cmd::Media { chat_id, kind, offset } => {
+            let (items, next, more) = chat_media(&session, chat_id, kind, offset).await.unwrap_or_default();
+            let _ = ev.send(Event::Media { chat_id, kind, offset, items, next, more });
         }
         Cmd::Map(query) => {
             let data = map_for(&session, &query).await;
@@ -1070,6 +1293,15 @@ mod link_tests {
         assert_eq!(p.image.as_deref(), Some("big.jpg"));
         assert_eq!(p.icon, None);
         assert_eq!(super::hex("0aff"), Some(vec![10, 255]));
+        assert_eq!(super::urls_in("see https://a.com/x, and (http://b.org/y). ok"), vec!["https://a.com/x", "http://b.org/y"]);
+        assert_eq!(super::urls_in("look:https://a.com/x"), vec!["https://a.com/x"]);
+        assert_eq!(super::single_link("pfft! brilliant. https://youtu.be/x?si=1"), Some("https://youtu.be/x?si=1".into()));
+        assert_eq!(super::single_link("https://a.com/x and https://b.com/y"), None);
+        assert_eq!(super::single_link("see https://a.com/x for more"), None);
+        assert_eq!(super::strip_url("pfft! brilliant. https://youtu.be/x", "https://youtu.be/x"), "pfft! brilliant.");
+        let mut blob = b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84\x12NSAttributedString\x00\x84\x84\x08NSObject\x00\x85\x92\x84\x84\x84\x08NSString\x01\x95\x84\x01+".to_vec();
+        blob.extend_from_slice(b"\x0bhello https\x86\x84");
+        assert_eq!(super::text_from_blob(&blob), Some("hello https".into()));
         // (-114.0631 + 180) / 360 * 2^16 = 12003.3
         let (x, _, px, py) = super::tile_pos(51.0442, -114.0631, 16);
         assert_eq!(x, 12003);

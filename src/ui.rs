@@ -13,8 +13,10 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::{bubble, viewer};
-use crate::mac::{Cmd, Config, Event};
+use crate::mac::{Cmd, Config, Event, Kind, MediaItem};
 
+const SIDEBAR_MIN: i32 = 260; // paned positions and widths below include the panels' side margins
+const CHAT_MIN: i32 = 440;
 const COMPOSE_PAD_X: i32 = 4;
 const COMPOSE_MAX: i32 = 160; // composer stops growing here and scrolls
 const COMPOSE_PAD_Y: i32 = 9;
@@ -59,6 +61,28 @@ type MapWait = (glib::WeakRef<gtk::Overlay>, Rc<Cell<Option<(f64, f64)>>>);
 
 #[derive(Default)]
 struct State {
+    /// preview pictures the Mac couldn't give us: drawn as if the preview had none
+    bad_images: HashSet<String>,
+    /// the info panel's links so far (the Links tab is rebuilt from these when its width changes)
+    info_links: Vec<MediaItem>,
+    /// slots in the Links tab waiting for a preview card, by message row
+    link_waiters: HashMap<i64, Vec<glib::WeakRef<gtk::Box>>>,
+    /// files being copied from the Mac, with the chip that was clicked
+    downloading: HashMap<String, glib::WeakRef<gtk::Widget>>,
+    /// messages we've already set a "look for its link preview" timer for
+    preview_watch: HashSet<String>,
+    /// how much the window was widened to fit the info panel (and is narrowed by when it closes)
+    widened_by: i32,
+    /// the sidebar width the user has chosen (0: the default); the info panel may squeeze it meanwhile
+    side_pref: i32,
+    /// the chat the info panel shows (None: panel closed)
+    info_chat: Option<i64>,
+    /// per chat and kind: where the next page starts, and whether there is one
+    media: HashMap<(i64, Kind), (usize, bool)>,
+    /// the info panel's photo thumbnails, for the viewer
+    info_photos: Vec<(String, bubble::Bubble)>,
+    /// the viewer was opened from the info panel (so a conversation redraw mustn't swap its photos)
+    viewer_panel: bool,
     /// address text -> its map (None: couldn't be found, don't ask again this session)
     maps: HashMap<String, Option<MapView>>,
     /// card slots waiting for a map
@@ -75,7 +99,7 @@ struct State {
     textures: HashMap<String, gdk::Texture>,
     waiting: HashMap<String, Vec<bubble::Bubble>>,
     /// pictures to ask the Mac for, oldest first; sent newest-first once the chat has been built
-    fetch_q: Vec<String>,
+    fetch_q: Vec<(String, bool)>,
     /// photo widgets of the open chat in display order (the viewer cycles through these)
     photos: Vec<(String, bubble::Bubble)>,
     /// full-size viewer fetches in flight
@@ -148,6 +172,8 @@ pub struct Ui {
     /// writing a new message (To field showing, no chat selected)
     new_mode: Cell<bool>,
     send_token: Cell<u64>,
+    info: Info,
+    paned: gtk::Paned,
 }
 
 impl Ui {
@@ -242,6 +268,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     conv_head.append(&head_avatar);
     conv_head.append(&titles);
     conv_head.append(&head_spin);
+    let info = build_info();
+    conv_head.append(&info.refresh);
+    conv_head.append(&info.btn);
     // new message: the header becomes a To field, the message area a list of people to pick
     let to_label = gtk::Label::new(Some("To:"));
     to_label.add_css_class("to-label");
@@ -416,7 +445,14 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
 
     let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
     paned.set_start_child(Some(&sidebar));
-    paned.set_end_child(Some(&conv_panel));
+    // the info panel sits beside the chat and pushes it over
+    conv_panel.set_hexpand(true);
+    sidebar.set_size_request(SIDEBAR_MIN - 20, -1); // minus its margins
+    conv_panel.set_size_request(CHAT_MIN - 20, -1);
+    let right = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    right.append(&conv_panel);
+    right.append(&info.revealer);
+    paned.set_end_child(Some(&right));
     paned.set_position(340);
     paned.set_shrink_start_child(false);
     paned.set_resize_start_child(false);
@@ -468,6 +504,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         render_queued: Cell::new(false),
         new_mode: Cell::new(false),
         send_token: Cell::new(0),
+        info,
+        paned: paned.clone(),
     });
 
     // wiring
@@ -616,6 +654,20 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         glib::Propagation::Proceed
     });
     ui.to_entry.add_controller(esc);
+    wire_info(&ui);
+    // keep the three panels fitting as the window is resized (see layout_info)
+    let (weak, last_w) = (Rc::downgrade(&ui), Cell::new(0));
+    ui.paned.add_tick_callback(move |p, _| {
+        let Some(u) = weak.upgrade() else { return glib::ControlFlow::Break };
+        if u.info.revealer.reveals_child() {
+            if p.width() != last_w.replace(p.width()) {
+                layout_info(&u, p.width());
+            }
+        } else {
+            u.st.borrow_mut().side_pref = p.position(); // wherever the user has dragged it
+        }
+        glib::ControlFlow::Continue
+    });
 
     // coming back to the window counts as seeing the open chat
     let u = ui.clone();
@@ -872,7 +924,11 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 st.new_pending.as_deref().and_then(|a| find_direct_chat(&st.chats, a))
             };
             if let Some(id) = new_chat {
-                u.st.borrow_mut().new_pending = None;
+                {
+                    let mut st = u.st.borrow_mut();
+                    st.new_pending = None;
+                    st.pending.iter_mut().filter(|p| p.chat_id == 0).for_each(|p| p.chat_id = id);
+                }
                 open_chat(u, id);
             }
             if let Some(id) = first {
@@ -952,6 +1008,24 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 glib::timeout_add_local_once(Duration::from_secs(20), move || drop_pending(&u2, token));
             }
         }
+        Event::Recent(id, msgs) => {
+            let is_sel = {
+                let mut st = u.st.borrow_mut();
+                if let Some(h) = st.hist.get_mut(&id) {
+                    for m in msgs {
+                        match h.iter_mut().find(|x| x["guid"] == m["guid"]) {
+                            Some(old) => *old = m,
+                            None => h.push(m), // e.g. Messages replaced the row it sent with another
+                        }
+                    }
+                }
+                st.sel == Some(id)
+            };
+            if is_sel {
+                render_conv(u);
+            }
+        }
+        Event::Media { chat_id, kind, offset, items, next, more } => on_media(u, chat_id, kind, offset, items, next, more),
         Event::Map(query, data) => {
             let view = data.and_then(|d| {
                 let _ = std::fs::create_dir_all(&u.store.image_cache);
@@ -964,8 +1038,27 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 fill_map(&frame, loc, view.as_ref());
             }
         }
+        Event::Downloaded { path, dest, err } => {
+            let chip = u.st.borrow_mut().downloading.remove(&path).and_then(|w| w.upgrade());
+            if let Some(c) = chip {
+                c.set_opacity(1.0);
+                c.set_tooltip_text(Some("Copy from the Mac and open"));
+            }
+            match err {
+                Some(e) => show_banner(u, &format!("Couldn't copy the file from the Mac: {e}"), false),
+                None => open_file(u, &dest),
+            }
+        }
         Event::Link(row, p) => {
             u.st.borrow_mut().links.insert(row, p.clone());
+            // Links tab slots waiting for this card
+            if let Some(l) = &p {
+                let slots = u.st.borrow_mut().link_waiters.remove(&row).unwrap_or_default();
+                for slot in slots.iter().filter_map(|w| w.upgrade()) {
+                    clear(&slot);
+                    slot.append(&link_tile(u, &l.url, Some(l)));
+                }
+            }
             let shown = {
                 let st = u.st.borrow();
                 p.is_some() && st.sel.and_then(|id| st.hist.get(&id)).is_some_and(|h| h.iter().any(|m| preview_row(m) == Some(row)))
@@ -1000,7 +1093,26 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 }
                 u.st.borrow_mut().textures.insert(path, tex);
             } else {
-                pics.iter().for_each(stop_spin); // couldn't load: leave the empty bubble, no endless spinner
+                // couldn't load: no endless spinner; a link card gives its empty picture area back
+                for p in &pics {
+                    if p.has_css_class("linkcard") {
+                        p.drop_card_image();
+                    } else {
+                        stop_spin(p);
+                    }
+                }
+                // and a link preview whose picture is that one is redrawn without it (with the link icon)
+                u.st.borrow_mut().bad_images.insert(path);
+                if !u.render_queued.replace(true) {
+                    let u2 = u.clone();
+                    glib::idle_add_local_once(move || {
+                        u2.render_queued.set(false);
+                        render_conv(&u2);
+                        if !u2.st.borrow().info_links.is_empty() {
+                            render_links(&u2);
+                        }
+                    });
+                }
             }
         }
     }
@@ -1017,6 +1129,9 @@ fn drop_pending(u: &Rc<Ui>, token: u64) {
     if had && sel.is_some() {
         render_conv(u);
     }
+    if had {
+        show_new_ghosts(u);
+    }
 }
 
 /// My own message came back through the live stream: its waiting bubble is replaced by the real one.
@@ -1025,7 +1140,8 @@ fn settle_pending(st: &mut State, cid: i64, m: &Value) {
     let has_files = m["attachments"].as_array().is_some_and(|a| !a.is_empty());
     let name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let at = st.pending.iter().position(|p| {
-        p.chat_id == cid
+        // chat id 0: the first message to a new address, whose chat we don't know yet
+        (p.chat_id == cid || p.chat_id == 0)
             && match &p.item {
                 PendingItem::Text(t) => !text.is_empty() && *t == text,
                 PendingItem::File(f) => {
@@ -1052,6 +1168,7 @@ fn on_message(u: &Rc<Ui>, m: Value) {
     let mutation = m["type"].as_str().is_some();
     if !mutation && m["is_from_me"].as_bool() == Some(true) {
         settle_pending(&mut u.st.borrow_mut(), cid, &m);
+        show_new_ghosts(u);
     }
     let (is_sel, known_chat) = {
         let mut st = u.st.borrow_mut();
@@ -1073,6 +1190,7 @@ fn on_message(u: &Rc<Ui>, m: Value) {
     if mutation {
         return;
     }
+    watch_for_preview(u, cid, &m);
     // chat order and unread counts come from the Mac; coalesce bursts into one reload
     if !u.chats_queued.replace(true) {
         let u2 = u.clone();
@@ -1087,6 +1205,28 @@ fn on_message(u: &Rc<Ui>, m: Value) {
     render_chats(u);
     if m["is_from_me"].as_bool() != Some(true) && (!u.win.is_active() || !is_sel) {
         notify(u, cid, &m);
+    }
+}
+
+/// A message with a link arrives before Messages has made its preview (and, for one we sent, before it
+/// has pulled the link out of the text). Look again a few times so the card replaces the plain text.
+fn watch_for_preview(u: &Rc<Ui>, cid: i64, m: &Value) {
+    let Some(guid) = m["guid"].as_str() else { return };
+    if preview_row(m).is_some() || crate::mac::urls_in(&clean_text(m)).is_empty() || !u.st.borrow_mut().preview_watch.insert(guid.to_string()) {
+        return;
+    }
+    for secs in [3, 8, 20] {
+        let (u2, guid) = (u.clone(), guid.to_string());
+        glib::timeout_add_local_once(Duration::from_secs(secs), move || {
+            let (done, connected) = {
+                let st = u2.st.borrow();
+                let msg = st.hist.get(&cid).and_then(|h| h.iter().find(|x| x["guid"].as_str() == Some(&guid)));
+                (msg.is_none_or(|x| preview_row(x).is_some()), st.connected)
+            };
+            if !done && connected {
+                u2.send(Cmd::Recent(cid));
+            }
+        });
     }
 }
 
@@ -1163,11 +1303,30 @@ fn select(u: &Rc<Ui>, id: i64) {
         }
     });
     u.compose.grab_focus();
+    if u.info.revealer.reveals_child() {
+        refresh_info(u);
+    }
 }
+
+const HISTORY_PAGE: usize = 150;
 
 fn request_history(u: &Rc<Ui>, id: i64) {
     u.st.borrow_mut().loading.insert(id);
-    u.send(Cmd::History(id));
+    u.send(Cmd::History(id, HISTORY_PAGE));
+    update_spinner(u);
+}
+
+/// Reload the open chat from the Mac, as many messages as are showing now (more if the user has
+/// scrolled back), and forget link previews that came up empty so they're asked for again.
+fn refresh_chat(u: &Rc<Ui>) {
+    let (id, limit) = {
+        let mut st = u.st.borrow_mut();
+        let Some(id) = st.sel else { return };
+        st.links.retain(|_, v| v.is_some());
+        (id, st.hist.get(&id).map_or(0, Vec::len).max(HISTORY_PAGE))
+    };
+    u.st.borrow_mut().loading.insert(id);
+    u.send(Cmd::History(id, limit));
     update_spinner(u);
 }
 
@@ -1335,6 +1494,9 @@ fn start_new(u: &Rc<Ui>) {
     u.chat_list.unselect_all();
     u.selecting.set(false);
     u.new_mode.set(true);
+    close_info(u);
+    u.info.btn.set_visible(false);
+    u.info.refresh.set_visible(false);
     for w in [u.head_avatar.upcast_ref::<gtk::Widget>(), u.head_titles.upcast_ref(), u.head_spin.upcast_ref(), u.scroller.upcast_ref()] {
         w.set_visible(false);
     }
@@ -1354,6 +1516,8 @@ fn end_new(u: &Ui) {
         return;
     }
     u.head_avatar.set_visible(true);
+    u.info.btn.set_visible(true);
+    u.info.refresh.set_visible(true);
     u.head_titles.set_visible(true);
     u.scroller.set_visible(true);
     u.to_row.set_visible(false);
@@ -1469,8 +1633,21 @@ fn send_new(u: &Rc<Ui>, text: &str) {
     let to = clean_addr(&typed);
     let files = take_files(u);
     u.compose.buffer().set_text("");
-    u.st.borrow_mut().new_pending = Some(to.clone());
-    u.send(Cmd::Send { chat_id: 0, to: Some(to), text: text.to_string(), files, token: 0 });
+    let token = u.send_token.get() + 1;
+    u.send_token.set(token);
+    {
+        // ghosts (chat id 0) until the chat appears; Event::Chats gives them its id
+        let mut st = u.st.borrow_mut();
+        st.new_pending = Some(to.clone());
+        for f in &files {
+            st.pending.push(Pending { token, chat_id: 0, item: PendingItem::File(f.clone()) });
+        }
+        if !text.is_empty() {
+            st.pending.push(Pending { token, chat_id: 0, item: PendingItem::Text(text.to_string()) });
+        }
+    }
+    u.send(Cmd::Send { chat_id: 0, to: Some(to), text: text.to_string(), files, token });
+    show_new_ghosts(u);
     // the chat opens when the Mac's chat list includes it (Event::Chats)
 }
 
@@ -1707,23 +1884,12 @@ fn render_conv(u: &Rc<Ui>) {
             u.msgs.append(&line);
         }
     }
-    for (i, p) in pending.iter().enumerate() {
-        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        line.add_css_class("msg-line");
-        if i + 1 < pending.len() {
-            line.add_css_class("tight");
-        }
-        line.set_halign(gtk::Align::End);
-        let spin = gtk::Spinner::new();
-        spin.start();
-        spin.set_valign(gtk::Align::Center);
-        spin.set_tooltip_text(Some("Sending…"));
-        line.append(&spin);
-        line.append(&pending_bubble(p, sms, i + 1 == pending.len()));
-        u.msgs.append(&line);
-    }
+    append_pending(u, &pending, sms);
     let photos = u.st.borrow().photos.clone(); // the viewer's hooks borrow State
-    u.viewer.refresh(photos);
+    if !(u.st.borrow().viewer_panel && u.viewer.is_open()) {
+        u.st.borrow_mut().viewer_panel = false;
+        u.viewer.refresh(photos);
+    }
     mark_seen(u);
 }
 
@@ -1756,6 +1922,40 @@ fn load_seen(path: &std::path::Path) -> HashMap<i64, i64> {
         .filter_map(|l| l.split_once('='))
         .filter_map(|(c, m)| Some((c.parse().ok()?, m.parse().ok()?)))
         .collect()
+}
+
+/// The faded, spinning bubbles of messages still on their way, at the end of the message list.
+fn append_pending(u: &Ui, pending: &[Pending], sms: bool) {
+    for (i, p) in pending.iter().enumerate() {
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        line.add_css_class("msg-line");
+        if i + 1 < pending.len() {
+            line.add_css_class("tight");
+        }
+        line.set_halign(gtk::Align::End);
+        let spin = gtk::Spinner::new();
+        spin.start();
+        spin.set_valign(gtk::Align::Center);
+        spin.set_tooltip_text(Some("Sending…"));
+        line.append(&spin);
+        line.append(&pending_bubble(p, sms, i + 1 == pending.len()));
+        u.msgs.append(&line);
+    }
+}
+
+/// In the new-message view: the first message to a new address, shown as a ghost until its chat
+/// appears (pending items with chat id 0); with none, the people suggestions.
+fn show_new_ghosts(u: &Ui) {
+    if !u.new_mode.get() {
+        return;
+    }
+    let ghosts: Vec<Pending> = u.st.borrow().pending.iter().filter(|p| p.chat_id == 0).cloned().collect();
+    while let Some(c) = u.msgs.first_child() {
+        u.msgs.remove(&c);
+    }
+    append_pending(u, &ghosts, false);
+    u.scroller.set_visible(!ghosts.is_empty());
+    u.suggest_scroll.set_visible(ghosts.is_empty());
 }
 
 /// A message on its way: faded, drawn like the real one will be (blue or green, tail on the last).
@@ -1853,12 +2053,21 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
     let mut out: Vec<gtk::Widget> = Vec::new();
     let link = preview_row(m).and_then(|r| link_for(u, r));
     let mut text = clean_text(m);
+    // a link Messages made no preview of: like Messages, one that ends the message becomes a small
+    // card under the text; with several links, or one in the middle, the text stays as it is (clickable)
+    let mut plain: Option<String> = None;
     if let Some(l) = &link {
         text = without_url(&text, l); // the card shows the link; any other words follow it
+    } else if preview_row(m).is_none()
+        && let Some(url) = crate::mac::single_link(&text)
+    {
+        text = crate::mac::strip_url(&text, &url);
+        plain = Some(url);
     }
     let has_bubble = !text.is_empty() || !others.is_empty();
+    let look = bubble::Look { tail: end_of_run && plain.is_none(), ..look };
     if !photos.is_empty() {
-        let tail = end_of_run && !has_bubble && link.is_none();
+        let tail = end_of_run && !has_bubble && link.is_none() && plain.is_none();
         out.push(photo_stack(u, &photos, bubble::Look { me, sms, tail }));
     }
     if let Some(l) = &link {
@@ -1870,7 +2079,8 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
             b.add(&l);
         }
         if !text.is_empty() {
-            let l = gtk::Label::new(Some(&text));
+            let l = gtk::Label::new(None);
+            l.set_markup(&linkify(&text));
             l.set_wrap(true);
             l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
             l.set_xalign(0.0);
@@ -1887,6 +2097,74 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
             b.add(&l);
         }
         out.push(b.upcast());
+    }
+    if let Some(url) = plain {
+        out.push(plain_link_card(u, &url, bubble::Look { me, sms, tail: end_of_run }));
+    }
+    out
+}
+
+/// Our own stand-in for a link's missing picture: a white chain on a solid slate circle, which reads
+/// on the off-white card (Messages shows a Safari compass there).
+fn link_glyph() -> gtk::Widget {
+    let g = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    g.add_css_class("link-glyph");
+    g.set_size_request(44, 44);
+    g.set_valign(gtk::Align::Center);
+    g.set_hexpand(false);
+    let icon = gtk::Image::from_icon_name("bf-link-symbolic");
+    icon.set_pixel_size(24);
+    icon.set_halign(gtk::Align::Center);
+    icon.set_valign(gtk::Align::Center);
+    icon.set_vexpand(true);
+    g.append(&icon);
+    g.upcast()
+}
+
+/// A link with no preview from Messages, drawn like a card whose picture is just a small icon: the
+/// host as its title and a link glyph on the right.
+fn plain_link_card(u: &Rc<Ui>, url: &str, look: bubble::Look) -> gtk::Widget {
+    let b = bubble::Bubble::card(look, LINK_W, 0);
+    let host = url.split('/').nth(2).unwrap_or(url).trim_start_matches("www.").to_string();
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let title = gtk::Label::new(Some(&host));
+    title.add_css_class("link-title");
+    title.set_xalign(0.0);
+    title.set_hexpand(true);
+    title.set_valign(gtk::Align::Center);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    row.append(&title);
+    row.append(&link_glyph());
+    b.add(&row);
+    b.set_tooltip_text(Some(url));
+    b.set_cursor_from_name(Some("pointer"));
+    let (u2, url) = (u.clone(), url.to_string());
+    let click = gtk::GestureClick::new();
+    click.connect_released(move |g, _, _, _| {
+        g.set_state(gtk::EventSequenceState::Claimed);
+        gtk::UriLauncher::new(&url).launch(Some(&u2.win), gio::Cancellable::NONE, |_| {});
+    });
+    b.add_controller(click);
+    b.upcast()
+}
+
+/// Pango markup for message text with each `http(s)://` link clickable (the label opens it itself).
+fn linkify(text: &str) -> String {
+    let mut out = String::new();
+    for word in text.split_inclusive(char::is_whitespace) {
+        let w = word.trim_end();
+        if let Some(p) = crate::mac::scheme_at(w) {
+            let core = w[p..].trim_end_matches(['.', ',', ')', '>', '"', '\'', '!', '?', ';']);
+            let esc = glib::markup_escape_text(core);
+            out.push_str(&format!(
+                "{}<a href=\"{esc}\">{esc}</a>{}{}",
+                glib::markup_escape_text(&w[..p]),
+                glib::markup_escape_text(&w[p + core.len()..]),
+                &word[w.len()..]
+            ));
+        } else {
+            out.push_str(&glib::markup_escape_text(word));
+        }
     }
     out
 }
@@ -1932,15 +2210,46 @@ const LINK_W: i32 = 300;
 /// A shared link as Apple saved it, as one bubble: the preview image (if any) across the top, then
 /// the title and site. Clicking opens it in the browser.
 fn link_card(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look) -> gtk::Widget {
+    link_card_w(u, l, look, LINK_W)
+}
+
+/// The preview without the pictures that couldn't be fetched from the Mac.
+fn usable(u: &Ui, l: &crate::mac::LinkPreview) -> crate::mac::LinkPreview {
+    let st = u.st.borrow();
+    let mut l = l.clone();
+    if l.image.as_ref().is_some_and(|p| st.bad_images.contains(p)) {
+        (l.image, l.image_size) = (None, None);
+    }
+    if l.icon.as_ref().is_some_and(|p| st.bad_images.contains(p)) {
+        (l.icon, l.icon_size) = (None, None);
+    }
+    l
+}
+
+/// The small picture for a preview without a big one: the larger of the preview's own picture and the
+/// site's icon. A very wide or tall picture (a button graphic: 87x23 on thegentlechef.com) loses to the icon.
+fn small_picture(l: &crate::mac::LinkPreview) -> Option<&String> {
+    let area = |s: Option<(i32, i32)>| s.map_or(0, |(w, h)| i64::from(w) * i64::from(h));
+    let odd = |s: Option<(i32, i32)>| s.is_some_and(|(w, h)| w > 0 && h > 0 && (w > 3 * h || h > 3 * w));
+    match (&l.image, &l.icon) {
+        (Some(i), Some(c)) => Some(if odd(l.image_size) || area(l.icon_size) > area(l.image_size) { c } else { i }),
+        (i, c) => i.as_ref().or(c.as_ref()),
+    }
+}
+
+/// `link_card` at a given width (the info panel's cards follow the panel).
+fn link_card_w(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look, link_w: i32) -> gtk::Widget {
+    let l = &usable(u, l);
     // a real preview picture goes across the top; a small one (the site's logo) sits beside the text
     let big = l.image.is_some() && l.image_size.is_none_or(|(w, h)| crate::mac::is_preview_size(w, h));
+    let small = if big { None } else { small_picture(l) };
     // the preview shows whole, in its own proportions (portrait ones too); only a freak shape is capped
     let img_h = match l.image_size {
         _ if !big => 0,
-        Some((w, h)) if w > 0 => (LINK_W as f64 * h as f64 / w as f64).clamp(60.0, 2.0 * LINK_W as f64) as i32,
-        _ => LINK_W * 52 / 100,
+        Some((w, h)) if w > 0 => (link_w as f64 * h as f64 / w as f64).clamp(60.0, 2.0 * link_w as f64) as i32,
+        _ => link_w * 52 / 100,
     };
-    let b = bubble::Bubble::card(look, LINK_W, img_h);
+    let b = bubble::Bubble::card(look, link_w, img_h);
     if big && let Some(img) = &l.image {
         b.add_css_class("fixed"); // keeps its card size instead of taking the photo's shape
         load_texture(u, &b, img);
@@ -1956,7 +2265,7 @@ fn link_card(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look) -> gtk
         t.set_wrap_mode(gtk::pango::WrapMode::WordChar);
         t.set_lines(2);
         t.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        t.set_max_width_chars(if big || l.image.is_none() { 34 } else { 24 });
+        t.set_max_width_chars(if big { 34 } else { 24 });
         texts.append(&t);
     }
     // ponytail: the site's icon (l.icon) isn't drawn; a link glyph stands in
@@ -1964,15 +2273,21 @@ fn link_card(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look) -> gtk
     site.add_css_class("link-site");
     site.set_xalign(0.0);
     site.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    site.set_max_width_chars(if big || l.image.is_none() { 34 } else { 24 });
+    site.set_max_width_chars(if big { 34 } else { 24 });
     texts.append(&site);
-    if !big && let Some(img) = &l.image {
+    if let Some(img) = small {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         row.append(&texts);
         let icon = bubble::Bubble::thumb(56);
         icon.add_css_class("fixed");
         load_texture(u, &icon, img);
         row.append(&icon);
+        b.add(&row);
+    } else if !big {
+        // Messages has no picture for it: our own link icon stands in
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row.append(&texts);
+        row.append(&link_glyph());
         b.add(&row);
     } else {
         b.add(&texts);
@@ -2102,6 +2417,7 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
     click.connect_released(move |g, _, _, _| {
         g.set_state(gtk::EventSequenceState::Claimed);
         let items = u2.st.borrow().photos.clone();
+        u2.st.borrow_mut().viewer_panel = false;
         u2.viewer.open(items, &path2);
     });
     p.add_controller(click);
@@ -2112,6 +2428,11 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
 
 /// Give `p` the chat copy of the image at `path`: from memory, the disk cache, or the Mac.
 fn load_texture(u: &Rc<Ui>, p: &bubble::Bubble, path: &str) {
+    load_texture_in(u, p, path, false)
+}
+
+/// `bulk`: one of many at once (the info panel's grid), fetched through the Mac's slower lane.
+fn load_texture_in(u: &Rc<Ui>, p: &bubble::Bubble, path: &str, bulk: bool) {
     let in_memory = u.st.borrow().textures.get(path).cloned(); // borrow ends here; or_else below borrows mutably
     let cached = in_memory.or_else(|| {
         let tex = texture(&std::fs::read(cache_path(u, path, false)).ok()?)?;
@@ -2128,7 +2449,11 @@ fn load_texture(u: &Rc<Ui>, p: &bubble::Bubble, path: &str) {
             sp.set_valign(gtk::Align::Center);
             sp.set_hexpand(true);
             sp.set_size_request(28, 28);
-            p.append(&sp);
+            if p.has_css_class("linkcard") {
+                sp.set_vexpand(true);
+                sp.set_margin_bottom(12); // the slot sits a little low; this centres it on the picture
+            }
+            spin_host(p).append(&sp);
             let first = {
                 let mut st = u.st.borrow_mut();
                 let w = st.waiting.entry(path.to_string()).or_default();
@@ -2138,15 +2463,21 @@ fn load_texture(u: &Rc<Ui>, p: &bubble::Bubble, path: &str) {
             if first {
                 let was_empty = {
                     let mut st = u.st.borrow_mut();
-                    st.fetch_q.push(path.to_string());
+                    st.fetch_q.push((path.to_string(), bulk));
                     st.fetch_q.len() == 1
                 };
                 if was_empty {
                     let u = u.clone();
                     glib::idle_add_local_once(move || {
                         let q = std::mem::take(&mut u.st.borrow_mut().fetch_q);
-                        for path in q.into_iter().rev() {
+                        // the chat is built oldest to newest, so its pictures go newest first;
+                        // the info panel's grid is built newest first already
+                        let (bulk, chat): (Vec<_>, Vec<_>) = q.into_iter().partition(|(_, b)| *b);
+                        for (path, _) in chat.into_iter().rev() {
                             u.send(Cmd::Image { path, full: false });
+                        }
+                        for (path, _) in bulk {
+                            u.send(Cmd::Bulk(path));
                         }
                     });
                 }
@@ -2162,9 +2493,20 @@ fn texture(bytes: &[u8]) -> Option<gdk::Texture> {
 
 /// Remove the loading spinner `load_texture` put in a photo bubble.
 fn stop_spin(p: &bubble::Bubble) {
-    if let Some(sp) = p.first_child().and_downcast::<gtk::Spinner>() {
-        p.remove(&sp);
+    let host = spin_host(p);
+    if let Some(sp) = host.first_child().and_downcast::<gtk::Spinner>() {
+        host.remove(&sp);
     }
+}
+
+/// Where a bubble's loading spinner lives: a link card has a slot over its picture; others hold it directly.
+fn spin_host(p: &bubble::Bubble) -> gtk::Box {
+    if p.has_css_class("linkcard")
+        && let Some(slot) = p.first_child().and_then(|inner| inner.first_child()).and_downcast::<gtk::Box>()
+    {
+        return slot;
+    }
+    p.clone().upcast()
 }
 
 fn show_texture(p: &bubble::Bubble, t: &gdk::Texture) {
@@ -2201,6 +2543,506 @@ fn stack_room(u: &Ui) -> f64 {
     // ponytail: mirrors .msgs padding (18 px a side) and the avatar column (28 + 4) in style.css
     let w = u.scroller.hadjustment().page_size() - 36.0;
     if u.group.get() { w - 32.0 } else { w }
+}
+
+// ---------- conversation info ----------
+
+#[derive(Clone)]
+struct Info {
+    revealer: gtk::Revealer,
+    scroll: gtk::ScrolledWindow,
+    btn: gtk::Button,
+    refresh: gtk::Button,
+    close: gtk::Button,
+    title: gtk::Label,
+    people: gtk::Box,
+    photos: gtk::FlowBox,
+    files: gtk::Box,
+    links: gtk::FlowBox,
+    /// "Show more" under photos, files, links
+    more: [gtk::Button; 3],
+}
+
+fn kind_idx(k: Kind) -> usize {
+    match k {
+        Kind::Photos => 0,
+        Kind::Files => 1,
+        Kind::Links => 2,
+    }
+}
+
+/// The panel that slides in over the right side of the conversation: who's in it, and tabs for every
+/// photo, file and link in the chat.
+fn build_info() -> Info {
+    let btn = gtk::Button::from_icon_name("bf-info-symbolic");
+    btn.add_css_class("head-btn");
+    btn.set_valign(gtk::Align::Center);
+    btn.set_tooltip_text(Some("Conversation info"));
+    let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh.add_css_class("head-btn");
+    refresh.set_valign(gtk::Align::Center);
+    refresh.set_tooltip_text(Some("Reload this conversation from the Mac"));
+    let title = gtk::Label::new(None);
+    title.add_css_class("card-name");
+    title.set_xalign(0.0);
+    title.set_hexpand(true);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let close = gtk::Button::from_icon_name("window-close-symbolic");
+    close.add_css_class("flat");
+    close.set_valign(gtk::Align::Center);
+    let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    top.append(&title);
+    top.append(&close);
+    let people = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let photos = gtk::FlowBox::new();
+    photos.set_selection_mode(gtk::SelectionMode::None);
+    photos.set_min_children_per_line(1);
+    photos.set_max_children_per_line(3); // the panel's width decides how many fit (see layout_info)
+    photos.set_row_spacing(4);
+    photos.set_column_spacing(4);
+    photos.set_homogeneous(true);
+    let files = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let links = gtk::FlowBox::new();
+    links.set_selection_mode(gtk::SelectionMode::None);
+    links.set_min_children_per_line(1);
+    links.set_max_children_per_line(3);
+    links.set_row_spacing(4);
+    links.set_column_spacing(4);
+    links.set_homogeneous(true);
+    let more = [gtk::Button::with_label("Show more"), gtk::Button::with_label("Show more"), gtk::Button::with_label("Show more")];
+    for m in &more {
+        m.add_css_class("flat");
+        m.set_visible(false);
+    }
+    let tab = |child: &gtk::Widget, more: &gtk::Button| {
+        let b = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        b.append(child);
+        b.append(more);
+        b
+    };
+    let stack = gtk::Stack::new();
+    stack.add_titled(&tab(photos.upcast_ref(), &more[0]), Some("photos"), "Photos");
+    stack.add_titled(&tab(files.upcast_ref(), &more[1]), Some("files"), "Files");
+    stack.add_titled(&tab(links.upcast_ref(), &more[2]), Some("links"), "Links");
+    let switcher = gtk::StackSwitcher::new();
+    switcher.set_stack(Some(&stack));
+    switcher.set_halign(gtk::Align::Center);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    body.set_margin_top(14);
+    body.set_margin_bottom(14);
+    body.set_margin_start(14);
+    body.set_margin_end(14);
+    body.append(&top);
+    body.append(&people);
+    body.append(&switcher);
+    body.append(&stack);
+    let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&body).build();
+    scroll.set_size_request(info_w(3) - 14, -1); // the CSS margin makes up the rest
+    scroll.set_hexpand(false);
+    scroll.set_overflow(gtk::Overflow::Hidden); // the rounded corners clip it
+    scroll.add_css_class("info-panel");
+    let revealer = gtk::Revealer::builder().child(&scroll).transition_type(gtk::RevealerTransitionType::SlideLeft).reveal_child(false).build();
+    // expand flags pass up from the children: without this, the closed panel still takes a share of the width
+    revealer.set_hexpand(false);
+    Info { revealer, scroll, btn, refresh, close, title, people, photos, files, links, more }
+}
+
+const THUMB: i32 = 92;
+
+/// Width the panel takes beside the chat for `n` columns of photos (3 at most), margin included.
+fn info_w(n: i32) -> i32 {
+    n * THUMB + (n - 1) * 4 + 28 + 14
+}
+
+/// Share the window between sidebar, chat and info panel: the panel keeps as many photo columns (3 at
+/// most) as it can; the chat gives way first, down to `CHAT_MIN`, then the sidebar, down to
+/// `SIDEBAR_MIN`; only then does the panel lose columns. Whatever is left goes to the chat.
+fn layout_info(u: &Rc<Ui>, total: i32) {
+    let pref = match u.st.borrow().side_pref {
+        0 => 340,
+        p => p,
+    };
+    let (side, cols) = [3, 2, 1]
+        .into_iter()
+        .map(|n| (pref.min(total - CHAT_MIN - info_w(n)), n))
+        .find(|(side, _)| *side >= SIDEBAR_MIN)
+        .unwrap_or((SIDEBAR_MIN, 1));
+    u.paned.set_position(side);
+    u.info.scroll.set_size_request(info_w(cols) - 14, -1);
+
+}
+
+fn wire_info(u: &Rc<Ui>) {
+    let u2 = u.clone();
+    u.info.refresh.connect_clicked(move |_| refresh_chat(&u2));
+    let u2 = u.clone();
+    u.info.btn.connect_clicked(move |_| {
+        if u2.info.revealer.reveals_child() {
+            close_info(&u2);
+        } else {
+            open_info(&u2);
+        }
+    });
+    let u2 = u.clone();
+    u.info.close.connect_clicked(move |_| close_info(&u2));
+    for kind in [Kind::Photos, Kind::Files, Kind::Links] {
+        let u2 = u.clone();
+        u.info.more[kind_idx(kind)].connect_clicked(move |b| {
+            b.set_visible(false);
+            let (chat, off) = {
+                let st = u2.st.borrow();
+                let Some(chat) = st.info_chat else { return };
+                (chat, st.media.get(&(chat, kind)).map_or(0, |m| m.0))
+            };
+            u2.send(Cmd::Media { chat_id: chat, kind, offset: off });
+        });
+    }
+}
+
+/// The panel pushes the chat over; if the screen has room, the window widens by its width instead
+/// of squeezing the chat, and narrows again on close.
+fn open_info(u: &Rc<Ui>) {
+    if let Some(chat) = u.info.revealer.prev_sibling() {
+        chat.add_css_class("with-info"); // less gap between the two panels
+    }
+    let (w, h) = (u.win.width(), u.win.height());
+    let monitor_w = u.win.surface().and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s)).map(|m| m.geometry().width());
+    // widen by as much of the panel's full width as the screen allows, before squeezing anything
+    let grow = match monitor_w {
+        Some(m) if !u.win.is_maximized() && !u.win.is_fullscreen() => (m - w).clamp(0, info_w(3)),
+        _ => 0,
+    };
+    if grow > 0 {
+        u.win.set_default_size(w + grow, h);
+    }
+    u.st.borrow_mut().widened_by = grow;
+    layout_info(u, w + grow);
+    u.info.revealer.set_reveal_child(true);
+    refresh_info(u);
+}
+
+fn close_info(u: &Rc<Ui>) {
+    u.info.revealer.set_reveal_child(false);
+    if let Some(chat) = u.info.revealer.prev_sibling() {
+        chat.remove_css_class("with-info");
+    }
+    let (grew, pref) = {
+        let mut st = u.st.borrow_mut();
+        st.info_chat = None;
+        (std::mem::take(&mut st.widened_by), st.side_pref)
+    };
+    if grew > 0 {
+        u.win.set_default_size((u.win.width() - grew).max(CHAT_MIN + SIDEBAR_MIN), u.win.height());
+    }
+    if pref > 0 {
+        u.paned.set_position(pref); // the sidebar gets back the width it gave up
+    }
+}
+
+fn clear(b: &impl IsA<gtk::Widget>) {
+    while let Some(c) = b.first_child() {
+        c.unparent();
+    }
+}
+
+/// Fill the panel for the open chat: its people now, its photos, files and links as they arrive.
+fn refresh_info(u: &Rc<Ui>) {
+    let (id, chat, names) = {
+        let st = u.st.borrow();
+        let Some(id) = st.sel else { return };
+        (id, st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).cloned(), st.names.clone())
+    };
+    let Some(chat) = chat else { return };
+    {
+        let mut st = u.st.borrow_mut();
+        st.info_chat = Some(id);
+        st.info_photos.clear();
+        st.info_links.clear();
+        st.link_waiters.clear();
+        st.media.retain(|k, _| k.0 != id);
+    }
+    u.info.title.set_text(&chat_title(&chat, &names));
+    clear(&u.info.people);
+    let members: Vec<String> = chat["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
+    for h in &members {
+        let name = names.get(h).cloned().unwrap_or_else(|| pretty_handle(h));
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        row.add_css_class("info-person");
+        row.append(&avatar(u, &name, Some(h), true));
+        let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        text.set_valign(gtk::Align::Center);
+        let n = gtk::Label::new(Some(&name));
+        n.set_xalign(0.0);
+        text.append(&n);
+        if pretty_handle(h) != name {
+            let a = gtk::Label::new(Some(&pretty_handle(h)));
+            a.add_css_class("dim");
+            a.set_xalign(0.0);
+            text.append(&a);
+        }
+        row.append(&text);
+        row.set_cursor_from_name(Some("pointer"));
+        let (u2, row2, h2, name2) = (u.clone(), row.clone(), h.clone(), name.clone());
+        let g = gtk::GestureClick::new();
+        g.connect_released(move |_, _, _, _| show_card(&u2, row2.upcast_ref(), &h2, &name2, Rc::new(|_| {})));
+        row.add_controller(g);
+        u.info.people.append(&row);
+    }
+    u.info.photos.remove_all();
+    clear(&u.info.files);
+    u.info.links.remove_all();
+    for kind in [Kind::Photos, Kind::Files, Kind::Links] {
+        u.info.more[kind_idx(kind)].set_visible(false);
+        u.st.borrow_mut().media.insert((id, kind), (0, false));
+        u.send(Cmd::Media { chat_id: id, kind, offset: 0 });
+    }
+}
+
+fn fmt_date(unix: i64) -> String {
+    glib::DateTime::from_unix_local(unix).ok().and_then(|d| d.format("%b %-d, %Y").ok()).map(|s| s.to_string()).unwrap_or_default()
+}
+
+fn fmt_size(b: i64) -> String {
+    match b {
+        0 => String::new(),
+        b if b < 1024 => format!("{b} B"),
+        b if b < 1024 * 1024 => format!("{:.0} KB", b as f64 / 1024.0),
+        b => format!("{:.1} MB", b as f64 / 1024.0 / 1024.0),
+    }
+}
+
+/// A page of photos, files or links arrived for the panel.
+fn on_media(u: &Rc<Ui>, chat_id: i64, kind: Kind, offset: usize, items: Vec<MediaItem>, next: usize, more: bool) {
+    {
+        let mut st = u.st.borrow_mut();
+        // for another chat (the panel moved on) or an out-of-date page: drop it
+        if st.info_chat != Some(chat_id) || st.media.get(&(chat_id, kind)).map(|m| m.0) != Some(offset) {
+            return;
+        }
+        st.media.insert((chat_id, kind), (next, more));
+    }
+    u.info.more[kind_idx(kind)].set_visible(more);
+    let empty = |text: &str| {
+        let l = gtk::Label::new(Some(text));
+        l.add_css_class("dim");
+        l
+    };
+    match kind {
+        Kind::Photos => {
+            for it in items {
+                if it.missing {
+                    // not on the Mac (Messages hasn't downloaded it from iCloud, or it's gone): nothing to fetch
+                    let tile = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                    tile.add_css_class("info-missing");
+                    tile.set_size_request(THUMB, THUMB);
+                    let l = gtk::Label::new(Some("Not on your Mac"));
+                    l.add_css_class("dim");
+                    l.set_wrap(true);
+                    l.set_justify(gtk::Justification::Center);
+                    l.set_max_width_chars(10);
+                    l.set_valign(gtk::Align::Center);
+                    l.set_vexpand(true);
+                    tile.append(&l);
+                    tile.set_tooltip_text(Some("Messages hasn't downloaded this photo to your Mac"));
+                    u.info.photos.append(&tile);
+                    continue;
+                }
+                let b = bubble::Bubble::tile(THUMB);
+                b.add_css_class("fixed");
+                b.set_cursor_from_name(Some("pointer"));
+                let (u2, path) = (u.clone(), it.path.clone());
+                let g = gtk::GestureClick::new();
+                g.connect_released(move |g, _, _, _| {
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    let items = u2.st.borrow().info_photos.clone();
+                    u2.st.borrow_mut().viewer_panel = true;
+                    u2.viewer.open(items, &path);
+                });
+                b.add_controller(g);
+                u.st.borrow_mut().info_photos.push((it.path.clone(), b.clone()));
+                load_texture_in(u, &b, &it.path, true);
+                u.info.photos.append(&b);
+            }
+            if offset == 0 && u.info.photos.first_child().is_none() {
+                u.info.photos.insert(&empty("No photos in this conversation"), -1);
+            }
+        }
+        Kind::Files => {
+            for it in &items {
+                u.info.files.append(&file_chip(u, it));
+            }
+            if offset == 0 && u.info.files.first_child().is_none() {
+                u.info.files.append(&empty("No files in this conversation"));
+            }
+        }
+        Kind::Links => {
+            u.st.borrow_mut().info_links.extend(items);
+            render_links(u);
+            if offset == 0 && u.st.borrow().info_links.is_empty() {
+                u.info.links.append(&empty("No links in this conversation"));
+            }
+        }
+    }
+}
+
+/// A file of the chat as a chip; clicking copies it from the Mac and opens it here.
+fn file_chip(u: &Rc<Ui>, it: &MediaItem) -> gtk::Widget {
+    let chip = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    chip.add_css_class("file-chip");
+    let ext = it.name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let icon = match ext.as_str() {
+        "pdf" | "doc" | "docx" | "txt" | "rtf" | "pages" | "odt" => "📄",
+        "xls" | "xlsx" | "csv" | "numbers" | "ods" => "📊",
+        "mp3" | "m4a" | "wav" | "caf" | "aac" | "amr" => "🎵",
+        "mov" | "mp4" | "m4v" | "avi" | "mkv" => "🎞",
+        "zip" | "gz" | "tar" | "7z" | "rar" => "🗜",
+        _ => "📎",
+    };
+    let i = gtk::Label::new(None);
+    i.set_markup(&format!("<span size='170%'>{icon}</span>"));
+    chip.append(&i);
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    text.set_valign(gtk::Align::Center);
+    text.set_hexpand(true);
+    let n = gtk::Label::new(Some(&it.name));
+    n.set_xalign(0.0);
+    n.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    let detail: Vec<String> = [fmt_size(it.size), fmt_date(it.date)].into_iter().filter(|s| !s.is_empty()).collect();
+    let d = gtk::Label::new(Some(&detail.join(" · ")));
+    d.add_css_class("dim");
+    d.set_xalign(0.0);
+    d.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    text.append(&n);
+    text.append(&d);
+    chip.append(&text);
+    if it.missing {
+        chip.add_css_class("missing");
+        chip.set_tooltip_text(Some("Messages hasn't downloaded this file to your Mac"));
+    } else {
+        chip.set_cursor_from_name(Some("pointer"));
+        chip.set_tooltip_text(Some("Copy from the Mac and open"));
+        let (u2, it2, chip2) = (u.clone(), it.clone(), chip.clone());
+        let g = gtk::GestureClick::new();
+        g.connect_released(move |_, _, _, _| start_download(&u2, &it2, chip2.upcast_ref()));
+        chip.add_controller(g);
+    }
+    chip.upcast()
+}
+
+fn files_dir(u: &Ui) -> PathBuf {
+    u.store.image_cache.with_file_name("files")
+}
+
+fn open_file(u: &Ui, path: &std::path::Path) {
+    gtk::FileLauncher::new(Some(&gio::File::for_path(path))).launch(Some(&u.win), gio::Cancellable::NONE, |_| {});
+}
+
+/// Copy a chat file from the Mac (once; kept under the cache folder) and open it with the default app.
+// ponytail: the copies are never cleaned up; prune by age like the image cache would need to
+fn start_download(u: &Rc<Ui>, it: &MediaItem, chip: &gtk::Widget) {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    it.path.hash(&mut h);
+    let name: String = it.name.chars().map(|c| if c == '/' || c.is_control() { '_' } else { c }).collect();
+    let dest = files_dir(u).join(format!("{:016x}", h.finish())).join(if name.is_empty() { "file" } else { &name });
+    if dest.exists() {
+        open_file(u, &dest);
+        return;
+    }
+    if u.st.borrow().downloading.contains_key(&it.path) {
+        return;
+    }
+    chip.set_opacity(0.5);
+    chip.set_tooltip_text(Some("Copying from the Mac…"));
+    u.st.borrow_mut().downloading.insert(it.path.clone(), chip.downgrade());
+    u.send(Cmd::Download { path: it.path.clone(), dest });
+}
+
+/// A link as a square tile like the photos: Messages' preview picture cropped to fit (or a link glyph
+/// when there is none), with the site name along the bottom. Clicking opens it in the browser.
+fn link_tile(u: &Rc<Ui>, url: &str, l: Option<&crate::mac::LinkPreview>) -> gtk::Widget {
+    let l = l.map(|l| usable(u, l));
+    let l = l.as_ref();
+    let frame = gtk::Overlay::new();
+    frame.add_css_class("link-tile");
+    frame.set_overflow(gtk::Overflow::Hidden);
+    frame.set_size_request(THUMB, THUMB);
+    frame.set_hexpand(false);
+    frame.set_vexpand(false);
+    // a big picture is cropped to fill; a small one is the site's logo, which is shown whole on a white tile
+    let image = l.and_then(|l| match &l.image {
+        Some(i) if l.image_size.is_none_or(|(w, h)| crate::mac::is_preview_size(w, h)) => Some((i, true)),
+        _ => small_picture(l).map(|i| (i, false)), // whole on the white tile
+    });
+    if let Some((img, big)) = image {
+        let b = if big { bubble::Bubble::tile(THUMB) } else { bubble::Bubble::thumb(THUMB) };
+        b.add_css_class("fixed");
+        load_texture_in(u, &b, img, true);
+        frame.set_child(Some(&b));
+    } else {
+        // nothing to show: the link icon, solid and dark on off-white
+        frame.add_css_class("plain");
+        let base = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        base.set_size_request(THUMB, THUMB);
+        let g = gtk::Image::from_icon_name("bf-link-symbolic");
+        g.set_pixel_size(40);
+        g.add_css_class("tile-glyph");
+        g.set_vexpand(true);
+        g.set_valign(gtk::Align::Center);
+        g.set_halign(gtk::Align::Center);
+        base.append(&g);
+        frame.set_child(Some(&base));
+    }
+    let host = url.split('/').nth(2).unwrap_or(url).trim_start_matches("www.").to_string();
+    let caption = gtk::Label::new(Some(l.map(|l| l.site.as_str()).filter(|s| !s.is_empty()).unwrap_or(&host)));
+    caption.add_css_class("tile-caption");
+    caption.set_halign(gtk::Align::Fill);
+    caption.set_valign(gtk::Align::End);
+    caption.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    caption.set_xalign(0.0);
+    frame.add_overlay(&caption);
+    frame.set_tooltip_text(Some(&match l.map(|l| l.title.as_str()).filter(|t| !t.is_empty()) {
+        Some(t) => format!("{t}\n{url}"),
+        None => url.to_string(),
+    }));
+    frame.set_cursor_from_name(Some("pointer"));
+    let (win, url) = (u.win.clone(), url.to_string());
+    let g = gtk::GestureClick::new();
+    g.connect_released(move |_, _, _, _| gtk::UriLauncher::new(&url).launch(Some(&win), gio::Cancellable::NONE, |_| {}));
+    frame.add_controller(g);
+    frame.upcast()
+}
+
+/// Rebuild the Links tab from `info_links`: a tile per link, with Messages' preview picture where it
+/// made one (asked for from the Mac as the tiles are built).
+fn render_links(u: &Rc<Ui>) {
+    u.info.links.remove_all();
+    let items = u.st.borrow().info_links.clone();
+    for it in items {
+        let slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let cached = if it.preview && it.row != 0 { u.st.borrow().links.get(&it.row).cloned() } else { None };
+        match cached {
+            Some(Some(l)) => slot.append(&link_tile(u, &l.url, Some(&l))),
+            _ => {
+                slot.append(&link_tile(u, &it.url, None));
+                if it.preview && it.row != 0 {
+                    let first = {
+                        let mut st = u.st.borrow_mut();
+                        let first = !st.links.contains_key(&it.row);
+                        if first {
+                            st.links.insert(it.row, None);
+                        }
+                        st.link_waiters.entry(it.row).or_default().push(slot.downgrade());
+                        first
+                    };
+                    if first {
+                        u.send(Cmd::Link(it.row));
+                    }
+                }
+            }
+        }
+        u.info.links.append(&slot);
+    }
 }
 
 // ---------- settings ----------
@@ -3095,6 +3937,12 @@ mod tests {
         assert_eq!(pretty_handle("+447860153932"), "+447860153932"); // not North American: untouched
         assert_eq!(pretty_handle("562528"), "562528");
         assert_eq!(pretty_handle("sue@icloud.com"), "sue@icloud.com");
+    }
+
+    #[test]
+    fn links_become_markup() {
+        assert_eq!(linkify("see https://a.com/x?a=1&b=2, ok <b>"), "see <a href=\"https://a.com/x?a=1&amp;b=2\">https://a.com/x?a=1&amp;b=2</a>, ok &lt;b&gt;");
+        assert_eq!(linkify("no link & more"), "no link &amp; more");
     }
 
     #[test]
