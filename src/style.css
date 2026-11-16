@@ -5,6 +5,7 @@
   --bg-b: #eaf1ff;
   --bg-c: #fff3f8;
   --panel: rgba(255, 255, 255, 0.70);
+  --panel-solid: #f6f1fd; /* the info panel when it slides over the chat */
   --panel-edge: rgba(255, 255, 255, 0.95);
   --ink: #2a2442;
   --ink-soft: #7a7397;
@@ -28,6 +29,7 @@ window.dark {
     --bg-b: #1c2550;
     --bg-c: #3a2455;
     --panel: rgba(255, 255, 255, 0.075);
+    --panel-solid: #2c2759;
     --panel-edge: rgba(255, 255, 255, 0.14);
     --ink: #f6f3ff;
     --ink-soft: #bdb6e4;
@@ -104,7 +106,8 @@ button.status.offline .dot { background-color: #ff5a73; box-shadow: 0 0 6px rgba
   box-shadow: 0 8px 28px var(--shadow), 0 1px 3px var(--shadow), inset 0 1px var(--panel-edge);
 }
 .sidebar { margin: 2px 6px 14px 14px; }
-.conv { margin: 2px 14px 14px 6px; }
+.conv { margin: 2px 14px 14px 6px; transition: opacity 200ms ease-out; }
+.conv.away { opacity: 0; }
 paned > separator { background: transparent; min-width: 2px; }
 .sidebar scrolledwindow, .conv scrolledwindow, .sidebar viewport, .conv viewport, stack { background: transparent; }
 
@@ -113,7 +116,7 @@ paned > separator { background: transparent; min-width: 2px; }
   font-size: 0.8em;
   letter-spacing: 0.08em;
   color: var(--ink-soft);
-  margin: 14px 18px 6px;
+  margin: 0 0 4px; /* centred on the header's buttons (4 above, 8 below them); sideways margins are set in ui.rs */
 }
 
 /* chat list */
@@ -121,9 +124,9 @@ list.chat-list { background: transparent; }
 row.chat-row {
   color: var(--ink);
   border-radius: 16px;
-  margin: 2px 8px;
-  padding: 9px 10px;
-  transition: background-color 160ms ease, box-shadow 160ms ease;
+  margin: 4px 8px;
+  padding: 8px; /* same in both sidebar modes: the avatar never moves */
+  transition: background-color 160ms ease, box-shadow 160ms ease, border-radius 220ms ease-out;
 }
 row.chat-row:hover { background-color: alpha(currentColor, 0.05); }
 row.chat-row:selected {
@@ -143,6 +146,7 @@ row.unread .chat-name { font-weight: 800; }
 .contact-card { padding: 14px; }
 .info-panel { background-color: var(--panel); border-radius: 22px; margin: 2px 14px 14px 0; box-shadow: 0 8px 28px var(--shadow), 0 1px 3px var(--shadow), inset 0 1px var(--panel-edge); }
 .conv.with-info { margin-right: 6px; }
+.info-panel.over { background-color: var(--panel-solid); }
 .info-panel scrolledwindow, .info-panel viewport { background: transparent; }
 .link-glyph { background-color: #5f6b85; color: #ffffff; border-radius: 99px; }
 .link-tile { border-radius: 12px; background-color: rgba(128, 118, 200, 0.18); border: 1px solid rgba(128, 118, 200, 0.3); }
@@ -270,7 +274,10 @@ row.unread .chat-preview { color: var(--ink); }
 }
 
 /* new message: To field and people suggestions */
-.side-title + .new-btn { margin: 8px 10px 0 0; min-width: 32px; min-height: 32px; padding: 0; }
+.side-toggle { margin: 4px 0 8px 4px; min-width: 32px; min-height: 32px; padding: 0; }
+.sidebar.collapsed row.chat-row { border-radius: 30px; } /* a circle round the avatar (row = avatar 44 + padding 8 + 8) */
+.sidebar.collapsed row.chat-row.unread:not(:selected) { background-color: rgba(47, 123, 255, 0.16); }
+.sidebar .new-btn { margin: 4px 4px 8px 0; min-width: 32px; min-height: 32px; padding: 0; }
 .to-label { color: var(--ink-soft); font-weight: 700; }
 entry.to-entry {
   background-color: var(--field);

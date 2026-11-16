@@ -17,6 +17,9 @@ use crate::mac::{Cmd, Config, Event, Kind, MediaItem};
 
 const SIDEBAR_MIN: i32 = 260; // paned positions and widths below include the panels' side margins
 const CHAT_MIN: i32 = 440;
+const COLLAPSED_W: i32 = 96;
+const NO_SLIDE: i32 = i32::MIN;
+const AVATAR: i32 = 44; // the chat list's avatar size // the sidebar showing avatars only (side margins included)
 const COMPOSE_PAD_X: i32 = 4;
 const COMPOSE_MAX: i32 = 160; // composer stops growing here and scrolls
 const COMPOSE_PAD_Y: i32 = 9;
@@ -174,6 +177,31 @@ pub struct Ui {
     send_token: Cell<u64>,
     info: Info,
     paned: gtk::Paned,
+    sidebar: gtk::Box,
+    side_title: gtk::Label,
+    side_toggle: gtk::Button,
+    conv_panel: gtk::Box,
+    /// empty room beside the chat that the info panel sits over (so the chat is pushed over, not covered)
+    spacer: gtk::Revealer,
+    /// the window is too narrow for the full sidebar beside the chat
+    narrow: Cell<bool>,
+    /// narrow window, and the sidebar is expanded over the chat (forgotten when the window gets wide again)
+    side_open: Cell<bool>,
+    /// the chat list is drawn avatars-only
+    collapsed: Cell<bool>,
+    /// the chat rows' text boxes with their chats' names (width and tooltips follow the sidebar's state)
+    rows: RefCell<Vec<(gtk::ListBoxRow, gtk::Box, String)>>,
+    /// width the row texts have now / will have once the sidebar is settled (so text isn't re-truncated mid-slide)
+    text_w: Cell<i32>,
+    text_target: Cell<i32>,
+    /// where relayout last put the paned divider (a different position means the user dragged it)
+    last_pos: Cell<i32>,
+    /// the next relayout slides the divider instead of jumping
+    animate: Cell<bool>,
+    /// bumped to cancel a running slide
+    slide: Cell<u32>,
+    /// where the running slide ends (`NO_SLIDE`: none)
+    slide_to: Cell<i32>,
 }
 
 impl Ui {
@@ -217,15 +245,32 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let side_title = gtk::Label::new(Some("Conversations"));
     side_title.add_css_class("side-title");
     side_title.set_xalign(0.0);
-    side_title.set_hexpand(true);
+    side_title.set_valign(gtk::Align::Center);
     let new_btn = gtk::Button::from_icon_name("document-edit-symbolic");
     new_btn.set_tooltip_text(Some("New message (Ctrl+N)"));
     new_btn.add_css_class("head-btn");
     new_btn.add_css_class("new-btn");
     new_btn.set_valign(gtk::Align::Center);
     new_btn.set_action_name(Some("app.new-message"));
+    // narrow window: expands the avatars-only sidebar over the chat and back
+    let side_toggle = gtk::Button::from_icon_name("bf-sidebar-symbolic");
+    side_toggle.add_css_class("head-btn");
+    side_toggle.set_halign(gtk::Align::Start); // hexpand must not stretch the circle into a pill
+    side_toggle.add_css_class("side-toggle");
+    side_toggle.set_valign(gtk::Align::Center);
+    side_toggle.set_visible(false);
     let side_head = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    side_head.append(&side_title);
+    side_head.append(&side_toggle);
+    // the title sits in a slot that measures nothing, so the sidebar can narrow past it: it is cropped, not squeezed
+    let title_slot = gtk::Overlay::new();
+    title_slot.set_child(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+    title_slot.add_overlay(&side_title);
+    title_slot.set_clip_overlay(&side_title, true);
+    title_slot.set_hexpand(true);
+    side_title.set_halign(gtk::Align::Start);
+    side_title.set_margin_start(18);
+    side_title.set_margin_end(18);
+    side_head.append(&title_slot);
     side_head.append(&new_btn);
     sidebar.append(&side_head);
     let side_loading = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -243,6 +288,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     side_stack.add_named(&side_loading, Some("loading"));
     side_stack.add_named(&side_scroll, Some("list"));
     side_stack.set_vexpand(true);
+    side_stack.set_hhomogeneous(false); // else the "Loading chats…" text keeps the collapsed sidebar wide
     sidebar.append(&side_stack);
 
     // conversation
@@ -447,15 +493,29 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     paned.set_start_child(Some(&sidebar));
     // the info panel sits beside the chat and pushes it over
     conv_panel.set_hexpand(true);
-    sidebar.set_size_request(SIDEBAR_MIN - 20, -1); // minus its margins
+    sidebar.set_size_request(COLLAPSED_W - 20, -1); // minus its margins; the window's narrowest
     conv_panel.set_size_request(CHAT_MIN - 20, -1);
-    let right = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    right.append(&conv_panel);
-    right.append(&info.revealer);
+    // the info panel either pushes the chat over (an empty `spacer` makes the room) or, when the three
+    // panels can't fit, slides over the chat's right side
+    let spacer = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideLeft).reveal_child(false).build();
+    spacer.set_child(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+    spacer.set_hexpand(false);
+    let beside = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    beside.append(&conv_panel);
+    beside.append(&spacer);
+    let right = gtk::Overlay::new();
+    right.set_child(Some(&beside));
+    info.revealer.set_halign(gtk::Align::End);
+    right.add_overlay(&info.revealer);
     paned.set_end_child(Some(&right));
     paned.set_position(340);
-    paned.set_shrink_start_child(false);
+    // the sidebar may be squeezed below its content's width (clipped): while it slides between collapsed and
+    // expanded the names are there before it has the room; the window's own minimum is set here instead
+    paned.set_shrink_start_child(true);
+    sidebar.set_overflow(gtk::Overflow::Hidden);
+    win.set_size_request(COLLAPSED_W + CHAT_MIN, -1);
     paned.set_resize_start_child(false);
+    paned.set_shrink_end_child(true);
     paned.set_vexpand(true);
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&banner);
@@ -506,6 +566,21 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         send_token: Cell::new(0),
         info,
         paned: paned.clone(),
+        sidebar: sidebar.clone(),
+        side_title: side_title.clone(),
+        side_toggle: side_toggle.clone(),
+        conv_panel: conv_panel.clone(),
+        spacer: spacer.clone(),
+        narrow: Cell::new(false),
+        side_open: Cell::new(false),
+        collapsed: Cell::new(false),
+        rows: RefCell::default(),
+        text_w: Cell::new(200),
+        text_target: Cell::new(200),
+        last_pos: Cell::new(0),
+        animate: Cell::new(false),
+        slide: Cell::new(0),
+        slide_to: Cell::new(NO_SLIDE),
     });
 
     // wiring
@@ -655,18 +730,28 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     });
     ui.to_entry.add_controller(esc);
     wire_info(&ui);
-    // keep the three panels fitting as the window is resized (see layout_info)
+    // keep the three panels fitting as the window is resized (see relayout)
     let (weak, last_w) = (Rc::downgrade(&ui), Cell::new(0));
     ui.paned.add_tick_callback(move |p, _| {
         let Some(u) = weak.upgrade() else { return glib::ControlFlow::Break };
-        if u.info.revealer.reveals_child() {
-            if p.width() != last_w.replace(p.width()) {
-                layout_info(&u, p.width());
-            }
-        } else {
+        let dragged = p.position() != u.last_pos.get();
+        if dragged && !u.narrow.get() && !u.info.revealer.reveals_child() {
             u.st.borrow_mut().side_pref = p.position(); // wherever the user has dragged it
         }
+        if dragged || p.width() != last_w.replace(p.width()) {
+            relayout(&u, p.width());
+        }
         glib::ControlFlow::Continue
+    });
+    let u = ui.clone();
+    ui.side_toggle.connect_clicked(move |_| {
+        let open = !u.side_open.get();
+        u.side_open.set(open);
+        if open && u.info.revealer.reveals_child() {
+            close_info(&u);
+        }
+        u.animate.set(true);
+        relayout(&u, u.paned.width());
     });
 
     // coming back to the window counts as seeing the open chat
@@ -816,6 +901,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         // dev aid: open the info panel after <ms> (e.g. with BF_CHAT, in a headless compositor)
         let u = ui.clone();
         glib::timeout_add_local_once(Duration::from_millis(ms), move || open_info(&u));
+    }
+    if let Some(ms) = std::env::var("BF_SIDE").ok().and_then(|v| v.parse::<u64>().ok()) {
+        // dev aid: press the sidebar button after <ms> (narrow window)
+        let u = ui.clone();
+        glib::timeout_add_local_once(Duration::from_millis(ms), move || u.side_toggle.emit_clicked());
     }
     if std::env::var_os("BF_VIEW").is_some() {
         // dev aid: open the viewer on the newest loaded photo shortly before BF_SHOT fires
@@ -1293,6 +1383,7 @@ fn select_in_list(u: &Ui, id: i64) {
 }
 
 fn select(u: &Rc<Ui>, id: i64) {
+    fold_side(u);
     end_new(u);
     u.viewer.close_now();
     u.st.borrow_mut().sel = Some(id);
@@ -1493,6 +1584,7 @@ fn render_attach(u: &Rc<Ui>) {
 // ---------- new conversation ----------
 
 fn start_new(u: &Rc<Ui>) {
+    fold_side(u);
     u.viewer.close_now();
     u.st.borrow_mut().sel = None;
     u.selecting.set(true);
@@ -1722,6 +1814,7 @@ fn render_chats(u: &Rc<Ui>) {
     let sel = u.st.borrow().sel;
     u.selecting.set(true);
     u.chat_list.remove_all();
+    let mut new_rows = Vec::new();
     for (title, preview, when, unread, id, chat) in rows {
         let name = gtk::Label::new(Some(&title));
         name.add_css_class("chat-name");
@@ -1740,17 +1833,35 @@ fn render_chats(u: &Rc<Ui>) {
         prev.set_single_line_mode(true);
         let texts = gtk::Box::new(gtk::Orientation::Vertical, 2);
         texts.set_hexpand(true);
+        texts.add_css_class("chat-texts");
         texts.set_valign(gtk::Align::Center);
         texts.append(&top);
         texts.append(&prev);
-        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 11);
-        row_box.append(&chat_avatar(u, &chat, &title));
-        row_box.append(&texts);
+        // The avatar is the row's only measured content, so the row can be as narrow as a circle round it;
+        // the texts sit beside it at a width of their own and are cropped by the row as the sidebar narrows.
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         dot.set_valign(gtk::Align::Center);
+        dot.add_css_class("row-dot");
         dot.add_css_class(if unread { "unread-dot" } else { "read-dot" });
-        row_box.append(&dot);
+        let slot = gtk::Box::new(gtk::Orientation::Horizontal, 11);
+        slot.append(&texts);
+        slot.append(&dot);
+        slot.set_halign(gtk::Align::Start);
+        slot.set_valign(gtk::Align::Center);
+        slot.set_margin_start(AVATAR + 11);
+        slot.set_size_request(u.text_w.get() + 21, -1);
+        let avatar = chat_avatar(u, &chat, &title);
+        avatar.set_halign(gtk::Align::Start);
+        avatar.set_valign(gtk::Align::Center);
+        let row_box = gtk::Overlay::new();
+        row_box.set_child(Some(&avatar));
+        row_box.add_overlay(&slot);
+        row_box.set_clip_overlay(&slot, true);
         let row = gtk::ListBoxRow::new();
+        if u.collapsed.get() {
+            row.set_tooltip_text(Some(&title));
+        }
+        new_rows.push((row.clone(), slot, title.clone()));
         row.add_css_class("chat-row");
         if unread {
             row.add_css_class("unread");
@@ -1761,6 +1872,7 @@ fn render_chats(u: &Rc<Ui>) {
             u.chat_list.select_row(Some(&row));
         }
     }
+    *u.rows.borrow_mut() = new_rows;
     u.selecting.set(false);
 }
 
@@ -2555,7 +2667,7 @@ fn stack_room(u: &Ui) -> f64 {
 #[derive(Clone)]
 struct Info {
     revealer: gtk::Revealer,
-    /// the panel itself (its width is set by `layout_info`)
+    /// the panel itself (its width is set by `relayout`)
     panel: gtk::Box,
     btn: gtk::Button,
     refresh: gtk::Button,
@@ -2596,7 +2708,7 @@ fn build_info() -> Info {
     let photos = gtk::FlowBox::new();
     photos.set_selection_mode(gtk::SelectionMode::None);
     photos.set_min_children_per_line(1);
-    photos.set_max_children_per_line(3); // the panel's width decides how many fit (see layout_info)
+    photos.set_max_children_per_line(3); // the panel's width decides how many fit (see relayout)
     photos.set_row_spacing(4);
     photos.set_column_spacing(4);
     photos.set_homogeneous(true);
@@ -2738,31 +2850,184 @@ const THUMB: i32 = 92;
 
 /// Width the panel takes beside the chat for `n` columns of photos (3 at most), margin included.
 fn info_w(n: i32) -> i32 {
-    // each grid cell measures THUMB + 6; one column still needs room for the header (measured: caret row = 223 + margin)
-    (n * (THUMB + 6) + (n - 1) * 4 + 28 + 14).max(223 + 14)
+    // each grid cell measures THUMB + 6; the header needs room too (measured: three tabs + close = 263, caret row = 223, margins included)
+    (n * (THUMB + 6) + (n - 1) * 4 + 28 + 14).max(if n >= 2 { 263 } else { 223 } + 14)
 }
 
-/// Share the window between sidebar, chat and info panel: the panel keeps as many photo columns (3 at
-/// most) as it can; the chat gives way first, down to `CHAT_MIN`, then the sidebar, down to
-/// `SIDEBAR_MIN`; only then does the panel lose columns. Whatever is left goes to the chat.
-fn layout_info(u: &Rc<Ui>, total: i32) {
+/// Share the window between sidebar, chat and info panel.
+/// - Too narrow for the full sidebar beside the chat (`SIDEBAR_MIN` + `CHAT_MIN`): the sidebar shows avatars
+///   only (`COLLAPSED_W`), or fills the window when expanded with its caret; the info panel is an overlay.
+/// - Otherwise the info panel keeps as many photo columns (3 at most) as it can; the chat gives way first,
+///   down to `CHAT_MIN`, then the sidebar, down to `SIDEBAR_MIN`; only then does the panel lose columns.
+///   If even one column doesn't fit, the panel slides over the chat instead.
+fn relayout(u: &Rc<Ui>, total: i32) {
+    if total <= 0 {
+        return;
+    }
+    let narrow = total < SIDEBAR_MIN + CHAT_MIN;
+    let crossed = narrow != u.narrow.replace(narrow);
+    if crossed {
+        u.side_open.set(false); // the expanded state is forgotten whenever the window crosses the line
+    }
+    let open = u.info.revealer.reveals_child();
     let pref = match u.st.borrow().side_pref {
         0 => 340,
         p => p,
     };
-    let (side, cols) = [3, 2, 1]
-        .into_iter()
-        .map(|n| (pref.min(total - CHAT_MIN - info_w(n)), n))
-        .find(|(side, _)| *side >= SIDEBAR_MIN)
-        .unwrap_or((SIDEBAR_MIN, 1));
-    u.paned.set_position(side);
-    u.info.panel.set_size_request(info_w(cols), -1); // the CSS margin counts inside it
-    // three tabs in a row fit from 2 photo columns up (measuring StackSwitcher gave nonsense widths)
+    let (mut cols, mut overlay) = (3, false);
+    let side = if narrow {
+        overlay = true;
+        // expanded: the chat's 6 px margin and the 2 px divider lie beyond the window edge, so the sidebar's own 6 px
+        // right margin leaves it 14 px from the edge, the same as on the left
+        if u.side_open.get() { total - 8 } else { COLLAPSED_W }
+    } else if open {
+        match [3, 2, 1].into_iter().map(|n| (pref.min(total - CHAT_MIN - info_w(n)), n)).find(|(side, _)| *side >= SIDEBAR_MIN) {
+            Some((side, n)) => {
+                cols = n;
+                side
+            }
+            None => {
+                overlay = true;
+                pref.clamp(SIDEBAR_MIN, total - CHAT_MIN)
+            }
+        }
+    } else {
+        pref.clamp(SIDEBAR_MIN, total - CHAT_MIN)
+    };
+    if overlay {
+        // never wider than the room over the chat
+        let room = total - side;
+        cols = [3, 2, 1].into_iter().find(|n| info_w(*n) <= room).unwrap_or(1);
+    }
+    // crossing the line slides the sidebar to its new width (not on the first layout)
+    let animate = u.animate.replace(false) || (crossed && u.last_pos.get() != 0);
+    move_side(u, side, animate);
+    // sidebar: avatars only, or with names
+    let collapsed = narrow && !u.side_open.get();
+    u.side_toggle.set_visible(narrow);
+    u.side_toggle.set_tooltip_text(Some(if collapsed { "Show conversation names" } else { "Hide conversation names" }));
+    if narrow && !collapsed {
+        u.conv_panel.add_css_class("away"); // fades while the sidebar pushes it out of the window: no shadow left at the edge
+    } else {
+        u.conv_panel.remove_css_class("away");
+    }
+    // the avatars' circles and the names' cropping change with the slide itself; nothing is rebuilt
+    if u.collapsed.get() != collapsed {
+        show_collapsed(u, collapsed);
+    }
+    u.side_title.set_margin_start(if narrow { 6 } else { 18 });
+    if !collapsed {
+        // room the names will have once the sidebar is settled (row width minus avatar, gaps and dot)
+        let inner = side - 20;
+        u.text_target.set((inner - 32 - AVATAR - 11 - 11 - 10).max(40));
+    }
+    if u.slide_to.get() == NO_SLIDE {
+        settle(u);
+    }
+    // info panel
+    let beside = open && !overlay;
+    if let Some(room) = u.spacer.child() {
+        room.set_size_request(info_w(cols), -1);
+    }
+    u.spacer.set_reveal_child(beside);
+    if beside {
+        u.conv_panel.add_css_class("with-info"); // less gap between the two panels
+    } else {
+        u.conv_panel.remove_css_class("with-info");
+    }
     let info = &u.info;
+    info.panel.set_size_request(info_w(cols), -1); // the CSS margin counts inside it
+    if overlay {
+        info.panel.add_css_class("over"); // opaque: it covers the chat
+    } else {
+        info.panel.remove_css_class("over");
+    }
+    // three tabs in a row fit from 2 photo columns up (measuring StackSwitcher gave nonsense widths)
     let wide = cols >= 2;
     info.switcher.set_visible(wide);
     info.carets.set_visible(!wide);
+}
 
+/// Avatars only, or names too: the CSS classes (circle round the avatar, unread tint) and the tooltips.
+fn show_collapsed(u: &Rc<Ui>, collapsed: bool) {
+    u.collapsed.set(collapsed);
+    if collapsed {
+        u.sidebar.add_css_class("collapsed");
+    } else {
+        u.sidebar.remove_css_class("collapsed");
+    }
+    for (row, _, title) in u.rows.borrow().iter() {
+        row.set_tooltip_text(collapsed.then_some(title.as_str()));
+    }
+}
+
+/// The sidebar has stopped moving: truncate the names to their final room.
+fn settle(u: &Rc<Ui>) {
+    fit_texts(u);
+}
+
+/// Give the row texts the width they'll have once settled (truncating with "…" only then, never mid-slide).
+fn fit_texts(u: &Rc<Ui>) {
+    let w = u.text_target.get();
+    if u.text_w.replace(w) != w {
+        for (_, slot, _) in u.rows.borrow().iter() {
+            slot.set_size_request(w + 21, -1);
+        }
+    }
+}
+
+/// Put the paned divider at `side`, sliding there over 220 ms when `animate`.
+fn move_side(u: &Rc<Ui>, side: i32, animate: bool) {
+    let running = u.slide_to.get() != NO_SLIDE;
+    if running && !animate && u.slide_to.get() == side {
+        return; // already on its way there
+    }
+    let animate = animate || running; // a window being dragged retargets the slide instead of cutting it short
+    let id = u.slide.get().wrapping_add(1);
+    u.slide.set(id); // cancels a slide in progress
+    let from = u.paned.position();
+    if !animate || from == side {
+        if from != side {
+            u.paned.set_position(side);
+        }
+        u.last_pos.set(side);
+        u.slide_to.set(NO_SLIDE);
+        return;
+    }
+    u.slide_to.set(side);
+    let start = std::cell::Cell::new(None::<i64>);
+    let weak = Rc::downgrade(u);
+    u.paned.add_tick_callback(move |p, clock| {
+        let Some(u) = weak.upgrade() else { return glib::ControlFlow::Break };
+        if u.slide.get() != id {
+            return glib::ControlFlow::Break;
+        }
+        let t0 = start.get().unwrap_or_else(|| {
+            start.set(Some(clock.frame_time()));
+            clock.frame_time()
+        });
+        let t = ((clock.frame_time() - t0) as f64 / 220_000.0).min(1.0);
+        let e = 1.0 - (1.0 - t).powi(3); // ease out
+        let pos = from + ((side - from) as f64 * e).round() as i32;
+        p.set_position(pos);
+        u.last_pos.set(pos);
+        if t >= 1.0 {
+            u.slide_to.set(NO_SLIDE);
+            settle(&u);
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
+    u.last_pos.set(from);
+}
+
+/// Picking a chat or starting a message closes the expanded sidebar (narrow window).
+fn fold_side(u: &Rc<Ui>) {
+    if u.side_open.replace(false) {
+        u.animate.set(true);
+        relayout(u, u.paned.width());
+    }
 }
 
 fn wire_info(u: &Rc<Ui>) {
@@ -2795,41 +3060,33 @@ fn wire_info(u: &Rc<Ui>) {
 /// The panel pushes the chat over; if the screen has room, the window widens by its width instead
 /// of squeezing the chat, and narrows again on close.
 fn open_info(u: &Rc<Ui>) {
-    if let Some(chat) = u.info.revealer.prev_sibling() {
-        chat.add_css_class("with-info"); // less gap between the two panels
-    }
     let (w, h) = (u.win.width(), u.win.height());
     let monitor_w = u.win.surface().and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s)).map(|m| m.geometry().width());
     // widen by as much of the panel's full width as the screen allows, before squeezing anything
     let grow = match monitor_w {
-        Some(m) if !u.win.is_maximized() && !u.win.is_fullscreen() => (m - w).clamp(0, info_w(3)),
+        Some(m) if !u.win.is_maximized() && !u.win.is_fullscreen() && !u.narrow.get() => (m - w).clamp(0, info_w(3)),
         _ => 0,
     };
     if grow > 0 {
         u.win.set_default_size(w + grow, h);
     }
     u.st.borrow_mut().widened_by = grow;
-    layout_info(u, w + grow);
     u.info.revealer.set_reveal_child(true);
+    relayout(u, w + grow);
     refresh_info(u);
 }
 
 fn close_info(u: &Rc<Ui>) {
     u.info.revealer.set_reveal_child(false);
-    if let Some(chat) = u.info.revealer.prev_sibling() {
-        chat.remove_css_class("with-info");
-    }
-    let (grew, pref) = {
+    let grew = {
         let mut st = u.st.borrow_mut();
         st.info_chat = None;
-        (std::mem::take(&mut st.widened_by), st.side_pref)
+        std::mem::take(&mut st.widened_by)
     };
     if grew > 0 {
         u.win.set_default_size((u.win.width() - grew).max(CHAT_MIN + SIDEBAR_MIN), u.win.height());
     }
-    if pref > 0 {
-        u.paned.set_position(pref); // the sidebar gets back the width it gave up
-    }
+    relayout(u, u.paned.width()); // the sidebar gets back the width it gave up
 }
 
 fn clear(b: &impl IsA<gtk::Widget>) {
