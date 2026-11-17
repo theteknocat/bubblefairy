@@ -163,7 +163,7 @@ pub struct Ui {
     send_btn: gtk::Button,
     attach_bar: gtk::Box,
     side_stack: gtk::Stack,
-    /// spinner and text in the middle of the empty message area while a chat's first messages load
+    /// "Loading messages…" in the middle of the empty message area while a chat's first messages load
     msgs_loading: gtk::Box,
     head_titles: gtk::Box,
     to_row: gtk::Box,
@@ -516,9 +516,6 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let msgs_loading = gtk::Box::new(gtk::Orientation::Vertical, 10);
     msgs_loading.set_halign(gtk::Align::Center);
     msgs_loading.set_valign(gtk::Align::Center);
-    let sp = gtk::Spinner::new();
-    sp.set_size_request(28, 28);
-    msgs_loading.append(&sp);
     let ml = gtk::Label::new(Some("Loading messages…"));
     ml.add_css_class("loading-text");
     msgs_loading.append(&ml);
@@ -1684,9 +1681,6 @@ fn update_spinner(u: &Ui) {
         st.sel.is_some_and(|id| st.loading.contains(&id) && st.hist.get(&id).is_none_or(|h| h.is_empty()))
     };
     u.msgs_loading.set_visible(on);
-    if let Some(sp) = u.msgs_loading.first_child().and_downcast::<gtk::Spinner>() {
-        sp.set_spinning(on);
-    }
 }
 
 /// Scrolled near the top: fetch the next page of older messages.
