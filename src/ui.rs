@@ -123,6 +123,8 @@ struct State {
     /// the Mac's contact photos (asked for once per connection) and the decoded pictures
     contacts: Option<crate::mac::Contacts>,
     avatar_tex: HashMap<String, Option<gdk::Texture>>,
+    /// avatar keys already sent to the background decoder
+    avatar_asked: HashSet<String>,
     /// link previews by message row: None = asked for, or the Mac had none
     links: HashMap<i64, Option<crate::mac::LinkPreview>>,
     /// files waiting in the composer
@@ -209,6 +211,8 @@ pub struct Ui {
     collapsed: Cell<bool>,
     /// the chat rows' text boxes with their chats' names (width and tooltips follow the sidebar's state)
     rows: RefCell<Vec<(gtk::ListBoxRow, gtk::Box, String)>>,
+    /// the changing parts of each list row, by chat id (see `update_row`)
+    row_parts: RefCell<HashMap<i64, RowParts>>,
     /// width the row texts have now / will have once the sidebar is settled (so text isn't re-truncated mid-slide)
     text_w: Cell<i32>,
     text_target: Cell<i32>,
@@ -677,6 +681,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         side_open: Cell::new(false),
         collapsed: Cell::new(false),
         rows: RefCell::default(),
+        row_parts: RefCell::default(),
         text_w: Cell::new(200),
         text_target: Cell::new(200),
         last_pos: Cell::new(0),
@@ -1100,9 +1105,11 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             {
                 let mut st = u.st.borrow_mut();
                 st.contacts = Some(c);
-                st.avatar_tex.clear();
+                st.avatar_tex.retain(|_, t| t.is_some()); // a photo added since is picked up, the others stay
+                st.avatar_asked.clear();
                 fill_names(&mut st);
             }
+            prefetch_avatars(u);
             render_chats(u);
             if u.st.borrow().sel.is_some() {
                 render_conv(u);
@@ -1159,6 +1166,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             for id in ask {
                 u.send(Cmd::Preview(id));
             }
+            prefetch_avatars(u);
             render_chats(u); // before the fade starts: building the rows takes long enough to freeze it half way
             u.side_stack.set_visible_child_name("list");
             let first = {
@@ -1205,7 +1213,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
         Event::Preview(id, m) => {
             learn_names(u, std::slice::from_ref(&m));
             u.st.borrow_mut().preview.insert(id, m);
-            render_chats_soon(u);
+            update_row(u, id);
         }
         Event::History(id, msgs) => {
             learn_names(u, &msgs);
@@ -1354,53 +1362,64 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             }
         }
         Event::Image { path, full, bytes } => {
-            let tex = bytes.and_then(|b| {
-                let _ = std::fs::create_dir_all(&u.store.image_cache);
-                let _ = std::fs::write(cache_path(u, &path, full), &b);
-                texture(&b)
-            });
-            if full {
-                u.st.borrow_mut().waiting_full.remove(&path);
-                match tex {
-                    Some(t) => u.viewer.full_ready(&path, t),
-                    None => u.viewer.full_failed(&path),
-                }
-                return;
-            }
-            let pics = u.st.borrow_mut().waiting.remove(&path).unwrap_or_default();
-            if let Some(tex) = tex {
-                for p in pics {
-                    show_texture(&p, &tex);
-                }
-                u.st.borrow_mut().textures.insert(path, tex);
-            } else {
-                // couldn't load: no endless spinner; a link card gives its empty picture area back
-                for p in &pics {
-                    if p.has_css_class("linkcard") {
-                        p.drop_card_image();
-                    } else {
-                        stop_spin(p);
-                    }
-                }
-                // and a link preview whose picture is that one is redrawn without it (with the link icon)
-                u.st.borrow_mut().bad_images.insert(path);
-                if !u.render_queued.replace(true) {
-                    let u2 = u.clone();
-                    glib::idle_add_local_once(move || {
-                        u2.render_queued.set(false);
-                        render_conv(&u2);
-                        if !u2.st.borrow().info_links.is_empty() {
-                            render_links(&u2);
-                        }
-                        if !u2.st.borrow().info_files.is_empty() {
-                            render_files(&u2);
-                        }
-                        render_videos(&u2);
-                    });
-                }
-            }
+            let Some(b) = bytes else { return image_done(u, path, full, None) };
+            // written to the cache and decoded off the GTK thread (a photo costs 5-10 ms to decode)
+            let (file, dir, u2) = (cache_path(u, &path, full), u.store.image_cache.clone(), u.clone());
+            bg(
+                move || {
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(&file, &b);
+                    decode_file(&file)
+                },
+                move |tex| image_done(&u2, path, full, tex),
+            );
         }
     }
+}
+
+/// A picture the Mac sent (or that was read back from the cache) has been decoded: show it where it waits.
+fn image_done(u: &Rc<Ui>, path: String, full: bool, tex: Option<gdk::Texture>) {
+    if full {
+        u.st.borrow_mut().waiting_full.remove(&path);
+        match tex {
+            Some(t) => u.viewer.full_ready(&path, t),
+            None => u.viewer.full_failed(&path),
+        }
+        return;
+    }
+    let pics = u.st.borrow_mut().waiting.remove(&path).unwrap_or_default();
+    if let Some(tex) = tex {
+        for p in pics {
+            show_texture(&p, &tex);
+        }
+        u.st.borrow_mut().textures.insert(path, tex);
+    } else {
+        // couldn't load: no endless spinner; a link card gives its empty picture area back
+        for p in &pics {
+            if p.has_css_class("linkcard") {
+                p.drop_card_image();
+            } else {
+                stop_spin(p);
+            }
+        }
+        // and a link preview whose picture is that one is redrawn without it (with the link icon)
+        u.st.borrow_mut().bad_images.insert(path);
+        if !u.render_queued.replace(true) {
+            let u2 = u.clone();
+            glib::idle_add_local_once(move || {
+                u2.render_queued.set(false);
+                render_conv(&u2);
+                if !u2.st.borrow().info_links.is_empty() {
+                    render_links(&u2);
+                }
+                if !u2.st.borrow().info_files.is_empty() {
+                    render_files(&u2);
+                }
+                render_videos(&u2);
+            });
+        }
+    }
+
 }
 
 /// Forget a send's waiting bubbles (it failed, or never showed up).
@@ -2139,26 +2158,63 @@ fn render_chats_soon(u: &Rc<Ui>) {
     });
 }
 
+/// What a chat's row shows: title, last message, time, unread.
+fn row_info(st: &State, c: &Value) -> (String, String, String, bool) {
+    let id = c["id"].as_i64().unwrap_or(0);
+    let p = st.preview.get(&id);
+    let when = p.and_then(|m| m["created_at"].as_str()).or(c["last_message_at"].as_str()).and_then(local).map(|d| short_time(&d));
+    let text = p.map(|m| {
+        let s = summary(m);
+        if m["is_from_me"].as_bool() == Some(true) { format!("You: {s}") } else { s }
+    });
+    // read here but not on the Mac (imsg can't mark read): trust what we've shown
+    let seen_here = p.and_then(|m| m["id"].as_i64()).is_some_and(|last| st.seen.get(&id).is_some_and(|s| *s >= last));
+    let unread = c["unread_count"].as_i64().unwrap_or(0) > 0 && !seen_here;
+    (chat_title(c, &st.names), text.unwrap_or_default(), when.unwrap_or_default(), unread)
+}
+
+/// A chat's last message arrived: change its row's texts in place. Rebuilding the whole list for each of the
+/// ~60 previews that arrive at start-up cost 25+ ms apiece. Anything the row doesn't hold yet (a new chat, a
+/// pinned chat's tile) goes through a rebuild instead.
+fn update_row(u: &Rc<Ui>, id: i64) {
+    let parts = u.row_parts.borrow().get(&id).cloned();
+    let info = {
+        let st = u.st.borrow();
+        st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).map(|c| (row_info(&st, c), pin_key(c)))
+    };
+    let (Some(parts), Some(((_, text, when, unread), key))) = (parts, info) else { return render_chats_soon(u) };
+    if u.st.borrow().pins.contains(&key) {
+        return render_chats_soon(u); // its tile shows the unread dot
+    }
+    parts.prev.set_text(&text);
+    parts.time.set_text(&when);
+    for (c, on) in [("unread-dot", unread), ("read-dot", !unread)] {
+        if on { parts.dot.add_css_class(c) } else { parts.dot.remove_css_class(c) }
+    }
+    if unread { parts.row.add_css_class("unread") } else { parts.row.remove_css_class("unread") }
+}
+
+/// The widgets of a list row that change when its chat's last message does.
+#[derive(Clone)]
+struct RowParts {
+    row: gtk::ListBoxRow,
+    time: gtk::Label,
+    prev: gtk::Label,
+    dot: gtk::Box,
+}
+
 fn render_chats(u: &Rc<Ui>) {
     let rows: Vec<(String, String, String, bool, i64, Value)> = {
         let st = u.st.borrow();
         st.chats
             .iter()
             .map(|c| {
-                let id = c["id"].as_i64().unwrap_or(0);
-                let p = st.preview.get(&id);
-                let when = p.and_then(|m| m["created_at"].as_str()).or(c["last_message_at"].as_str()).and_then(local).map(|d| short_time(&d));
-                let text = p.map(|m| {
-                    let s = summary(m);
-                    if m["is_from_me"].as_bool() == Some(true) { format!("You: {s}") } else { s }
-                });
-                // read here but not on the Mac (imsg can't mark read): trust what we've shown
-                let seen_here = p.and_then(|m| m["id"].as_i64()).is_some_and(|last| st.seen.get(&id).is_some_and(|s| *s >= last));
-                let unread = c["unread_count"].as_i64().unwrap_or(0) > 0 && !seen_here;
-                (chat_title(c, &st.names), text.unwrap_or_default(), when.unwrap_or_default(), unread, id, c.clone())
+                let (title, text, when, unread) = row_info(&st, c);
+                (title, text, when, unread, c["id"].as_i64().unwrap_or(0), c.clone())
             })
             .collect()
     };
+    u.row_parts.borrow_mut().clear();
     let sel = u.st.borrow().sel;
     // the rebuild empties the list, which would put the sidebar back at the top: remember where it was
     let side_adj = side_adjustment(u);
@@ -2217,6 +2273,7 @@ fn render_chats(u: &Rc<Ui>) {
             row.set_tooltip_text(Some(&title));
         }
         new_rows.push((row.clone(), slot, title.clone()));
+        u.row_parts.borrow_mut().insert(id, RowParts { row: row.clone(), time: time.clone(), prev: prev.clone(), dot: dot.clone() });
         row.add_css_class("chat-row");
         if unread {
             row.add_css_class("unread");
@@ -2356,8 +2413,9 @@ fn side_adjustment(u: &Ui) -> Option<gtk::Adjustment> {
 
 // ---------- conversation ----------
 
-const FIRST_BUILD: usize = 8; // newest messages drawn at once
-const LATER_BUILD: usize = 8; // older ones per idle batch
+const FIRST_MIN: usize = 3; // newest messages drawn at once: at least this many, until the window is full
+const FIRST_MAX: usize = 40; // and never more than this
+const LATER_BUILD: usize = 10; // older ones per idle batch
 
 /// What drawing one message needs to know about the whole conversation.
 struct ConvCtx {
@@ -2368,6 +2426,23 @@ struct ConvCtx {
     chat_svc: String,
     /// my messages still on their way follow the last one
     pending_tail: bool,
+}
+
+/// Draw message `i` at the front of the message list (after `base`), its photos at the front of the photo list.
+/// Returns about how tall it is, for deciding when the window is full.
+fn put_front(u: &Rc<Ui>, c: &ConvCtx, i: usize, base: &Option<gtk::Widget>, width: i32) -> f64 {
+    let before = u.st.borrow().photos.len();
+    let (mut h, mut prev) = (0.0, base.clone());
+    for w in conv_widgets(u, c, i) {
+        h += w.measure(gtk::Orientation::Vertical, width).1 as f64 + 8.0;
+        u.msgs.insert_child_after(&w, prev.as_ref());
+        prev = Some(w);
+    }
+    // conv_widgets pushed this message's photos at the end of the list; it is older than all built so far
+    let mut st = u.st.borrow_mut();
+    let fresh: Vec<_> = st.photos.drain(before..).collect();
+    st.photos.splice(0..0, fresh);
+    h
 }
 
 /// The widgets of message `i` (time separator, sender name, one line per part), top to bottom.
@@ -2429,6 +2504,13 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     out
 }
 
+fn set_head_avatar(u: &Rc<Ui>, chat: &Value, title: &str) {
+    while let Some(c) = u.head_avatar.first_child() {
+        u.head_avatar.remove(&c);
+    }
+    u.head_avatar.append(&header_avatar(u, chat, title));
+}
+
 fn render_conv(u: &Rc<Ui>) {
     update_spinner(u);
     let (chat, msgs, names, older, preview_svc) = {
@@ -2468,10 +2550,7 @@ fn render_conv(u: &Rc<Ui>) {
         sub = format!("{sub} · {}", pretty_handle(h));
     }
     u.head_sub.set_text(&sub);
-    while let Some(c) = u.head_avatar.first_child() {
-        u.head_avatar.remove(&c);
-    }
-    u.head_avatar.append(&header_avatar(u, &chat, &title));
+    set_head_avatar(u, &chat, &title);
     for c in ["sms", "imessage"] {
         u.send_btn.remove_css_class(c);
     }
@@ -2500,38 +2579,35 @@ fn render_conv(u: &Rc<Ui>) {
     };
     let times: Vec<Option<i64>> = msgs.iter().map(|m| m["created_at"].as_str().and_then(local).map(|d| d.to_unix())).collect();
     let ctx = Rc::new(ConvCtx { msgs, times, names, group, chat_svc, pending_tail: !pending.is_empty() });
-    // The newest messages are built now, the older ones in small batches while the app is idle and put in above
-    // (the scroll is anchored to the bottom, so nothing moves): drawing a whole page at once froze the app for
-    // 200 ms, with the "loading" spinner stopped mid-turn.
+    // Built newest first, each message put in at the front: enough of them to fill the window now, the older ones
+    // in small batches while the app is idle. Those land above the top edge of the view (the scroll is anchored to
+    // the bottom), so nothing visibly pops in or moves, and no single step is long enough to drop a frame.
     let stamp = u.conv_gen.get().wrapping_add(1);
     u.conv_gen.set(stamp);
-    let split = ctx.msgs.len().saturating_sub(FIRST_BUILD);
-    for i in split..ctx.msgs.len() {
-        for w in conv_widgets(u, &ctx, i) {
-            u.msgs.append(&w);
-        }
+    // where messages go in: after the "loading more" row when there is one
+    let base: Option<gtk::Widget> = if older { u.msgs.first_child() } else { None };
+    let width = match u.scroller.hadjustment().page_size() as i32 {
+        w if w > 100 => w,
+        _ => 600,
+    };
+    let want = match u.scroller.vadjustment().page_size() {
+        h if h > 100.0 => h,
+        _ => 700.0,
+    } * 1.1;
+    let (mut split, mut filled) = (ctx.msgs.len(), 0.0);
+    while split > 0 && (filled < want || ctx.msgs.len() - split < FIRST_MIN) && ctx.msgs.len() - split < FIRST_MAX {
+        split -= 1;
+        filled += put_front(u, &ctx, split, &base, width);
     }
     if split > 0 {
-        // where the older ones go in: after the "loading more" row when there is one
-        let anchor = Rc::new(RefCell::new(if older { u.msgs.first_child() } else { None }));
         let (u2, ctx2, end) = (u.clone(), ctx.clone(), Cell::new(split));
         glib::idle_add_local(move || {
             if u2.conv_gen.get() != stamp {
                 return glib::ControlFlow::Break; // the conversation was drawn again since
             }
             let start = end.get().saturating_sub(LATER_BUILD);
-            let before = u2.st.borrow().photos.len();
-            for i in start..end.get() {
-                for w in conv_widgets(&u2, &ctx2, i) {
-                    u2.msgs.insert_child_after(&w, anchor.borrow().as_ref());
-                    *anchor.borrow_mut() = Some(w);
-                }
-            }
-            {
-                // photos were pushed in build order; this batch is older than everything built so far
-                let mut st = u2.st.borrow_mut();
-                let fresh: Vec<_> = st.photos.drain(before..).collect();
-                st.photos.splice(0..0, fresh);
+            for i in (start..end.get()).rev() {
+                put_front(&u2, &ctx2, i, &base, width);
             }
             end.set(start);
             if start == 0 {
@@ -3102,12 +3178,36 @@ fn load_texture(u: &Rc<Ui>, p: &bubble::Bubble, path: &str) {
 
 /// `bulk`: one of many at once (the info panel's grid), fetched through the Mac's slower lane.
 fn load_texture_in(u: &Rc<Ui>, p: &bubble::Bubble, path: &str, bulk: bool) {
-    let in_memory = u.st.borrow().textures.get(path).cloned(); // borrow ends here; or_else below borrows mutably
-    let cached = in_memory.or_else(|| {
-        let tex = texture(&std::fs::read(cache_path(u, path, false)).ok()?)?;
-        u.st.borrow_mut().textures.insert(path.to_string(), tex.clone());
-        Some(tex)
-    });
+    let in_memory = u.st.borrow().textures.get(path).cloned(); // borrow ends here
+    let file = cache_path(u, path, false);
+    let cached = match in_memory {
+        Some(t) => Some(t),
+        None if file.exists() => {
+            // on disk: decoded in the background, the bubble stays as it is (no spinner flash) until it is ready
+            let first = {
+                let mut st = u.st.borrow_mut();
+                let w = st.waiting.entry(path.to_string()).or_default();
+                w.push(p.clone());
+                w.len() == 1
+            };
+            if first {
+                let (u2, path2, f2, f3) = (u.clone(), path.to_string(), file.clone(), file.clone());
+                bg(move || decode_file(&f3), move |tex| match tex {
+                    Some(_) => image_done(&u2, path2, false, tex),
+                    None => {
+                        // unreadable copy: forget it and fetch it again
+                        let _ = std::fs::remove_file(&f2);
+                        let pics = u2.st.borrow_mut().waiting.remove(&path2).unwrap_or_default();
+                        for p in pics {
+                            load_texture_in(&u2, &p, &path2, bulk);
+                        }
+                    }
+                });
+            }
+            return;
+        }
+        None => None,
+    };
     match cached {
         Some(t) => show_texture(p, &t),
         None => {
@@ -3155,6 +3255,48 @@ fn load_texture_in(u: &Rc<Ui>, p: &bubble::Bubble, path: &str, bulk: bool) {
     }
 }
 
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Run `work` on one of two background threads and hand its result to `done` on the GTK thread. Jobs run in the
+/// order they were queued (a chat is built newest first, so the pictures you can see come first). Widgets stay on
+/// the GTK thread; reading files and decoding pictures don't need to.
+fn bg<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static, done: impl FnOnce(T) + 'static) {
+    use std::sync::{Arc, Mutex, OnceLock, mpsc};
+    static POOL: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
+    let tx = POOL.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Job>();
+        let rx = Arc::new(Mutex::new(rx));
+        for _ in 0..2 {
+            let rx = rx.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let job = rx.lock().unwrap().recv(); // the lock is released before the job runs
+                    match job {
+                        Ok(job) => job(),
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        tx
+    });
+    let (rtx, rrx) = tokio::sync::oneshot::channel();
+    let _ = tx.send(Box::new(move || {
+        let _ = rtx.send(work());
+    }));
+    glib::spawn_future_local(async move {
+        if let Ok(v) = rrx.await {
+            done(v);
+        }
+    });
+}
+
+/// A picture file as a texture. (Scaling while decoding through gdk-pixbuf was tried: it made the GTK thread
+/// stall for ~20 ms at a time while it ran in the background, so the Mac sends smaller copies instead.)
+fn decode_file(path: &std::path::Path) -> Option<gdk::Texture> {
+    gdk::Texture::from_filename(path).ok()
+}
+
 fn texture(bytes: &[u8]) -> Option<gdk::Texture> {
     // the Mac already turned the photo upright (see mac::fetch_image)
     gdk::Texture::from_bytes(&glib::Bytes::from(bytes)).ok()
@@ -3200,9 +3342,21 @@ fn cache_path(u: &Ui, path: &str, full: bool) -> PathBuf {
 
 /// The viewer wants the big version of a photo: disk cache, else ask the Mac (once).
 fn fetch_full(u: &Rc<Ui>, path: &str) {
-    if let Some(t) = std::fs::read(cache_path(u, path, true)).ok().and_then(|b| texture(&b)) {
-        u.viewer.full_ready(path, t);
-    } else if u.st.borrow_mut().waiting_full.insert(path.to_string()) {
+    if !u.st.borrow_mut().waiting_full.insert(path.to_string()) {
+        return; // already on its way
+    }
+    let file = cache_path(u, path, true);
+    if file.exists() {
+        let (u2, path2) = (u.clone(), path.to_string());
+        bg(move || decode_file(&file), move |tex| match tex {
+            Some(_) => image_done(&u2, path2, true, tex),
+            None => {
+                let _ = std::fs::remove_file(cache_path(&u2, &path2, true));
+                u2.st.borrow_mut().waiting_full.remove(&path2);
+                fetch_full(&u2, &path2);
+            }
+        });
+    } else {
         u.send(Cmd::Image { path: path.to_string(), full: true });
     }
 }
@@ -4499,11 +4653,84 @@ fn photo_for(u: &Ui, handle: &str) -> Option<gdk::Texture> {
     let key = crate::mac::addr_key(handle)?;
     let mut st = u.st.borrow_mut();
     if let Some(t) = st.avatar_tex.get(&key) {
-        return t.clone();
+        return t.clone(); // filled in by `prefetch_avatars` for everyone in the chat list
     }
-    let t = st.contacts.as_ref().and_then(|c| c.photo(handle)).and_then(texture);
+    if st.avatar_asked.contains(&key) {
+        return None; // on its way
+    }
+    // someone outside the chat list (a suggestion, a card): one small photo, decoded at once
+    let t = st.contacts.as_ref()?.photo(handle).map(<[u8]>::to_vec).and_then(decode_avatar);
     st.avatar_tex.insert(key, t.clone());
     t
+}
+
+/// Decode the contact photos of everyone in the chat list in the background, scaled down while decoding (they show
+/// at 44 px at most), and redraw the avatars once they are in. Decoding them one by one while the list was being
+/// built cost most of its time.
+fn prefetch_avatars(u: &Rc<Ui>) {
+    let todo: Vec<(String, Option<Vec<u8>>)> = {
+        let mut st = u.st.borrow_mut();
+        let st = &mut *st;
+        let Some(contacts) = &st.contacts else { return };
+        let mut out = Vec::new();
+        for c in &st.chats {
+            for h in c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()) {
+                let Some(key) = crate::mac::addr_key(h) else { continue };
+                if st.avatar_tex.contains_key(&key) || !st.avatar_asked.insert(key.clone()) {
+                    continue;
+                }
+                out.push((key, contacts.photo(h).map(<[u8]>::to_vec)));
+            }
+        }
+        out
+    };
+    if todo.is_empty() {
+        return;
+    }
+    let u2 = u.clone();
+    bg(
+        move || {
+            todo.into_iter()
+                .map(|(key, bytes)| (key, bytes.and_then(|b| decode_avatar(b))))
+                .collect::<Vec<_>>()
+        },
+        move |done| {
+            let any = done.iter().any(|(_, t)| t.is_some());
+            {
+                let mut st = u2.st.borrow_mut();
+                for (key, t) in done {
+                    st.avatar_tex.insert(key, t);
+                }
+            }
+            if any {
+                render_chats_soon(&u2);
+                // the open chat: its header avatar only, unless it is a group (senders' avatars are in the messages)
+                let open = {
+                    let st = u2.st.borrow();
+                    st.sel.and_then(|id| st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).cloned())
+                };
+                if let Some(chat) = open {
+                    if chat["is_group"].as_bool() == Some(true) {
+                        render_conv(&u2);
+                    } else {
+                        let title = chat_title(&chat, &u2.st.borrow().names);
+                        set_head_avatar(&u2, &chat, &title);
+                    }
+                }
+            }
+        },
+    );
+}
+
+/// A contact photo as a small texture (128 px is enough for a 44 px avatar at 250%).
+#[allow(deprecated)] // Texture::for_pixbuf: GTK has no scaled decoding of its own
+fn decode_avatar(bytes: Vec<u8>) -> Option<gdk::Texture> {
+    use gtk::gdk_pixbuf::Pixbuf;
+    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes.clone()));
+    match Pixbuf::from_stream_at_scale(&stream, 128, 128, true, gio::Cancellable::NONE) {
+        Ok(pb) => Some(gdk::Texture::for_pixbuf(&pb)),
+        Err(_) => texture(&bytes),
+    }
 }
 
 /// A round avatar: the contact's photo if there is one, otherwise their initials on a colour.

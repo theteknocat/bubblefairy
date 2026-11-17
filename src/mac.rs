@@ -1192,7 +1192,7 @@ async fn fix_unread(session: &client::Handle<Handler>, chats: &mut [Value]) {
 }
 
 /// Longest side of the copy shown in the chat, and of the one fetched for the viewer.
-pub const CHAT_PX: u32 = 1200;
+pub const CHAT_PX: u32 = 900; // a 300 pt photo at 250% needs 750; smaller files decode and upload faster
 pub const FULL_PX: u32 = 4096;
 
 const READ: Duration = Duration::from_secs(30);
