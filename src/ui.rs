@@ -119,6 +119,8 @@ struct State {
     host_key: String,
     connected: bool,
     chats_loaded: bool,
+    /// unsent text and files of the chats not on show, by chat id
+    drafts: HashMap<i64, (String, Vec<PathBuf>)>,
     /// how many chats are asked for (imsg has no offset); more are asked for as the sidebar is scrolled down
     chat_limit: usize,
     /// the last answer filled the limit, so there may be older chats
@@ -1654,7 +1656,32 @@ fn mark_tile(u: &Ui, id: i64) {
     }
 }
 
+/// Leaving a chat for another: its unsent text and waiting files are kept for when you come back, and the other
+/// chat's are put in the composer. (Coming from the new-message view, what was typed there goes with you.)
+fn swap_draft(u: &Rc<Ui>, from: Option<i64>, to: i64) {
+    let Some(from) = from.filter(|f| *f != to) else { return };
+    let buf = u.compose.buffer();
+    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false).to_string();
+    let draft = {
+        let mut st = u.st.borrow_mut();
+        let files = std::mem::take(&mut st.outgoing);
+        if text.is_empty() && files.is_empty() {
+            st.drafts.remove(&from);
+        } else {
+            st.drafts.insert(from, (text, files));
+        }
+        st.drafts.get(&to).cloned()
+    };
+    let (text, files) = draft.unwrap_or_default();
+    buf.set_text(&text);
+    u.st.borrow_mut().outgoing = files;
+    render_attach(u);
+    update_send(u);
+}
+
 fn select(u: &Rc<Ui>, id: i64) {
+    let from = u.st.borrow().sel;
+    swap_draft(u, from, id);
     fold_side(u);
     end_new(u);
     u.viewer.close_now();
