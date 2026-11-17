@@ -3146,7 +3146,7 @@ fn build_info() -> Info {
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
     panel.append(&head);
     panel.append(&scroll);
-    panel.set_size_request(info_w(3), -1);
+    panel.set_size_request(info_w(4), -1);
     panel.set_hexpand(false);
     panel.set_overflow(gtk::Overflow::Hidden); // the rounded corners clip it
     panel.add_css_class("info-panel");
@@ -3166,10 +3166,9 @@ fn info_w(n: i32) -> i32 {
 
 /// Share the window between sidebar, chat and info panel.
 /// - Too narrow for the full sidebar beside the chat (`SIDEBAR_MIN` + `CHAT_MIN`): the sidebar shows avatars
-///   only (`COLLAPSED_W`), or fills the window when expanded with its caret; the info panel is an overlay.
-/// - Otherwise the info panel keeps as many photo columns (3 at most) as it can; the chat gives way first,
-///   down to `CHAT_MIN`, then the sidebar, down to `SIDEBAR_MIN`; only then does the panel lose columns.
-///   If even one column doesn't fit, the panel slides over the chat instead.
+///   only (`COLLAPSED_W`), or fills the window when expanded with its caret.
+/// - The info panel is an overlay of constant width (4 photo columns): it covers the chat's right side, and the
+///   sidebar too when the chat is narrower than it.
 fn relayout(u: &Rc<Ui>, total: i32) {
     if total <= 0 {
         return;
@@ -3190,9 +3189,9 @@ fn relayout(u: &Rc<Ui>, total: i32) {
     } else {
         pref.clamp(SIDEBAR_MIN, total - CHAT_MIN)
     };
-    // the info panel slides over the chat: as many photo columns (3 at most) as fit in it
-    let room = total - side;
-    let cols = [4, 3, 2, 1].into_iter().find(|n| info_w(*n) <= room).unwrap_or(1);
+    // the info panel keeps its full width (4 photo columns) and slides over the chat, and over the sidebar if it has to:
+    // it fits even in the narrowest window (INFO_COLS = 4: info_w(4) is 446, the window's minimum 536)
+    let cols = 4;
     // crossing the line slides the sidebar to its new width (not on the first layout)
     let animate = u.animate.replace(false) || (crossed && u.last_pos.get() != 0);
     move_side(u, side, animate);
