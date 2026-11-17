@@ -162,6 +162,9 @@ pub struct Ui {
     chat_list: gtk::ListBox,
     /// "Retrieving more chats…" under the list while older chats are asked for
     side_more: gtk::Label,
+    search: gtk::SearchEntry,
+    side_none: gtk::Label,
+    search_slot: gtk::Overlay,
     /// the pinned chats above the list
     tiles: gtk::FlowBox,
     msgs: gtk::Box,
@@ -290,6 +293,12 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     side_more.set_margin_bottom(16);
     side_more.set_visible(false);
     side_inner.append(&side_more);
+    // the list's own placeholder never showed for a filtered list
+    let side_none = gtk::Label::new(Some("No conversations found"));
+    side_none.add_css_class("loading-text");
+    side_none.set_margin_top(24);
+    side_none.set_visible(false);
+    side_inner.append(&side_none);
     let side_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&side_inner).build();
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar.add_css_class("sidebar");
@@ -324,6 +333,21 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     side_head.append(&title_slot);
     side_head.append(&new_btn);
     sidebar.append(&side_head);
+    // filter the list by name or number; in a slot that measures nothing, like the title, so it can't hold the
+    // sidebar wide
+    let search = gtk::SearchEntry::builder().placeholder_text("Search conversations").build();
+    search.add_css_class("side-search");
+    search.set_margin_start(14);
+    search.set_margin_end(14);
+    search.set_margin_bottom(8);
+    search.set_valign(gtk::Align::Start);
+    let search_slot = gtk::Overlay::new();
+    let strut = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    strut.set_size_request(-1, 42);
+    search_slot.set_child(Some(&strut));
+    search_slot.add_overlay(&search);
+    search_slot.set_clip_overlay(&search, true);
+    sidebar.append(&search_slot);
     let side_loading = gtk::Box::new(gtk::Orientation::Vertical, 10);
     side_loading.set_valign(gtk::Align::Center);
     side_loading.set_halign(gtk::Align::Center);
@@ -648,6 +672,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         st: RefCell::new(State { cfg, seen, pins, chat_limit: CHATS_PAGE, ..Default::default() }),
         chat_list,
         side_more,
+        search,
+        side_none,
+        search_slot,
         tiles,
         msgs,
         scroller,
@@ -725,6 +752,26 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         glib::Propagation::Proceed
     });
     ui.compose.add_controller(keys);
+
+    // search: rows that don't match are filtered out; pinned chats' tiles give way to their (otherwise hidden) rows
+    let w = Rc::downgrade(&ui);
+    ui.chat_list.set_filter_func(move |row| w.upgrade().is_none_or(|u| row_matches(&u, row)));
+    let u = ui.clone();
+    ui.search.connect_search_changed(move |_| apply_search(&u));
+    let search_action = gio::SimpleAction::new("search", None);
+    let u = ui.clone();
+    search_action.connect_activate(move |_, _| {
+        if !u.collapsed.get() {
+            u.search.grab_focus();
+        }
+    });
+    app.add_action(&search_action);
+    app.set_accels_for_action("app.search", &["<Control>f"]);
+
+    if let Ok(q) = std::env::var("BF_SEARCH") {
+        let u = ui.clone();
+        glib::timeout_add_local_once(Duration::from_millis(800), move || u.search.set_text(&q)); // dev aid
+    }
 
     // scrolled to the end of the list: ask for older chats
     if let Some(adj) = side_adjustment(&ui) {
@@ -2344,7 +2391,7 @@ fn render_chats(u: &Rc<Ui>) {
         pin_menu(u, row.upcast_ref(), &key, pin_at.is_some());
         if let Some(i) = pin_at {
             // hidden, not left out: row indexes must keep matching `State.chats`
-            row.set_visible(false);
+            row.set_visible(!u.search.text().trim().is_empty());
             pinned.push((i, id, title.clone(), unread, chat.clone()));
         }
         u.chat_list.append(&row);
@@ -2369,6 +2416,42 @@ fn render_chats(u: &Rc<Ui>) {
             if n.get() < 10 && adj.upper() - adj.page_size() < keep - 0.5 { glib::ControlFlow::Continue } else { glib::ControlFlow::Break }
         });
     }
+}
+
+/// Does this list row's chat match what is typed in the search box (name, or part of a number or address)?
+fn row_matches(u: &Ui, row: &gtk::ListBoxRow) -> bool {
+    let q = u.search.text().trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    let Ok(st) = u.st.try_borrow() else { return true };
+    let Some(c) = usize::try_from(row.index()).ok().and_then(|i| st.chats.get(i)) else { return true };
+    let digits: String = q.chars().filter(char::is_ascii_digit).collect();
+    chat_title(c, &st.names).to_lowercase().contains(&q)
+        || c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).any(|h| {
+            let name = st.names.get(h).map(|n| n.to_lowercase()).unwrap_or_default();
+            let plain: String = h.chars().filter(char::is_ascii_digit).collect();
+            name.contains(&q) || h.to_lowercase().contains(&q) || (digits.len() >= 3 && q.chars().all(|ch| ch.is_ascii_digit() || " -()+".contains(ch)) && plain.contains(&digits))
+        })
+}
+
+/// What is typed in the search box has changed.
+fn apply_search(u: &Rc<Ui>) {
+    let searching = !u.search.text().trim().is_empty();
+    u.chat_list.invalidate_filter();
+    // pinned chats are in the list only as hidden rows: while searching they show there, and their tiles give way
+    let pinned: Vec<bool> = {
+        let st = u.st.borrow();
+        st.chats.iter().map(|c| st.pins.contains(&pin_key(c))).collect()
+    };
+    for (i, p) in pinned.into_iter().enumerate() {
+        if p && let Some(row) = u.chat_list.row_at_index(i as i32) {
+            row.set_visible(searching);
+        }
+    }
+    u.tiles.set_visible(!searching && u.tiles.first_child().is_some());
+    let any = (0..u.st.borrow().chats.len()).any(|i| u.chat_list.row_at_index(i as i32).is_some_and(|r| row_matches(u, &r)));
+    u.side_none.set_visible(searching && !any);
 }
 
 /// imsg's chat list has no offset, so older chats mean asking for a longer list; the answer replaces the list.
@@ -2449,7 +2532,7 @@ fn toggle_pin(u: &Rc<Ui>, key: &str) {
 /// The pinned chats as avatar tiles above the list (names hide when the sidebar is avatars-only).
 fn render_tiles(u: &Rc<Ui>, pinned: Vec<(usize, i64, String, bool, Value)>, sel: Option<i64>) {
     u.tiles.remove_all();
-    u.tiles.set_visible(!pinned.is_empty());
+    u.tiles.set_visible(!pinned.is_empty() && u.search.text().trim().is_empty());
     for (_, id, title, unread, chat) in pinned {
         let av = chat_avatar(u, &chat, &title);
         av.set_halign(gtk::Align::Center);
@@ -3735,7 +3818,9 @@ fn relayout(u: &Rc<Ui>, total: i32) {
 /// Avatars only, or names too: the CSS classes (circle round the avatar, unread tint) and the tooltips.
 fn show_collapsed(u: &Rc<Ui>, collapsed: bool) {
     u.collapsed.set(collapsed);
+    u.search_slot.set_visible(!collapsed);
     if collapsed {
+        u.search.set_text("");
         u.sidebar.add_css_class("collapsed");
     } else {
         u.sidebar.remove_css_class("collapsed");
