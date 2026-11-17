@@ -163,7 +163,7 @@ pub struct Ui {
     send_btn: gtk::Button,
     attach_bar: gtk::Box,
     side_stack: gtk::Stack,
-    /// "Loading messages…" in the middle of the empty message area while a chat's first messages load
+    /// "Retrieving messages…" in the middle of the empty message area while a chat's first messages load
     msgs_loading: gtk::Box,
     head_titles: gtk::Box,
     to_row: gtk::Box,
@@ -309,7 +309,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let side_loading = gtk::Box::new(gtk::Orientation::Vertical, 10);
     side_loading.set_valign(gtk::Align::Center);
     side_loading.set_halign(gtk::Align::Center);
-    let sl = gtk::Label::new(Some("Loading chats…"));
+    let sl = gtk::Label::new(Some("Retrieving chats…"));
     sl.add_css_class("loading-text");
     side_loading.append(&sl);
     let side_stack = gtk::Stack::new();
@@ -317,7 +317,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     side_stack.add_named(&side_loading, Some("loading"));
     side_stack.add_named(&side_scroll, Some("list"));
     side_stack.set_vexpand(true);
-    side_stack.set_hhomogeneous(false); // else the "Loading chats…" text keeps the collapsed sidebar wide
+    side_stack.set_hhomogeneous(false); // else the "Retrieving chats…" text keeps the collapsed sidebar wide
     sidebar.append(&side_stack);
 
     // conversation
@@ -512,7 +512,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let msgs_loading = gtk::Box::new(gtk::Orientation::Vertical, 10);
     msgs_loading.set_halign(gtk::Align::Center);
     msgs_loading.set_valign(gtk::Align::Center);
-    let ml = gtk::Label::new(Some("Loading messages…"));
+    let ml = gtk::Label::new(Some("Retrieving messages…"));
     ml.add_css_class("loading-text");
     msgs_loading.append(&ml);
     msgs_loading.set_visible(false);
