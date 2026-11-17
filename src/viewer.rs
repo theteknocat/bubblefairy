@@ -22,6 +22,8 @@ use crate::player::{self, Player};
 use std::path::{Path, PathBuf};
 
 const OPEN_MS: f64 = 240.0;
+/// Room above a YouTube player for the close and full screen buttons while they show.
+const WEB_TOP: i32 = 56;
 const HIDE_AFTER: Duration = Duration::from_millis(2500);
 
 /// What the viewer needs from the chat.
@@ -62,6 +64,8 @@ pub struct Viewer {
     items: RefCell<Vec<Item>>,
     /// the next video to show starts playing: true for the one the user clicked, false when flipping between items
     autoplay: Cell<bool>,
+    /// counts player-margin animations: a newer one cancels the older
+    margin_gen: Cell<u32>,
     /// the YouTube entry (its key) the web view is showing
     yt_key: RefCell<Option<String>>,
     idx: Cell<usize>,
@@ -224,6 +228,7 @@ impl Viewer {
             full_btn,
             fullscreen: Cell::new(false),
             autoplay: Cell::new(false),
+            margin_gen: Cell::new(0),
             yt_key: RefCell::new(None),
             web: RefCell::new(None),
         });
@@ -289,7 +294,7 @@ impl Viewer {
             }
         });
         let w = v.clone();
-        motion.connect_leave(move |_| w.root.remove_css_class("controls"));
+        motion.connect_leave(move |_| w.hide_controls());
         v.root.add_controller(motion);
 
         // one photo per wheel notch (DISCRETE turns smooth touchpad scrolling into whole steps)
@@ -580,7 +585,8 @@ impl Viewer {
                 w.evaluate_javascript("window.bfp.playVideo()", None, None, gtk::gio::Cancellable::NONE, |_| {});
             }
         });
-        web.set_margin_top(56); // a strip of its own above the player for our close and full screen buttons
+        // a strip of its own above the player for our close and full screen buttons, while they show
+        web.set_margin_top(if self.root.has_css_class("controls") { WEB_TOP } else { 0 });
         web.load_html(&html, Some("https://bubblefairy.app/"));
         self.root.add_overlay(&web);
         web.insert_after(&self.root, Some(&self.canvas)); // sibling order = draw order: under the buttons
@@ -746,6 +752,7 @@ impl Viewer {
 
     fn show_controls(&self) {
         self.root.add_css_class("controls");
+        self.fit_web();
         let g = self.hide_gen.get().wrapping_add(1);
         self.hide_gen.set(g);
         let me = self.me.borrow().clone();
@@ -757,8 +764,41 @@ impl Viewer {
             if v.pointer_on_control() {
                 v.show_controls(); // never hide while the pointer rests on a control
             } else {
-                v.root.remove_css_class("controls");
+                v.hide_controls();
             }
+        });
+    }
+
+    fn hide_controls(&self) {
+        self.root.remove_css_class("controls");
+        self.fit_web();
+    }
+
+    /// A YouTube player keeps clear of the buttons while they show (the embed's own controls sit under them), and
+    /// grows to fill the panel when they hide: its top margin eases between the two.
+    fn fit_web(&self) {
+        let Some(web) = self.web.borrow().clone() else { return };
+        let to = if self.root.has_css_class("controls") { WEB_TOP } else { 0 };
+        let from = web.margin_top();
+        let g = self.margin_gen.get().wrapping_add(1);
+        self.margin_gen.set(g);
+        if from == to {
+            return;
+        }
+        let me = self.me.borrow().clone();
+        let began = Cell::new(None::<i64>);
+        web.add_tick_callback(move |w, clock| {
+            let Some(v) = me.upgrade() else { return glib::ControlFlow::Break };
+            if v.margin_gen.get() != g {
+                return glib::ControlFlow::Break; // turned round: the newer one takes over from here
+            }
+            let t0 = began.get().unwrap_or_else(|| {
+                began.set(Some(clock.frame_time()));
+                clock.frame_time()
+            });
+            let p = (((clock.frame_time() - t0) as f64 / 1000.0) / 250.0).min(1.0);
+            w.set_margin_top(from + ((to - from) as f64 * ease(p)).round() as i32);
+            if p >= 1.0 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
         });
     }
 

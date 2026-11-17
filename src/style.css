@@ -382,7 +382,6 @@ button.send-btn:disabled { filter: saturate(0.25) opacity(0.45); box-shadow: non
 .viewer.controls .viewer-nav { opacity: 1; }
 .viewer-nav { transition: opacity 400ms ease, background-color 120ms ease; }
 .viewer-nav:hover { background-color: rgba(20, 20, 24, 0.75); }
-.viewer.yt .viewer-nav { opacity: 1; } /* the web view takes the pointer, so the buttons stay */
 .viewer-close { min-width: 32px; min-height: 32px; margin: 14px; }
 
 /* the photo viewer: a panel of its own over the sidebar and chat. The panels under it drop their shadows and
