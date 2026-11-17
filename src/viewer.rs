@@ -32,6 +32,8 @@ pub struct Hooks {
     pub fetch_video: Box<dyn Fn(&str)>,
     /// open a local file in another app (when the video can't be played here)
     pub open_external: Box<dyn Fn(&Path)>,
+    /// take the whole window (and screen) for the viewer, or give it back
+    pub set_fullscreen: Box<dyn Fn(bool)>,
 }
 
 pub struct Viewer {
@@ -72,6 +74,8 @@ pub struct Viewer {
     /// last pointer position over the viewer (controls stay while it's on one)
     ptr: Cell<(f64, f64)>,
     close: gtk::Button,
+    full_btn: gtk::Button,
+    fullscreen: Cell<bool>,
 }
 
 fn clock(secs: f64) -> String {
@@ -112,6 +116,10 @@ impl Viewer {
         let close = nav("window-close-symbolic", gtk::Align::End, "Close (Esc)");
         close.set_valign(gtk::Align::Start);
         close.add_css_class("viewer-close");
+        let full_btn = nav("view-fullscreen-symbolic", gtk::Align::End, "Full screen (F)");
+        full_btn.set_valign(gtk::Align::Start);
+        full_btn.add_css_class("viewer-close");
+        full_btn.set_margin_end(16 + 40 + 8); // beside the close button
 
         // video controls along the bottom, and the copy's progress in the middle (both hidden until a video is open)
         let play_btn = icon_btn("bf-play-symbolic", "Play / pause (Space)");
@@ -190,6 +198,8 @@ impl Viewer {
             poll_gen: Cell::new(0),
             ptr: Cell::new((f64::NAN, f64::NAN)),
             close: close.clone(),
+            full_btn,
+            fullscreen: Cell::new(false),
         });
         *v.me.borrow_mut() = Rc::downgrade(&v);
         let w = v.clone();
@@ -237,6 +247,8 @@ impl Viewer {
         v.next.connect_clicked(move |_| w.step(1));
         let w = v.clone();
         close.connect_clicked(move |_| w.close());
+        let w = v.clone();
+        v.full_btn.connect_clicked(move |_| w.toggle_fullscreen());
 
         // only real pointer movement reveals the controls (GTK also sends motion when content
         // changes under a still pointer, so compare positions); they fade after a pause
@@ -269,11 +281,13 @@ impl Viewer {
 
         let click = gtk::GestureClick::new();
         let w = v.clone();
-        click.connect_released(move |_, _, x, y| {
-            if !w.canvas.photo_rect().contains_point(&graphene::Point::new(x as f32, y as f32)) {
-                w.close(); // a click on the backdrop closes, like Quick Look
-            } else if w.player.borrow().is_some() {
-                w.toggle_play(); // a click on the playing video pauses it
+        click.connect_released(move |_, n, _, _| {
+            // anywhere on the backdrop counts; it never closes (Esc and the close button do)
+            if n >= 2 {
+                w.toggle_fullscreen(); // double-click, as in a browser's video player
+            }
+            if (n == 1 || n == 2) && w.player.borrow().is_some() {
+                w.toggle_play(); // a click pauses or resumes; the second click of a double-click puts it back
             }
         });
         v.canvas.add_controller(click);
@@ -291,7 +305,9 @@ impl Viewer {
     /// Keys while open (the window forwards them): Esc closes, ← → step. Returns true if handled.
     pub fn key(&self, key: gdk::Key) -> bool {
         match key {
+            gdk::Key::Escape if self.fullscreen.get() => self.set_fullscreen(false),
             gdk::Key::Escape => self.close(),
+            gdk::Key::f | gdk::Key::F => self.toggle_fullscreen(),
             gdk::Key::space if self.player.borrow().is_some() => self.toggle_play(),
             gdk::Key::Left => self.step(-1),
             gdk::Key::Right => self.step(1),
@@ -354,6 +370,7 @@ impl Viewer {
             }
         };
         self.stop_video();
+        self.set_fullscreen(false);
         self.canvas.imp().from.set(from);
         self.canvas.imp().closing.set(true);
         self.canvas.set_loading(false);
@@ -369,10 +386,31 @@ impl Viewer {
     /// Hide immediately (switching chats).
     pub fn close_now(&self) {
         self.stop_video();
+        self.set_fullscreen(false);
         self.root.set_visible(false);
         self.canvas.imp().closing.set(false);
         self.canvas.set_loading(false);
         self.items.borrow_mut().clear();
+    }
+
+    fn toggle_fullscreen(&self) {
+        self.set_fullscreen(!self.fullscreen.get());
+    }
+
+    fn set_fullscreen(&self, on: bool) {
+        if self.fullscreen.replace(on) == on {
+            return;
+        }
+        if on {
+            self.root.add_css_class("full");
+        } else {
+            self.root.remove_css_class("full");
+        }
+        self.full_btn.set_icon_name(if on { "view-restore-symbolic" } else { "view-fullscreen-symbolic" });
+        self.full_btn.set_tooltip_text(Some(if on { "Leave full screen (F, Esc)" } else { "Full screen (F)" }));
+        if let Some(h) = self.hooks.borrow().as_ref() {
+            (h.set_fullscreen)(on);
+        }
     }
 
     fn current_path(&self) -> Option<String> {

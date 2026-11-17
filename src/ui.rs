@@ -866,6 +866,24 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             let w = Rc::downgrade(&ui);
             move |p| if let Some(u) = w.upgrade() { fetch_video(&u, p) }
         }),
+        set_fullscreen: Box::new({
+            let w = Rc::downgrade(&ui);
+            let was = Rc::new(Cell::new(false)); // the window was already full screen before the viewer asked
+            move |on| {
+                let Some(u) = w.upgrade() else { return };
+                let m = if on { [0; 4] } else { [2, 14, 14, 14] };
+                u.viewer.root.set_margin_top(m[0]);
+                u.viewer.root.set_margin_end(m[1]);
+                u.viewer.root.set_margin_bottom(m[2]);
+                u.viewer.root.set_margin_start(m[3]);
+                if on {
+                    was.set(u.win.is_fullscreen());
+                    u.win.fullscreen();
+                } else if !was.get() {
+                    u.win.unfullscreen();
+                }
+            }
+        }),
         open_external: Box::new({
             let w = Rc::downgrade(&ui);
             move |p| if let Some(u) = w.upgrade() { open_file(&u, p) }

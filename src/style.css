@@ -421,3 +421,6 @@ window.viewing .sidebar, window.viewing .conv, window.viewing .info-panel { box-
 .viewer-busy { background: rgba(20, 20, 24, 0.78); border-radius: 16px; padding: 14px 18px; margin-bottom: 24px; }
 .viewer-progress trough { background: rgba(255, 255, 255, 0.28); min-height: 6px; }
 .viewer-progress progress { background: #fff; min-height: 6px; }
+
+/* full screen: the viewer takes the whole window, square-cornered, no shadow */
+.viewer.full { border-radius: 0; box-shadow: none; }
