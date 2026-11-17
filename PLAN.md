@@ -113,6 +113,8 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 
 A chat bubble with a cartoon magic wand: a stick with a five-point star on the end, drawn in a cartoon style with a few little sparkles around the star. Peter will generate options with Draw Things on his Mac; Claude writes the prompt (a bold, simple, flat-colour sticker look that still reads at 16 px) and later turns the chosen picture into the Flatpak icon set (scalable SVG plus a symbolic version). Needs to be done before Flathub submission.
 
+The header's "BubbleFairy ✨" title (with the round unread-count badge after it) is a stand-in: revisit it together with the icon.
+
 ### Contacts integration (read-only; built except where noted)
 
 The Mac's Contacts databases are readable over SSH (about 360 contacts on Peter's Mac, with names, organisations, phones, emails, addresses, birthdays, notes and photos), through the same Full Disk Access as chat.db. Editing isn't possible, and isn't wanted. Planned uses:
