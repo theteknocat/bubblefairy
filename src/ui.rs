@@ -447,7 +447,60 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let conv = gtk::Box::new(gtk::Orientation::Vertical, 0);
     conv.append(&conv_head);
     conv.append(&suggest_scroll);
-    conv.append(&scroller);
+    // a round button over the bottom of the messages that jumps back down once you're a panel's height or more up
+    let to_bottom = gtk::Button::from_icon_name("go-down-symbolic");
+    to_bottom.add_css_class("to-bottom");
+    to_bottom.set_halign(gtk::Align::Center);
+    to_bottom.set_valign(gtk::Align::End);
+    to_bottom.set_can_target(false);
+    to_bottom.set_tooltip_text(Some("Jump to the newest message"));
+    let (stick2, anchored2, scroller2) = (stick.clone(), anchored.clone(), scroller.clone());
+    to_bottom.connect_clicked(move |_| {
+        // glide down (ease-out, 350 ms) towards wherever the bottom is each frame, then stay stuck to it
+        let adj = scroller2.vadjustment();
+        let from = adj.value();
+        let began = Cell::new(None::<i64>);
+        let (stick, anchored) = (stick2.clone(), anchored2.clone());
+        scroller2.add_tick_callback(move |_, clock| {
+            let t0 = began.get().unwrap_or_else(|| {
+                began.set(Some(clock.frame_time()));
+                clock.frame_time()
+            });
+            let t = ((clock.frame_time() - t0) as f64 / 350_000.0).min(1.0);
+            let e = 1.0 - (1.0 - t).powi(3);
+            let bottom = adj.upper() - adj.page_size();
+            adj.set_value(from + (bottom - from) * e);
+            if t >= 1.0 {
+                stick.set(true);
+                anchored.queue_allocate();
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    });
+    let scroll_over = gtk::Overlay::new();
+    scroll_over.set_child(Some(&scroller));
+    scroll_over.add_overlay(&to_bottom);
+    scroll_over.set_vexpand(true);
+    scroll_over.set_visible(scroller.is_visible());
+    let so = scroll_over.clone();
+    scroller.connect_visible_notify(move |s| so.set_visible(s.is_visible())); // the suggestions list replaces it in the new-message view
+    let show_btn = {
+        let b = to_bottom.clone();
+        move |a: &gtk::Adjustment| {
+            let away = a.upper() - a.value() - a.page_size() >= a.page_size().max(1.0);
+            if away {
+                b.add_css_class("shown");
+            } else {
+                b.remove_css_class("shown");
+            }
+            b.set_can_target(away);
+        }
+    };
+    scroller.vadjustment().connect_value_changed(show_btn.clone());
+    scroller.vadjustment().connect_changed(show_btn);
+    conv.append(&scroll_over);
     // files waiting to go, above the composer
     let attach_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     attach_bar.add_css_class("attach-bar");
@@ -1285,12 +1338,16 @@ fn on_message(u: &Rc<Ui>, m: Value) {
         settle_pending(&mut u.st.borrow_mut(), cid, &m);
         show_new_ghosts(u);
     }
+    let mut fresh = false; // a message we hadn't got yet
     let (is_sel, known_chat) = {
         let mut st = u.st.borrow_mut();
         if let Some(h) = st.hist.get_mut(&cid) {
             match h.iter_mut().find(|x| x["guid"] == m["guid"]) {
                 Some(old) => *old = m.clone(),
-                None if !mutation => h.push(m.clone()),
+                None if !mutation => {
+                    h.push(m.clone());
+                    fresh = true;
+                }
                 None => {}
             }
         }
@@ -1300,6 +1357,9 @@ fn on_message(u: &Rc<Ui>, m: Value) {
         (st.sel == Some(cid), st.chats.iter().any(|c| c["id"].as_i64() == Some(cid)))
     };
     if is_sel {
+        if fresh {
+            u.stick_bottom.set(true); // a new message while scrolled up brings you down to it
+        }
         render_conv(u);
     }
     if mutation {
