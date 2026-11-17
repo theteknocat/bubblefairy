@@ -24,6 +24,9 @@ pub struct Config {
 pub enum Cmd {
     Configure(Config),
     Chats,
+    /// The newest 1:1 chat with any of these addresses (one person's numbers and emails: Messages keeps one conversation
+    /// per contact), which can be older than the chats list's 100 (answer: `Event::FoundChat`)
+    FindChat(Vec<String>),
     /// the chat's newest `limit` messages
     History(i64, usize),
     /// Just the newest message, for the chat list's preview line.
@@ -103,6 +106,8 @@ pub enum Event {
     Warn(String),
     HostKey(String),
     Chats(Vec<Value>),
+    /// the address that was typed, and the chat found for it or its person's other addresses
+    FoundChat(String, Option<Value>),
     History(i64, Vec<Value>),
     Preview(i64, Value),
     Older(i64, Vec<Value>),
@@ -439,6 +444,44 @@ async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
             m["service"] = Value::String(svc.clone());
         }
     }
+}
+
+/// The newest 1:1 chat with `addr` (an email, or a phone number matched on its last ten digits), shaped like an
+/// imsg chats.list entry. ponytail: a number with fewer than 10 digits isn't looked up.
+async fn find_chat(session: &client::Handle<Handler>, addrs: &[String]) -> Option<Value> {
+    let conds: Vec<String> = addrs
+        .iter()
+        .filter_map(|addr| {
+            if addr.contains('@') {
+                return Some(format!("lower(c.chat_identifier)=lower({})", sh_sql(addr)));
+            }
+            let d: String = addr.chars().filter(char::is_ascii_digit).collect();
+            let ten = d.get(d.len().checked_sub(10)?..)?;
+            Some(format!(
+                "(c.chat_identifier not like '%@%' and replace(replace(replace(replace(replace(c.chat_identifier,'+',''),'-',''),' ',''),'(',''),')','') like '%{ten}')"
+            ))
+        })
+        .collect();
+    if conds.is_empty() {
+        return None;
+    }
+    let cond = format!("({})", conds.join(" or "));
+    let sql = format!(
+        "select c.ROWID, hex(c.chat_identifier), coalesce(c.service_name,'iMessage'), \
+         strftime('%Y-%m-%dT%H:%M:%SZ', coalesce((select max(m.date) from message m join chat_message_join j on j.message_id=m.ROWID where j.chat_id=c.ROWID),0)/1000000000+978307200, 'unixepoch') \
+         from chat c where c.style=45 and {cond} order by 4 desc limit 1"
+    );
+    let out = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await?;
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let r: Vec<&str> = text.lines().next()?.split('|').collect();
+    let ident = hex_text(r.get(1)?);
+    Some(json!({"id": r.first()?.parse::<i64>().ok()?, "display_name": "", "identifier": ident, "participants": [ident],
+        "service": r.get(2)?, "is_group": false, "unread_count": 0, "last_message_at": r.get(3)?}))
+}
+
+/// A string as an SQL literal.
+fn sh_sql(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
 }
 
 /// Contact photos from the Mac's Contacts, found by phone number or email.
@@ -1146,6 +1189,10 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
                 let _ = ev.send(Event::Warn(e));
             }
         },
+        Cmd::FindChat(addr) => {
+            let found = find_chat(&session, &addr).await;
+            let _ = ev.send(Event::FoundChat(addr.first().cloned().unwrap_or_default(), found));
+        }
         Cmd::History(id, limit) => {
             let r = rpc.call("messages.history", json!({"chat_id": id, "limit": limit, "attachments": true}), READ).await;
             if let Ok(r) = r {

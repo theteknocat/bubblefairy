@@ -129,6 +129,8 @@ struct State {
     seen: HashMap<i64, i64>,
     /// address a new conversation's first message went to; its chat opens once it shows up
     new_pending: Option<String>,
+    /// addresses already looked up on the Mac for an older chat (new-message view)
+    found_asked: std::collections::HashSet<String>,
     /// chats whose whole history is already loaded
     no_more: HashSet<i64>,
 }
@@ -177,6 +179,10 @@ pub struct Ui {
     render_queued: Cell<bool>,
     /// writing a new message (To field showing, no chat selected)
     new_mode: Cell<bool>,
+    /// counts To-field edits: a lookup waits out the typing
+    find_gen: Cell<u32>,
+    /// the sidebar is gliding to a row (a list rebuild must not put it back)
+    side_anim: Cell<bool>,
     send_token: Cell<u64>,
     info: Info,
     paned: gtk::Paned,
@@ -486,9 +492,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     scroll_over.set_child(Some(&scroller));
     scroll_over.add_overlay(&to_bottom);
     scroll_over.set_vexpand(true);
-    scroll_over.set_visible(scroller.is_visible());
+    scroll_over.set_visible(scroller.property("visible"));
     let so = scroll_over.clone();
-    scroller.connect_visible_notify(move |s| so.set_visible(s.is_visible())); // the suggestions list replaces it in the new-message view
+    // the suggestions list replaces it in the new-message view. The property, not `is_visible()`: that one also asks
+    // the ancestors, so once `scroll_over` was hidden the scroller could never show it again
+    scroller.connect_visible_notify(move |s| so.set_visible(s.property("visible")));
     let show_btn = {
         let b = to_bottom.clone();
         move |a: &gtk::Adjustment| {
@@ -622,6 +630,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         stacks: RefCell::default(),
         render_queued: Cell::new(false),
         new_mode: Cell::new(false),
+        find_gen: Cell::new(0),
+        side_anim: Cell::new(false),
         send_token: Cell::new(0),
         info,
         paned: paned.clone(),
@@ -672,6 +682,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         let id = u.st.borrow().chats.get(row.index() as usize).and_then(|c| c["id"].as_i64());
         if let Some(id) = id {
             select(&u, id);
+            // the click itself gives the row the focus once the selection is done: take it back for the composer
+            let u2 = u.clone();
+            glib::idle_add_local_once(move || {
+                u2.compose.grab_focus();
+            });
         }
     });
 
@@ -731,7 +746,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     app.add_action(&new_msg);
     app.set_accels_for_action("app.new-message", &["<Control>n"]);
     let u = ui.clone();
-    ui.to_entry.connect_changed(move |_| render_suggest(&u));
+    ui.to_entry.connect_changed(move |_| {
+        render_suggest(&u);
+        find_prior_chat(&u);
+    });
     let u = ui.clone();
     ui.to_entry.connect_activate(move |e| {
         // Enter: open the top suggestion, or move on to the message if it's a new address
@@ -1083,7 +1101,12 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                         st.names.insert(h.into(), n.into());
                     }
                 }
+                // the chat on show may be older than the list's 100 (found by address): keep it
+                let keep = st.sel.filter(|id| !chats.iter().any(|c| c["id"].as_i64() == Some(*id))).and_then(|id| st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).cloned());
                 st.chats = chats;
+                if let Some(c) = keep {
+                    insert_chat(&mut st.chats, c);
+                }
                 st.chats_loaded = true;
                 let st = &mut *st;
                 let ids: Vec<i64> = st.chats.iter().filter_map(|c| c["id"].as_i64()).collect();
@@ -1123,6 +1146,19 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             if let Some(id) = first {
                 select_in_list(u, id);
                 select(u, id);
+            }
+        }
+        Event::FoundChat(addr, chat) => {
+            let Some(chat) = chat else { return };
+            let Some(id) = chat["id"].as_i64() else { return };
+            if !u.st.borrow().chats.iter().any(|c| c["id"].as_i64() == Some(id)) {
+                insert_chat(&mut u.st.borrow_mut().chats, chat);
+                render_chats(u);
+                u.send(Cmd::Preview(id));
+            }
+            // still in the new-message view with that address: show the conversation, like Messages does
+            if u.new_mode.get() && same_addr(u.to_entry.text().trim(), &addr) {
+                open_chat(u, id);
             }
         }
         Event::Preview(id, m) => {
@@ -1741,9 +1777,11 @@ fn end_new(u: &Ui) {
     update_spinner(u);
 }
 
+/// Open a chat from the new-message view (a suggestion, Enter, a send, a chat just found): the sidebar glides to it.
 fn open_chat(u: &Rc<Ui>, id: i64) {
     select_in_list(u, id);
     select(u, id);
+    scroll_list_to(u, id);
 }
 
 /// What the To field suggests: 1:1 chats first, then address-book contacts without a chat
@@ -1824,11 +1862,114 @@ fn render_suggest(u: &Ui) {
 }
 
 /// Send the first message of a new conversation (or to an existing one, if the To field names it).
+/// Put `chat` into the list where its last message belongs (newest first).
+fn insert_chat(chats: &mut Vec<Value>, chat: Value) {
+    let at = chats.iter().position(|c| c["last_message_at"].as_str() < chat["last_message_at"].as_str()).unwrap_or(chats.len());
+    chats.insert(at, chat);
+}
+
+/// The typed address first, then the other numbers and emails of the contact it belongs to: Messages keeps one
+/// conversation per person, whichever of their addresses is used.
+fn person_addrs(u: &Ui, typed: &str) -> Vec<String> {
+    let mut v = vec![clean_addr(typed)];
+    if let Some(p) = u.st.borrow().contacts.as_ref().and_then(|c| c.person(typed)) {
+        for a in p.addrs.iter().map(|(a, _)| clean_addr(a)) {
+            if is_addr(&a) && !v.contains(&a) {
+                v.push(a);
+            }
+        }
+    }
+    v
+}
+
+/// The newest 1:1 chat in the list with any of these addresses.
+fn find_chat_for(chats: &[Value], addrs: &[String]) -> Option<i64> {
+    chats
+        .iter()
+        .filter(|c| c["is_group"].as_bool() != Some(true))
+        .filter(|c| direct_addr(c).is_some_and(|d| addrs.iter().any(|a| same_addr(a, d))))
+        .max_by_key(|c| c["last_message_at"].as_str().map(String::from))
+        .and_then(|c| c["id"].as_i64())
+}
+
+/// Glide the sidebar's list so the row of this chat ends up at the top (or as near as the list's end allows). The
+/// row is looked up again every frame: the list is rebuilt when previews arrive.
+fn scroll_list_to(u: &Rc<Ui>, id: i64) {
+    let Some(adj) = side_adjustment(u) else { return };
+    u.side_anim.set(true);
+    let (u, from, began) = (u.clone(), adj.value(), Cell::new(None::<i64>));
+    glib::timeout_add_local_once(Duration::from_millis(150), move || {
+        // already in view where the list was scrolled to (list rebuilds since may have reset it): leave it there
+        let idx = u.st.borrow().chats.iter().position(|c| c["id"].as_i64() == Some(id));
+        if let Some(b) = idx.and_then(|i| u.chat_list.row_at_index(i as i32)).and_then(|r| r.compute_bounds(&u.chat_list))
+            && b.height() > 1.0
+            && b.y() as f64 >= from
+            && (b.y() + b.height()) as f64 <= from + adj.page_size()
+        {
+            adj.set_value(from);
+            u.side_anim.set(false);
+            return;
+        }
+        let to = Cell::new(None::<f64>);
+        let uu = u.clone();
+        u.chat_list.add_tick_callback(move |_, clock| {
+            let (u, adj) = (&uu, &adj);
+            let idx = u.st.borrow().chats.iter().position(|c| c["id"].as_i64() == Some(id));
+            if let Some(b) = idx.and_then(|i| u.chat_list.row_at_index(i as i32)).and_then(|r| r.compute_bounds(&u.chat_list))
+                && b.height() > 1.0
+            {
+                to.set(Some((b.y() as f64 - 6.0).clamp(0.0, (adj.upper() - adj.page_size()).max(0.0))));
+            }
+            let t0 = began.get().unwrap_or_else(|| {
+                began.set(Some(clock.frame_time()));
+                clock.frame_time()
+            });
+            let t = ((clock.frame_time() - t0) as f64 / 450_000.0).min(1.0);
+            if let Some(to) = to.get() {
+                adj.set_value(from + (to - from) * (1.0 - (1.0 - t).powi(3)));
+            }
+            if t >= 1.0 {
+                u.side_anim.set(false);
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    });
+}
+
+/// In the new-message view, once a whole address is in the To field: open the conversation we already have with it,
+/// or ask the Mac for an older one (after a pause in the typing).
+fn find_prior_chat(u: &Rc<Ui>) {
+    let g = u.find_gen.get().wrapping_add(1);
+    u.find_gen.set(g);
+    let typed = u.to_entry.text().trim().to_string();
+    if !u.new_mode.get() || !is_addr(&typed) {
+        return;
+    }
+    let u2 = u.clone();
+    glib::timeout_add_local_once(Duration::from_millis(500), move || {
+        if u2.find_gen.get() != g || !u2.new_mode.get() {
+            return;
+        }
+        let addrs = person_addrs(&u2, &typed);
+        let known = find_chat_for(&u2.st.borrow().chats, &addrs);
+        if let Some(id) = known {
+            open_chat(&u2, id);
+            return;
+        }
+        let key = clean_addr(&typed);
+        if u2.st.borrow_mut().found_asked.insert(key) {
+            u2.send(Cmd::FindChat(addrs));
+        }
+    });
+}
+
 fn send_new(u: &Rc<Ui>, text: &str) {
     let typed = u.to_entry.text().trim().to_string();
     let existing = {
         let st = u.st.borrow();
-        find_direct_chat(&st.chats, &typed).or_else(|| {
+        find_chat_for(&st.chats, &person_addrs(u, &typed)).or_else(|| {
             st.chats
                 .iter()
                 .filter(|c| c["is_group"].as_bool() != Some(true))
@@ -1931,6 +2072,9 @@ fn render_chats(u: &Rc<Ui>) {
             .collect()
     };
     let sel = u.st.borrow().sel;
+    // the rebuild empties the list, which would put the sidebar back at the top: remember where it was
+    let side_adj = side_adjustment(u);
+    let keep = side_adj.as_ref().map_or(0.0, |a| a.value());
     u.selecting.set(true);
     u.chat_list.remove_all();
     let mut new_rows = Vec::new();
@@ -1993,6 +2137,22 @@ fn render_chats(u: &Rc<Ui>) {
     }
     *u.rows.borrow_mut() = new_rows;
     u.selecting.set(false);
+    if let (Some(adj), true) = (side_adj, keep > 0.0 && !u.side_anim.get()) {
+        // the new rows have no size until the next layout: set the value again each frame until it holds
+        let (n, u) = (Cell::new(0), u.clone());
+        let list = u.chat_list.clone();
+        list.add_tick_callback(move |_, _| {
+            n.set(n.get() + 1);
+            if !u.side_anim.get() {
+                adj.set_value(keep);
+            }
+            if n.get() < 10 && adj.upper() - adj.page_size() < keep - 0.5 { glib::ControlFlow::Continue } else { glib::ControlFlow::Break }
+        });
+    }
+}
+
+fn side_adjustment(u: &Ui) -> Option<gtk::Adjustment> {
+    u.chat_list.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>().map(|sw| sw.vadjustment())
 }
 
 // ---------- conversation ----------
