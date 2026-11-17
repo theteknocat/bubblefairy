@@ -2555,8 +2555,31 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         _ => 0,
     };
     let sep = i == 0 || gap(i - 1, i) > 30 * 60 || day(times[i - 1]) != day(times[i]);
-    if sep && let Some(dt) = m["created_at"].as_str().and_then(local) {
-        let l = gtk::Label::new(Some(&sep_time(&dt)));
+    // the service (iMessage, RCS, Text Message) is named at the start of the chat and wherever it changes
+    let service_of = |m: &Value| m["service"].as_str().unwrap_or(&c.chat_svc).to_string();
+    let svc = service_of(m);
+    let svc_changed = i == 0 || service_of(&msgs[i - 1]) != svc;
+    let svc_name = match svc.as_str() {
+        "iMessage" => "iMessage",
+        "RCS" => "RCS",
+        "SMS" => "Text Message",
+        other => other,
+    };
+    let dt = m["created_at"].as_str().and_then(local);
+    let when = match (&dt, sep) {
+        (Some(d), true) => Some(sep_time(d)),
+        _ => None,
+    };
+    if svc_changed || when.is_some() {
+        let l = gtk::Label::new(None);
+        let esc = glib::markup_escape_text(svc_name);
+        match (svc_changed, &when) {
+            (true, Some(t)) => l.set_markup(&format!("<b>{esc}</b>\n{}", glib::markup_escape_text(t))),
+            (true, None) => l.set_markup(&format!("<b>{esc}</b>")),
+            (false, Some(t)) => l.set_text(t),
+            (false, None) => {}
+        }
+        l.set_justify(gtk::Justification::Center);
         l.add_css_class("time-sep");
         out.push(l.upcast());
     }
@@ -2571,9 +2594,8 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         n.set_xalign(0.0);
         out.push(n.upcast());
     }
-    let svc = m["service"].as_str().unwrap_or(&c.chat_svc);
     // hovering a message shows its full date and time (the separators only show them for a group of messages)
-    let when = m["created_at"].as_str().and_then(local).and_then(|d| d.format("%A, %B %-d, %Y at %H:%M").ok()).map(|g| g.to_string());
+    let when = dt.and_then(|d| d.format("%A, %B %-d, %Y at %H:%M").ok()).map(|g| g.to_string());
     let parts = message_parts(u, m, me, svc != "iMessage", !run_next);
     let n = parts.len();
     for (k, part) in parts.into_iter().enumerate() {
