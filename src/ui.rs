@@ -2198,6 +2198,15 @@ fn row_info(st: &State, c: &Value) -> (String, String, String, bool) {
     (chat_title(c, &st.names), text.unwrap_or_default(), when.unwrap_or_default(), unread)
 }
 
+/// The window's title (what a taskbar or window list shows) carries the number of unread conversations.
+fn update_title(u: &Ui) {
+    let n = {
+        let st = u.st.borrow();
+        st.chats.iter().filter(|c| row_info(&st, c).3).count()
+    };
+    u.win.set_title(Some(&if n > 0 { format!("({n}) BubbleFairy") } else { "BubbleFairy".into() }));
+}
+
 /// A chat's last message arrived: change its row's texts in place. Rebuilding the whole list for each of the
 /// ~60 previews that arrive at start-up cost 25+ ms apiece. Anything the row doesn't hold yet (a new chat, a
 /// pinned chat's tile) goes through a rebuild instead.
@@ -2217,6 +2226,7 @@ fn update_row(u: &Rc<Ui>, id: i64) {
         if on { parts.dot.add_css_class(c) } else { parts.dot.remove_css_class(c) }
     }
     if unread { parts.row.add_css_class("unread") } else { parts.row.remove_css_class("unread") }
+    update_title(u);
 }
 
 /// The widgets of a list row that change when its chat's last message does.
@@ -2319,6 +2329,7 @@ fn render_chats(u: &Rc<Ui>) {
     u.selecting.set(false);
     pinned.sort_by_key(|p| p.0);
     render_tiles(u, pinned, sel);
+    update_title(u);
     if let (Some(adj), true) = (side_adj, keep > 0.0 && !u.side_anim.get()) {
         // the new rows have no size until the next layout: set the value again each frame until it holds
         let (n, u) = (Cell::new(0), u.clone());

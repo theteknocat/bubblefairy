@@ -95,7 +95,6 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 - **Per-chat drafts:** keep the composer's text and attachments when switching chats. Check first what happens today (nothing in the code keeps drafts apart from the `BF_DRAFT` dev switch).
 - **Inline replies:** messages carry `reply_to_guid`; show the quoted message above a reply. Medium effort.
 - **Copy and save for pictures:** a right-click menu on a photo with "Copy image" and "Save as".
-- **Unread count** in the window title or taskbar entry.
 - **Respect muted chats ("Hide Alerts").** Messages keeps the list in `~/Library/Preferences/com.apple.MobileSMS.CKDNDList.plist` (key `CKDNDListKey`, entries value a far-future date; 13 on 2026-11-17). The keys are hashed (40 hex characters for 1:1 chats, GUID-looking ones for groups). The obvious SHA-1 of a chat's identifier or guid didn't match, so the hashing still needs working out. If it can be matched, desktop notifications could skip muted chats and the row could show a muted icon.
 - **Spam and unknown-sender filtering.** chat.db has `chat.is_filtered`, `message.is_spam` and `message.filter_action`; check how many of the user's chats carry them before deciding how the list should treat them.
 - **Our own link preview card for plain links**: see Link previews under Phase 1.1.
