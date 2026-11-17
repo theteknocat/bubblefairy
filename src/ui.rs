@@ -309,10 +309,6 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let side_loading = gtk::Box::new(gtk::Orientation::Vertical, 10);
     side_loading.set_valign(gtk::Align::Center);
     side_loading.set_halign(gtk::Align::Center);
-    let sp = gtk::Spinner::new();
-    sp.start();
-    sp.set_size_request(28, 28);
-    side_loading.append(&sp);
     let sl = gtk::Label::new(Some("Loading chats…"));
     sl.add_css_class("loading-text");
     side_loading.append(&sl);
