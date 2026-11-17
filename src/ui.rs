@@ -180,6 +180,9 @@ pub struct Ui {
     selecting: Cell<bool>,
     /// a `render_chats_soon` is waiting
     list_queued: Cell<bool>,
+    /// the open chat as `render_conv` last drew it: what it was drawn from, and each message's widgets (`redraw_message`)
+    conv_ctx: RefCell<Option<Rc<ConvCtx>>>,
+    msg_widgets: RefCell<Vec<Vec<gtk::Widget>>>,
     sel_gen: Cell<u32>,
     banner_offline: Cell<bool>,
     chats_queued: Cell<bool>,
@@ -658,6 +661,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         stick_bottom: stick.clone(),
         selecting: Cell::new(false),
         list_queued: Cell::new(false),
+        conv_ctx: RefCell::default(),
+        msg_widgets: RefCell::default(),
         sel_gen: Cell::new(0),
         banner_offline: Cell::new(false),
         chats_queued: Cell::new(false),
@@ -1349,13 +1354,16 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 let st = u.st.borrow();
                 p.is_some() && st.sel.and_then(|id| st.hist.get(&id)).is_some_and(|h| h.iter().any(|m| preview_row(m) == Some(row)))
             };
-            // previews arrive in bursts when a chat opens: one re-render for the lot
-            if shown && !u.render_queued.replace(true) {
-                let u2 = u.clone();
-                glib::idle_add_local_once(move || {
-                    u2.render_queued.set(false);
-                    render_conv(&u2);
-                });
+            if shown {
+                // just that message, where it stands; the whole chat only if that can't be done
+                let at = u.conv_ctx.borrow().as_ref().and_then(|c| c.msgs.iter().position(|m| preview_row(m) == Some(row)));
+                if !at.is_some_and(|i| redraw_message(u, i)) && !u.render_queued.replace(true) {
+                    let u2 = u.clone();
+                    glib::idle_add_local_once(move || {
+                        u2.render_queued.set(false);
+                        render_conv(&u2);
+                    });
+                }
             }
         }
         Event::Image { path, full, bytes } => {
@@ -2422,6 +2430,33 @@ struct ConvCtx {
     pending_tail: bool,
 }
 
+/// Draw message `i` of the open chat again where it stands (its link preview arrived, say) instead of rebuilding
+/// the whole conversation: that took ~150 ms to lay out again for 150 messages. False when it can't (nothing
+/// drawn, the view changed since, or the message has pictures, which the viewer's list is kept in step with).
+fn redraw_message(u: &Rc<Ui>, i: usize) -> bool {
+    let Some(ctx) = u.conv_ctx.borrow().clone() else { return false };
+    let mut parts = u.msg_widgets.borrow_mut();
+    let Some(old) = parts.get(i).filter(|o| !o.is_empty()) else { return false };
+    let first = old[0].clone();
+    // (a link message's own attachment is just its preview's payload: no picture for the viewer's list)
+    let pictures = preview_row(&ctx.msgs[i]).is_none() && ctx.msgs[i]["attachments"].as_array().is_some_and(|a| !a.is_empty());
+    if first.parent().as_ref() != Some(u.msgs.upcast_ref()) || pictures {
+        return false;
+    }
+    let old = std::mem::take(&mut parts[i]);
+    let mut prev = first.prev_sibling();
+    let fresh = conv_widgets(u, &ctx, i);
+    for w in &fresh {
+        u.msgs.insert_child_after(w, prev.as_ref());
+        prev = Some(w.clone());
+    }
+    for w in &old {
+        u.msgs.remove(w);
+    }
+    parts[i] = fresh;
+    true
+}
+
 /// The widgets of message `i` (time separator, sender name, one line per part), top to bottom.
 fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     let (msgs, times, names, group) = (&c.msgs, &c.times, &c.names, c.group);
@@ -2558,11 +2593,16 @@ fn render_conv(u: &Rc<Ui>) {
     let ctx = Rc::new(ConvCtx { msgs, times, names, group, chat_svc, pending_tail: !pending.is_empty() });
     // All at once: with the pictures decoded on another thread this takes ~45 ms for 150 messages. Building the
     // newest part first and the rest afterwards was tried; both parts showed up together anyway.
+    let mut drawn = Vec::with_capacity(ctx.msgs.len());
     for i in 0..ctx.msgs.len() {
-        for w in conv_widgets(u, &ctx, i) {
-            u.msgs.append(&w);
+        let ws = conv_widgets(u, &ctx, i);
+        for w in &ws {
+            u.msgs.append(w);
         }
+        drawn.push(ws);
     }
+    *u.msg_widgets.borrow_mut() = drawn;
+    *u.conv_ctx.borrow_mut() = Some(ctx.clone());
     append_pending(u, &pending, sms);
     let photos = u.st.borrow().photos.clone(); // the viewer's hooks borrow State
     if !(u.st.borrow().viewer_panel && u.viewer.is_open()) {
@@ -2767,7 +2807,10 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
             let l = gtk::Label::new(None);
             l.set_markup(&linkify(&text));
             l.set_wrap(true);
-            l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            // WordChar (break inside a word if it has to) takes 3-4 times as long to lay out as Word, and 150 of them
+            // were most of the ~150 ms the first frame took: only a text with a very long word (a link) needs it
+            let long_word = text.split_whitespace().any(|w| w.chars().count() > 30);
+            l.set_wrap_mode(if long_word { gtk::pango::WrapMode::WordChar } else { gtk::pango::WrapMode::Word });
             l.set_xalign(0.0);
             l.set_max_width_chars(60);
             l.set_selectable(true);
