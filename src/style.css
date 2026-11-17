@@ -152,8 +152,10 @@ row.unread .chat-name { font-weight: 800; }
 .link-tile.plain { background-color: #f1efe9; border-color: rgba(0, 0, 0, 0.12); }
 .tile-glyph { color: #3f4962; }
 .tile-caption { background-color: rgba(0, 0, 0, 0.55); color: #ffffff; font-size: 0.7em; padding: 2px 6px; }
-.file-chip { background-color: rgba(128, 118, 200, 0.22); border-radius: 14px; padding: 8px 12px; }
-.file-chip.missing { opacity: 0.5; }
+.file-missing { opacity: 0.6; }
+.play-badge.big { min-width: 48px; min-height: 48px; font-size: 1em; padding-left: 4px; }
+.video-pill { background-color: rgba(0, 0, 0, 0.55); color: #ffffff; border-radius: 99px; padding: 1px 8px; margin: 0 0 8px 8px; font-size: 0.75em; font-weight: 700; }
+.play-badge { background-color: rgba(0, 0, 0, 0.55); color: #ffffff; border-radius: 99px; min-width: 24px; min-height: 24px; font-size: 0.7em; padding-left: 2px; }
 .info-missing { background-color: rgba(128, 118, 200, 0.14); border-radius: 12px; }
 .info-tab { padding: 4px 10px; min-width: 0; }
 .tab-name { font-weight: 700; }

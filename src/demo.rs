@@ -29,7 +29,7 @@ fn msg(chat: i64, n: i64, me: bool, sender: &str, name: &str, min: i64, text: &s
 
 fn history(id: i64) -> Vec<Value> {
     let m = |n, me, min, t| msg(id, n, me, "+15550101", "Maya Thompson", min, t);
-    match id {
+    let mut v = match id {
         1 => vec![
             m(1, false, 190, "Are we still on for Saturday? 🌲"),
             m(2, true, 188, "Yes! Trailhead at 9?"),
@@ -47,7 +47,22 @@ fn history(id: i64) -> Vec<Value> {
         ],
         3 => vec![msg(3, 1, false, "+15550199", "", 200, "Your table for 4 is ready. Please come to the host stand."), msg(3, 2, true, "", "", 199, "On our way, thanks!")],
         _ => vec![msg(id, 1, false, "x", "", 1500, "Call me when you're free"), msg(id, 2, true, "", "", 1490, "Will do 👍")],
+    };
+    if id == 1 {
+        // files of each kind, for looking at their cards (none of these exist, so previews fall back to icons)
+        let file = |n: i64, me: bool, min: i64, name: &str, mime: &str, bytes: i64, missing: bool| {
+            let mut m = msg(1, n, me, "+15550101", "Maya Thompson", min, "\u{FFFC}");
+            m["attachments"] = json!([{"filename": format!("~/Library/Messages/Attachments/xx/{name}"), "original_path": format!("~/Library/Messages/Attachments/xx/{name}"),
+                "transfer_name": name, "mime_type": mime, "total_bytes": bytes, "missing": missing, "uti": "", "is_sticker": false}]);
+            m
+        };
+        v.insert(3, file(20, false, 186, "Trail-map-Saturday.pdf", "application/pdf", 1_940_000, false));
+        v.insert(4, file(21, true, 185, "IMG_1304.MOV", "video/quicktime", 38_400_000, false));
+        v.insert(5, file(22, false, 184, "Sundre.m4a", "audio/x-m4a", 3_300_000, false));
+        v.insert(6, file(23, false, 183, "Maya Thompson.vcf", "text/vcard", 4_000, false));
+        v.insert(7, file(24, true, 182, "Packing list with a really quite long name.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 12_000, true));
     }
+    v
 }
 
 pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSender<Event>) {
@@ -66,12 +81,31 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
             Cmd::Older { id, .. } => ev.send(Event::Older(id, Vec::new())),
             Cmd::Contacts => ev.send(Event::Contacts(Default::default())),
             Cmd::Link(id) => ev.send(Event::Link(id, None)),
-            Cmd::Image { path, full } => ev.send(Event::Image { path, full, bytes: None }),
+            Cmd::FileInfo { path, .. } => ev.send(Event::FileInfo(path, None)),
+            Cmd::Image { path, full } => {
+                // BF_DEMO_FRAME=<picture file>: stands in for the first frame of the demo video
+                let bytes = if path.ends_with(".MOV") { std::env::var("BF_DEMO_FRAME").ok().and_then(|f| std::fs::read(f).ok()) } else { None };
+                ev.send(Event::Image { path, full, bytes })
+            }
             Cmd::Recent(id) => ev.send(Event::Recent(id, Vec::new())),
             Cmd::Download { path, dest } => ev.send(Event::Downloaded { path, dest, err: Some("demo".into()) }),
             Cmd::Bulk(path) => ev.send(Event::Image { path, full: false, bytes: None }),
             Cmd::Map(q) => ev.send(Event::Map(q, None)),
-            Cmd::Media { chat_id, kind, offset } => ev.send(Event::Media { chat_id, kind, offset, items: Vec::new(), next: offset, more: false }),
+            Cmd::Media { chat_id, kind, offset } => {
+                let it = |name: &str, size: i64, missing: bool| crate::mac::MediaItem { path: format!("~/demo/{name}"), name: name.into(), size, date: 1_792_000_000, missing, ..Default::default() };
+                let items = match kind {
+                    crate::mac::Kind::Files if chat_id == 1 => vec![
+                        it("Trail-map-Saturday.pdf", 1_940_000, false),
+                        it("IMG_1304.MOV", 38_400_000, false),
+                        it("Sundre.m4a", 3_300_000, false),
+                        it("Maya Thompson.vcf", 4_000, false),
+                        it("Packing list with a really quite long name.docx", 12_000, true),
+                        it("photos-2026.zip", 52_000_000, false),
+                    ],
+                    _ => Vec::new(),
+                };
+                ev.send(Event::Media { chat_id, kind, offset, items, next: offset, more: false })
+            }
             Cmd::Configure(_) => Ok(()),
         };
     }

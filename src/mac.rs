@@ -43,6 +43,8 @@ pub enum Cmd {
     Image { path: String, full: bool },
     /// Apple's link preview stored on this message row
     Link(i64),
+    /// What the Mac can say about a file beyond the database: a recording's length, or the name on a contact card
+    FileInfo { path: String, contact: bool },
     /// The Mac's contact photos, to use as avatars
     Contacts,
     /// A small OpenStreetMap picture of this postal address (see `map_for`)
@@ -58,6 +60,17 @@ pub enum Kind {
     Photos,
     Files,
     Links,
+}
+
+/// More about a file than chat.db knows (see `file_info`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileInfo {
+    /// seconds, for audio and video
+    pub duration: Option<f64>,
+    /// a contact card's name, company and first phone number
+    pub name: String,
+    pub org: String,
+    pub phone: String,
 }
 
 /// One photo, file or link of a chat.
@@ -100,6 +113,7 @@ pub enum Event {
     SendSlow,
     Image { path: String, full: bool, bytes: Option<Vec<u8>> },
     Link(i64, Option<LinkPreview>),
+    FileInfo(String, Option<FileInfo>),
     Contacts(Contacts),
     Map(String, Option<MapData>),
     /// `next`: where the following page starts; `more`: whether there is one
@@ -627,6 +641,29 @@ fn clean_label(l: &str) -> String {
 }
 
 /// Copy a file from the Mac to `dest` (through a `.part` file, so a half copy is never mistaken for it).
+/// A recording's length (`afinfo`, which reads audio and video alike) or a contact card's name, company and
+/// phone number (a vCard is plain text). Spotlight has neither, and Quick Look can't draw a vCard.
+async fn file_info(session: &client::Handle<Handler>, path: &str, contact: bool) -> Option<FileInfo> {
+    let p = path.strip_prefix("~/").map(|p| format!("\"$HOME\"/{}", sh_quote(p))).unwrap_or_else(|| sh_quote(path));
+    let script = if contact {
+        format!(
+            r#"f={p}; for k in FN ORG TEL; do v=$(tr -d '\r' < "$f" | sed -n "s/^$k[^:]*://p" | head -n 1 | tr ';' ' '); printf '%s\n' "$v"; done"#
+        )
+    } else {
+        format!(r#"afinfo {p} 2>/dev/null | sed -n 's/^estimated duration: *\([0-9.]*\) sec.*/\1/p' | head -n 1"#)
+    };
+    let out = exec(session, script).await?;
+    let text = String::from_utf8_lossy(&out);
+    let mut lines = text.lines().map(|l| l.trim().to_string());
+    if contact {
+        let (name, org, phone) = (lines.next()?, lines.next().unwrap_or_default(), lines.next().unwrap_or_default());
+        (!name.is_empty() || !org.is_empty()).then(|| FileInfo { name, org, phone, ..Default::default() })
+    } else {
+        let d: f64 = lines.next()?.parse().ok()?;
+        Some(FileInfo { duration: Some(d), ..Default::default() })
+    }
+}
+
 async fn download(session: &client::Handle<Handler>, path: &str, dest: &Path) -> Result<(), String> {
     use std::io::Write;
     let _permit = CHANNELS.acquire().await.map_err(|_| "busy".to_string())?;
@@ -1136,6 +1173,10 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
         }
         Cmd::Link(rowid) => {
             let _ = ev.send(Event::Link(rowid, link_preview(&session, rowid).await));
+        }
+        Cmd::FileInfo { path, contact } => {
+            let info = file_info(&session, &path, contact).await;
+            let _ = ev.send(Event::FileInfo(path, info));
         }
         Cmd::Download { path, dest } => {
             let err = download(&session, &path, &dest).await.err();

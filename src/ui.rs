@@ -68,6 +68,9 @@ struct State {
     bad_images: HashSet<String>,
     /// the info panel's links so far (the Links tab is rebuilt from these when its width changes)
     info_links: Vec<MediaItem>,
+    info_files: Vec<MediaItem>,
+    /// what the Mac said about a file (recording length, contact card); `None` while asked or when it couldn't say
+    file_info: HashMap<String, Option<crate::mac::FileInfo>>,
     /// slots in the Links tab waiting for a preview card, by message row
     link_waiters: HashMap<i64, Vec<glib::WeakRef<gtk::Box>>>,
     /// files being copied from the Mac, with the chip that was clicked
@@ -892,7 +895,22 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     if let Some(ms) = std::env::var("BF_INFO").ok().and_then(|v| v.parse::<u64>().ok()) {
         // dev aid: open the info panel after <ms> (e.g. with BF_CHAT, in a headless compositor)
         let u = ui.clone();
-        glib::timeout_add_local_once(Duration::from_millis(ms), move || open_info(&u));
+        glib::timeout_add_local_once(Duration::from_millis(ms), move || {
+            open_info(&u);
+            // BF_TAB=files|links: show that tab
+            let n = match std::env::var("BF_TAB").as_deref() {
+                Ok("files") => 1,
+                Ok("links") => 2,
+                _ => 0,
+            };
+            let mut tab = u.info.switcher.first_child();
+            for _ in 0..n {
+                tab = tab.and_then(|t| t.next_sibling());
+            }
+            if let Some(t) = tab.and_downcast::<gtk::ToggleButton>() {
+                t.set_active(true);
+            }
+        });
     }
     if let Some(ms) = std::env::var("BF_SIDE").ok().and_then(|v| v.parse::<u64>().ok()) {
         // dev aid: press the sidebar button after <ms> (narrow window)
@@ -1136,6 +1154,13 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 None => open_file(u, &dest),
             }
         }
+        Event::FileInfo(path, info) => {
+            let found = info.is_some();
+            u.st.borrow_mut().file_info.insert(path, info);
+            if found {
+                queue_conv_render(u);
+            }
+        }
         Event::Link(row, p) => {
             u.st.borrow_mut().links.insert(row, p.clone());
             // Links tab slots waiting for this card
@@ -1197,6 +1222,9 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                         render_conv(&u2);
                         if !u2.st.borrow().info_links.is_empty() {
                             render_links(&u2);
+                        }
+                        if !u2.st.borrow().info_files.is_empty() {
+                            render_files(&u2);
                         }
                     });
                 }
@@ -2134,7 +2162,8 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
     // RCS/SMS photos often come as a converted copy plus a missing original; show only what's there
     let any_present = atts.iter().any(|a| a["missing"].as_bool() != Some(true));
     let photos = photo_paths(m);
-    let mut others = Vec::new();
+    let mut others = Vec::new(); // a photo that isn't on the Mac
+    let mut files: Vec<FileRef> = Vec::new();
     for a in atts.into_iter().filter(|a| !any_present || a["missing"].as_bool() != Some(true)) {
         let path = a["original_path"].as_str().unwrap_or("");
         if path.ends_with(".pluginPayloadAttachment") {
@@ -2145,18 +2174,17 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
             continue; // shown as a photo card (photo_paths)
         } else {
             let name = a["transfer_name"].as_str().or(a["filename"].as_str()).unwrap_or("Attachment");
-            let (icon, label) = if a["missing"].as_bool() == Some(true) && is_image(mime, name) {
-                ("📷", "Photo not downloaded on your Mac".to_string())
+            let missing = a["missing"].as_bool() == Some(true);
+            if missing && is_image(mime, name) {
+                let l = gtk::Label::new(None);
+                l.set_markup(&format!("<span size='170%'>📷</span>  {}", glib::markup_escape_text("Photo not downloaded on your Mac")));
+                l.add_css_class("file");
+                l.set_xalign(0.0);
+                others.push(l);
             } else {
-                ("📎", name.to_string())
-            };
-            let l = gtk::Label::new(None);
-            l.set_markup(&format!("<span size='170%'>{icon}</span>  {}", glib::markup_escape_text(&label)));
-            l.add_css_class("file");
-            l.set_xalign(0.0);
-            l.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-            l.set_max_width_chars(40);
-            others.push(l);
+                let size = a["total_bytes"].as_i64().unwrap_or(0);
+                files.push(FileRef { path: path.to_string(), name: name.to_string(), kind: file_kind(mime, name), size, missing });
+            }
         }
     }
     let mut out: Vec<gtk::Widget> = Vec::new();
@@ -2176,8 +2204,14 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
     let has_bubble = !text.is_empty() || !others.is_empty();
     let look = bubble::Look { tail: end_of_run && plain.is_none(), ..look };
     if !photos.is_empty() {
-        let tail = end_of_run && !has_bubble && link.is_none() && plain.is_none();
+        let tail = end_of_run && !has_bubble && link.is_none() && plain.is_none() && files.is_empty();
         out.push(photo_stack(u, &photos, bubble::Look { me, sms, tail }));
+    }
+    for (i, f) in files.iter().enumerate() {
+        let look = bubble::Look { me, sms, tail: end_of_run && !has_bubble && link.is_none() && plain.is_none() && i + 1 == files.len() };
+        // a video on the Mac is a big first-frame picture like a photo; anything else (or no frame) is a card
+        let framed = f.kind == FileKind::Video && !f.missing && !f.path.is_empty() && !u.st.borrow().bad_images.contains(&f.path);
+        out.push(if framed { video_preview(u, f, look) } else { file_card(u, f, look) });
     }
     if let Some(l) = &link {
         out.push(link_card(u, l, bubble::Look { me, sms, tail: end_of_run && !has_bubble }));
@@ -2216,12 +2250,17 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
 /// Our own stand-in for a link's missing picture: a white chain on a solid slate circle, which reads
 /// on the off-white card (Messages shows a Safari compass there).
 fn link_glyph() -> gtk::Widget {
+    glyph("bf-link-symbolic")
+}
+
+/// A solid slate circle with one of our icons in white (links without a picture, files without a preview).
+fn glyph(icon: &str) -> gtk::Widget {
     let g = gtk::Box::new(gtk::Orientation::Vertical, 0);
     g.add_css_class("link-glyph");
     g.set_size_request(44, 44);
     g.set_valign(gtk::Align::Center);
     g.set_hexpand(false);
-    let icon = gtk::Image::from_icon_name("bf-link-symbolic");
+    let icon = gtk::Image::from_icon_name(icon);
     icon.set_pixel_size(24);
     icon.set_halign(gtk::Align::Center);
     icon.set_valign(gtk::Align::Center);
@@ -2367,13 +2406,11 @@ fn link_card_w(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look, link
     texts.set_hexpand(true);
     texts.set_valign(gtk::Align::Center);
     if !l.title.is_empty() {
-        let t = gtk::Label::new(Some(&l.title));
+        let t = gtk::Label::new(Some(&clip_middle(&l.title, if big { 70 } else { 48 })));
         t.add_css_class("link-title");
         t.set_xalign(0.0);
         t.set_wrap(true);
         t.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-        t.set_lines(2);
-        t.set_ellipsize(gtk::pango::EllipsizeMode::End);
         t.set_max_width_chars(if big { 34 } else { 24 });
         texts.append(&t);
     }
@@ -2669,7 +2706,7 @@ struct Info {
     /// ...else the current tab's name with carets to move between them
     carets: gtk::Box,
     photos: gtk::FlowBox,
-    files: gtk::Box,
+    files: gtk::FlowBox,
     links: gtk::FlowBox,
     /// "Show more" under photos, files, links
     more: [gtk::Button; 3],
@@ -2704,7 +2741,13 @@ fn build_info() -> Info {
     photos.set_row_spacing(4);
     photos.set_column_spacing(4);
     photos.set_homogeneous(true);
-    let files = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let files = gtk::FlowBox::new();
+    files.set_selection_mode(gtk::SelectionMode::None);
+    files.set_min_children_per_line(1);
+    files.set_max_children_per_line(3);
+    files.set_row_spacing(4);
+    files.set_column_spacing(4);
+    files.set_homogeneous(true);
     let links = gtk::FlowBox::new();
     links.set_selection_mode(gtk::SelectionMode::None);
     links.set_min_children_per_line(1);
@@ -3044,11 +3087,12 @@ fn refresh_info(u: &Rc<Ui>) {
         st.info_chat = Some(id);
         st.info_photos.clear();
         st.info_links.clear();
+        st.info_files.clear();
         st.link_waiters.clear();
         st.media.retain(|k, _| k.0 != id);
     }
     u.info.photos.remove_all();
-    clear(&u.info.files);
+    u.info.files.remove_all();
     u.info.links.remove_all();
     for kind in [Kind::Photos, Kind::Files, Kind::Links] {
         u.info.more[kind_idx(kind)].set_visible(false);
@@ -3127,11 +3171,10 @@ fn on_media(u: &Rc<Ui>, chat_id: i64, kind: Kind, offset: usize, items: Vec<Medi
             }
         }
         Kind::Files => {
-            for it in &items {
-                u.info.files.append(&file_chip(u, it));
-            }
-            if offset == 0 && u.info.files.first_child().is_none() {
-                u.info.files.append(&empty("No files in this conversation"));
+            u.st.borrow_mut().info_files.extend(items);
+            render_files(u);
+            if offset == 0 && u.st.borrow().info_files.is_empty() {
+                u.info.files.insert(&empty("No files in this conversation"), -1);
             }
         }
         Kind::Links => {
@@ -3144,48 +3187,324 @@ fn on_media(u: &Rc<Ui>, chat_id: i64, kind: Kind, offset: usize, items: Vec<Medi
     }
 }
 
-/// A file of the chat as a chip; clicking copies it from the Mac and opens it here.
-fn file_chip(u: &Rc<Ui>, it: &MediaItem) -> gtk::Widget {
-    let chip = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    chip.add_css_class("file-chip");
-    let ext = it.name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    let icon = match ext.as_str() {
-        "pdf" | "doc" | "docx" | "txt" | "rtf" | "pages" | "odt" => "📄",
-        "xls" | "xlsx" | "csv" | "numbers" | "ods" => "📊",
-        "mp3" | "m4a" | "wav" | "caf" | "aac" | "amr" => "🎵",
-        "mov" | "mp4" | "m4v" | "avi" | "mkv" => "🎞",
-        "zip" | "gz" | "tar" | "7z" | "rar" => "🗜",
-        _ => "📎",
+/// Rebuild the Files tab from `info_files`: a tile per file, like the Links tab's.
+fn render_files(u: &Rc<Ui>) {
+    u.info.files.remove_all();
+    let items = u.st.borrow().info_files.clone();
+    for it in &items {
+        u.info.files.append(&file_tile(u, it));
+    }
+}
+
+/// A file as a square tile like the links': the first page or frame where the Mac can draw one, else our
+/// icon for its kind on off-white, with the file name along the bottom. Clicking copies it from the Mac and opens it.
+fn file_tile(u: &Rc<Ui>, it: &MediaItem) -> gtk::Widget {
+    let kind = file_kind("", &it.name);
+    let thumb = kind.thumb() && !it.missing && !u.st.borrow().bad_images.contains(&it.path);
+    let frame = gtk::Overlay::new();
+    frame.add_css_class("link-tile");
+    frame.set_overflow(gtk::Overflow::Hidden);
+    frame.set_size_request(THUMB, THUMB);
+    frame.set_hexpand(false);
+    frame.set_vexpand(false);
+    if thumb {
+        let b = bubble::Bubble::tile(THUMB);
+        b.add_css_class("fixed");
+        load_texture_in(u, &b, &it.path, true);
+        frame.set_child(Some(&b));
+        if kind == FileKind::Video {
+            frame.add_overlay(&play_badge());
+        }
+    } else {
+        frame.add_css_class("plain");
+        let base = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        base.set_size_request(THUMB, THUMB);
+        let g = gtk::Image::from_icon_name(kind.icon());
+        g.set_pixel_size(40);
+        g.add_css_class("tile-glyph");
+        g.set_vexpand(true);
+        g.set_valign(gtk::Align::Center);
+        g.set_halign(gtk::Align::Center);
+        base.append(&g);
+        frame.set_child(Some(&base));
+    }
+    let caption = gtk::Label::new(Some(&it.name));
+    caption.add_css_class("tile-caption");
+    caption.set_halign(gtk::Align::Fill);
+    caption.set_valign(gtk::Align::End);
+    caption.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    caption.set_xalign(0.0);
+    frame.add_overlay(&caption);
+    let detail: Vec<String> = [kind.label().to_string(), fmt_size(it.size), fmt_date(it.date)].into_iter().filter(|s| !s.is_empty()).collect();
+    if it.missing {
+        frame.add_css_class("file-missing");
+        frame.set_tooltip_text(Some(&format!("{}\n{}\nMessages hasn't downloaded this file to your Mac", it.name, detail.join(" · "))));
+    } else {
+        frame.set_tooltip_text(Some(&format!("{}\n{}\nClick to copy from the Mac and open", it.name, detail.join(" · "))));
+        frame.set_cursor_from_name(Some("pointer"));
+        let (u2, it2, f2) = (u.clone(), it.clone(), frame.clone());
+        let g = gtk::GestureClick::new();
+        g.connect_released(move |_, _, _, _| start_download(&u2, &it2, f2.upcast_ref()));
+        frame.add_controller(g);
+    }
+    frame.upcast()
+}
+
+/// A small "play" disc over a video's first frame.
+fn play_badge() -> gtk::Widget {
+    let l = gtk::Label::new(Some("▶"));
+    l.add_css_class("play-badge");
+    l.set_halign(gtk::Align::Center);
+    l.set_valign(gtk::Align::Center);
+    l.set_can_target(false);
+    l.upcast()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileKind {
+    Pdf,
+    Video,
+    Audio,
+    Contact,
+    Doc,
+    Sheet,
+    Archive,
+    Other,
+}
+
+impl FileKind {
+    fn label(self) -> &'static str {
+        match self {
+            FileKind::Pdf => "PDF",
+            FileKind::Video => "Video",
+            FileKind::Audio => "Audio",
+            FileKind::Contact => "Contact",
+            FileKind::Doc => "Document",
+            FileKind::Sheet => "Spreadsheet",
+            FileKind::Archive => "Archive",
+            FileKind::Other => "File",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            FileKind::Video => "bf-video-symbolic",
+            FileKind::Audio => "bf-audio-symbolic",
+            FileKind::Contact => "bf-contact-symbolic",
+            FileKind::Archive => "bf-archive-symbolic",
+            _ => "bf-file-symbolic",
+        }
+    }
+
+    /// The Mac's Quick Look can draw a picture of these (a PDF's first page, a video's first frame). It only
+    /// has a generic note for audio and can't draw a vCard.
+    fn thumb(self) -> bool {
+        matches!(self, FileKind::Pdf | FileKind::Video)
+    }
+}
+
+/// What kind of file this is, from its MIME type when the database has one, else its extension.
+fn file_kind(mime: &str, name: &str) -> FileKind {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = ext.as_str();
+    if mime == "application/pdf" || ext == "pdf" {
+        FileKind::Pdf
+    } else if mime.starts_with("video/") || matches!(ext, "mov" | "mp4" | "m4v" | "3gp" | "avi" | "mkv" | "mpg" | "mpeg") {
+        FileKind::Video
+    } else if mime.starts_with("audio/") || matches!(ext, "mp3" | "m4a" | "wav" | "caf" | "aac" | "amr" | "aiff" | "flac") {
+        FileKind::Audio
+    } else if mime == "text/vcard" || ext == "vcf" {
+        FileKind::Contact
+    } else if mime.contains("spreadsheet") || mime.contains("excel") || matches!(ext, "xls" | "xlsx" | "csv" | "numbers" | "ods") {
+        FileKind::Sheet
+    } else if mime.contains("zip") || mime.contains("compressed") || matches!(ext, "zip" | "gz" | "tar" | "7z" | "rar") {
+        FileKind::Archive
+    } else if mime.contains("word") || mime.starts_with("text/") || matches!(ext, "doc" | "docx" | "txt" | "rtf" | "pages" | "odt" | "md") {
+        FileKind::Doc
+    } else {
+        FileKind::Other
+    }
+}
+
+/// `s` shortened to about `max` characters by cutting out the middle ("Start of the title … the end of it"), at word
+/// boundaries where there are any, so the end (a file's extension, a product's size) stays. Card titles are limited
+/// this way instead of with the label's `lines` + ellipsize, because GTK then asks for as much width as the lines
+/// need, which let a long title push a card wider than its cap.
+fn clip_middle(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.trim().chars().collect();
+    if chars.len() <= max {
+        return chars.into_iter().collect();
+    }
+    let keep = max.saturating_sub(1);
+    let (head, tail) = (keep * 3 / 5, keep - keep * 3 / 5);
+    let head: String = chars[..head].iter().collect();
+    let tail: String = chars[chars.len() - tail..].iter().collect();
+    // back to a word end on the head side, forward to a word start on the tail side (when that costs little)
+    let head = head.rfind(' ').filter(|i| *i > head.len() / 2).map_or(head.as_str(), |i| &head[..i]).trim_end_matches([' ', ',', '-', '–', '|', ':']);
+    let tail = tail.find(' ').filter(|i| *i < tail.len() / 2).map_or(tail.as_str(), |i| &tail[i + 1..]);
+    format!("{head}…{tail}")
+}
+
+/// "2:16", "1:02:03"
+fn fmt_duration(secs: f64) -> String {
+    let t = secs.round() as i64;
+    let (h, m, s) = (t / 3600, t / 60 % 60, t % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// A file of a message, as the chat card needs it.
+struct FileRef {
+    path: String,
+    name: String,
+    kind: FileKind,
+    size: i64,
+    missing: bool,
+}
+
+const FILE_W: i32 = 300;
+
+/// The extra facts for a file, asked of the Mac once (the chat redraws when they arrive).
+fn file_info_for(u: &Ui, f: &FileRef) -> Option<crate::mac::FileInfo> {
+    if f.missing || f.path.is_empty() || !matches!(f.kind, FileKind::Video | FileKind::Audio | FileKind::Contact) {
+        return None;
+    }
+    if let Some(i) = u.st.borrow().file_info.get(&f.path) {
+        return i.clone();
+    }
+    u.st.borrow_mut().file_info.insert(f.path.clone(), None);
+    u.send(Cmd::FileInfo { path: f.path.clone(), contact: f.kind == FileKind::Contact });
+    None
+}
+
+/// A file in a message, drawn like a link card: its name and kind (with length, size, or the contact's
+/// details) beside a small picture: the first page or frame where the Mac can draw one, else our icon for
+/// its kind. Clicking copies it from the Mac and opens it; one that isn't on the Mac is dimmed.
+fn file_card(u: &Rc<Ui>, f: &FileRef, look: bubble::Look) -> gtk::Widget {
+    let info = file_info_for(u, f);
+    let b = bubble::Bubble::card(look, FILE_W, 0);
+    let texts = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    texts.set_hexpand(true);
+    texts.set_valign(gtk::Align::Center);
+    let title = match &info {
+        Some(i) if f.kind == FileKind::Contact && !i.name.is_empty() => i.name.clone(),
+        _ => f.name.clone(),
     };
-    let i = gtk::Label::new(None);
-    i.set_markup(&format!("<span size='170%'>{icon}</span>"));
-    chip.append(&i);
-    let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    text.set_valign(gtk::Align::Center);
-    text.set_hexpand(true);
-    let n = gtk::Label::new(Some(&it.name));
-    n.set_xalign(0.0);
-    n.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-    let detail: Vec<String> = [fmt_size(it.size), fmt_date(it.date)].into_iter().filter(|s| !s.is_empty()).collect();
-    let d = gtk::Label::new(Some(&detail.join(" · ")));
-    d.add_css_class("dim");
+    let t = gtk::Label::new(Some(&clip_middle(&title, 48)));
+    t.add_css_class("link-title");
+    t.set_xalign(0.0);
+    t.set_wrap(true);
+    t.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    t.set_max_width_chars(24);
+    texts.append(&t);
+    let mut parts = vec![f.kind.label().to_string()];
+    if let Some(i) = &info {
+        if let Some(d) = i.duration {
+            parts.push(fmt_duration(d));
+        }
+        for extra in [&i.org, &i.phone] {
+            if !extra.is_empty() {
+                parts.push(extra.clone());
+            }
+        }
+    }
+    let size = fmt_size(f.size);
+    if !size.is_empty() && f.kind != FileKind::Contact {
+        parts.push(size);
+    }
+    if f.missing {
+        parts.push("Not on your Mac".into());
+    }
+    let d = gtk::Label::new(Some(&parts.join(" · ")));
+    d.add_css_class("link-site");
     d.set_xalign(0.0);
     d.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    text.append(&n);
-    text.append(&d);
-    chip.append(&text);
-    if it.missing {
-        chip.add_css_class("missing");
-        chip.set_tooltip_text(Some("Messages hasn't downloaded this file to your Mac"));
+    d.set_max_width_chars(24);
+    texts.append(&d);
+
+    let thumb = f.kind.thumb() && !f.missing && !f.path.is_empty() && !u.st.borrow().bad_images.contains(&f.path);
+    let tile: gtk::Widget = if thumb {
+        let t = bubble::Bubble::tile(56);
+        t.add_css_class("fixed");
+        load_texture(u, &t, &f.path);
+        if f.kind == FileKind::Video {
+            let o = gtk::Overlay::new();
+            o.set_child(Some(&t));
+            o.add_overlay(&play_badge());
+            o.set_valign(gtk::Align::Center);
+            o.set_hexpand(false);
+            o.upcast()
+        } else {
+            t.upcast()
+        }
     } else {
-        chip.set_cursor_from_name(Some("pointer"));
-        chip.set_tooltip_text(Some("Copy from the Mac and open"));
-        let (u2, it2, chip2) = (u.clone(), it.clone(), chip.clone());
-        let g = gtk::GestureClick::new();
-        g.connect_released(move |_, _, _, _| start_download(&u2, &it2, chip2.upcast_ref()));
-        chip.add_controller(g);
+        glyph(f.kind.icon())
+    };
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.append(&texts);
+    row.append(&tile);
+    b.add(&row);
+    if f.missing {
+        b.add_css_class("file-missing");
+        b.set_tooltip_text(Some("Messages hasn't downloaded this file to your Mac"));
+    } else if !f.path.is_empty() {
+        b.set_tooltip_text(Some("Copy from the Mac and open"));
+        b.set_cursor_from_name(Some("pointer"));
+        let item = crate::mac::MediaItem { path: f.path.clone(), name: f.name.clone(), ..Default::default() };
+        let (u2, b2) = (u.clone(), b.clone());
+        let click = gtk::GestureClick::new();
+        click.connect_released(move |g, _, _, _| {
+            g.set_state(gtk::EventSequenceState::Claimed);
+            start_download(&u2, &item, b2.upcast_ref());
+        });
+        b.add_controller(click);
     }
-    chip.upcast()
+    b.upcast()
+}
+
+/// A video on the Mac drawn like a photo: its first frame at the photo size, a play disc in the middle and the
+/// length in a corner. Clicking copies it from the Mac and opens it (playing it inside the app comes later).
+fn video_preview(u: &Rc<Ui>, f: &FileRef, look: bubble::Look) -> gtk::Widget {
+    let info = file_info_for(u, f);
+    let p = bubble::Bubble::photo(look, 240, 180);
+    load_texture(u, &p, &f.path); // first, so its spinner is the first child (see `stop_spin`)
+    let over = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    over.set_hexpand(true);
+    over.set_vexpand(true);
+    over.set_can_target(false);
+    let badge = play_badge();
+    badge.add_css_class("big");
+    badge.set_vexpand(true);
+    over.append(&badge);
+    if let Some(d) = info.and_then(|i| i.duration) {
+        let pill = gtk::Label::new(Some(&fmt_duration(d)));
+        pill.add_css_class("video-pill");
+        pill.set_halign(gtk::Align::Start);
+        over.append(&pill);
+    }
+    p.append(&over);
+    let tip = [f.name.clone(), [f.kind.label().to_string(), fmt_size(f.size)].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "), "Click to copy from the Mac and open".into()];
+    p.set_tooltip_text(Some(&tip.join("\n")));
+    p.set_cursor_from_name(Some("pointer"));
+    let item = crate::mac::MediaItem { path: f.path.clone(), name: f.name.clone(), ..Default::default() };
+    let (u2, p2) = (u.clone(), p.clone());
+    let click = gtk::GestureClick::new();
+    click.connect_released(move |g, _, _, _| {
+        g.set_state(gtk::EventSequenceState::Claimed);
+        start_download(&u2, &item, p2.upcast_ref());
+    });
+    p.add_controller(click);
+    p.upcast()
+}
+
+/// Redraw the open conversation soon (once, however many things ask).
+fn queue_conv_render(u: &Rc<Ui>) {
+    if !u.render_queued.replace(true) {
+        let u2 = u.clone();
+        glib::idle_add_local_once(move || {
+            u2.render_queued.set(false);
+            render_conv(&u2);
+        });
+    }
 }
 
 fn files_dir(u: &Ui) -> PathBuf {
@@ -4241,6 +4560,12 @@ mod tests {
     #[test]
     fn summaries() {
         assert_eq!(summary(&json!({"text": "\u{FFFC}", "attachments": [{"mime_type": "image/heic"}]})), "📷 Photo");
+        let long = "King Will Silicone Wedding Rings For Men,6.6mm Wide 1.8mm Thick Rubber Wedding Bands,Breathable Design,Comfort Fit Size 7-13";
+        let c = clip_middle(long, 70);
+        assert!(c.starts_with("King Will Silicone") && c.ends_with("Fit Size 7-13") && c.contains('…') && c.chars().count() <= 70, "{c}");
+        assert_eq!(clip_middle("short title", 70), "short title");
+        let f = clip_middle("Packing_list_with_no_spaces_at_all_but_a_really_long_name_for_the_trip_2026.docx", 48);
+        assert!(f.ends_with(".docx") && f.chars().count() <= 48, "{f}");
         assert_eq!(summary(&json!({"text": "hi\nthere", "attachments": []})), "hi");
     }
 }
