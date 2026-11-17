@@ -2,15 +2,19 @@
 
 BubbleFairy is an open-source (MIT) Linux desktop app for iMessage. The Mac does all of the iMessage work. BubbleFairy is the window on Linux that ferries messages to and from it over the local network.
 
-Status (2026-11-15): Phase 1 is built and running from source against Peter's Mac. Most of Phase 1.1 is built too (new conversations, local read state, sending files, link previews, avatars, a faded "sending" bubble with spinner that shows the local photo until the real one arrives). Not started: Phase 1.2 (conversation info), the contacts integration, the app icon, and Phase 2 (wizard and Flatpak packaging).
+Status (2026-11-17): Phases 1, 1.1 and 1.2 are built and running from source against Peter's Mac, and so is the contacts integration. What's left is the app icon, the polish list, and Phase 2 (setup wizard, Flatpak packaging, release workflow, Flathub). Features built beyond the original plan (details in `CLAUDE.md`'s Layout notes):
+
+- Viewer: video files play in it (copied from the Mac with progress, GStreamer player), YouTube links play in an embedded WebKitGTK view, full screen, prev/next across photos, videos and YouTube (a slide transition for pictures), autoplay only for the item you clicked.
+- Info panel: Photos, Videos (video files plus YouTube links), Files and Links tabs, constant width (4 photo columns), contact cards and maps.
+- Chat: a scroll anchored to the bottom, a jump-to-newest button, file, video, link and photo-stack cards, a responsive sidebar (avatars only when narrow).
+- New message: picking or typing a contact opens the existing conversation with that person (any of their addresses, found on the Mac even when older than the chats list's 100), and the sidebar glides to it.
 
 ### Not yet checked on a real run
 
-- A message to Sue, sent from the app: does it go as iMessage and land in the same conversation?
 - Clicking a desktop notification opens its chat.
 - Local read state: opening an unread chat clears its dot (the headless test window never counts as focused).
-- A message with a link plus other text, and a link card next to a bubble.
 - A real group chat with more than four people (the "+N" circle).
+- The viewer's YouTube player and video playback inside the real Flatpak (WebKit's own sandbox warns it "is not usable" under `flatpak run`; audio needs the PulseAudio socket, which `scripts/dev.sh` now grants).
 
 ## Decisions
 
@@ -61,7 +65,7 @@ The connection settings (host, user and imsg path) are entered once in a simple 
   - New group chats aren't possible: imsg's `chats.create` needs its bridge, which needs SIP off (out of scope).
 - Read state, kept locally. Chats read on other devices already clear (see imsg facts: `mac::fix_unread`, with the chat list refreshed every 60 s). Chats read only in BubbleFairy can't be marked read on the Mac: imsg's `read` needs SIP off, and Messages has no AppleScript for it. So the app remembers, per chat, the newest message seen in BubbleFairy, and hides the dot until something newer arrives. Nothing goes back to the Mac.
 - Sending attachments (built): paperclip button, drag and drop onto the conversation, or paste (files or an image). Waiting files show as removable cards above the composer. Each file is copied over SSH to `~/Library/Application Support/BubbleFairy/outgoing/<random>/` on the Mac (copies older than a day are cleared on the next upload) and sent as its own `send {file}`, then the text. VERIFY: Messages can read files from that folder.
-- Showing other received attachment types (video, PDF, audio) better than a file row.
+- Showing other received attachment types (built): link-style cards for files with their kind, length and size, large first-frame previews for videos, middle-truncated names; a video plays in the viewer, any other file is copied over SSH and opened.
 - Contact photos as avatars (built for the chat list, header, group senders and the To suggestions): `mac::fetch_contacts` reads every `AddressBook-v22.abcddb` once per connection (`ZTHUMBNAILIMAGEDATA`: type byte 1 = the picture follows; type 2 = a file name in the database's hidden `_EXTERNAL_DATA` folder, usually a full-size original that the Mac shrinks to 160 px with `sips`), matched to a person by email or the last ten digits of a phone number. No photo means coloured initials, or a generic person for numbers. Group chats show their members' circles inside one disc (equal sizes; Messages may size them by member order), with three circles and a "+N" circle past four people; the conversation header shows them as an overlapping stack instead. Not done: photos people share through Messages' Name & Photo (Memoji etc., in `~/Library/Messages/NickNameCache`, format unchecked), group chat photos, and refreshing photos while the app runs (restart to pick up changes).
 - Link previews:
   - Built: Apple's own saved preview (title, site, image) is read from chat.db's `payload_data` over SSH (`mac::link_preview`, using the `plist` crate) and drawn as a card; clicking opens the link. The site icon isn't drawn yet.
@@ -69,25 +73,23 @@ The connection settings (host, user and imsg path) are entered once in a simple 
   - Layout follows Messages: a preview picture of 400x200 px or more goes across the top in its own proportions (never cropped); a smaller one (a site logo) sits beside the title as an icon. Messages saves no "is this a logo" flag, so this is a size rule. The card is off-white in both colour schemes.
   - Never fetch automatically for links from unknown senders, because that reveals the user's IP address to the link's owner.
 
-### Phase 1.2: conversation info
+### Phase 1.2: conversation info (built)
 
-- An info button in the conversation header opens a panel for the chat:
-  - Participants (name, handle, avatar). Contact cards (phones, emails, address, birthday) come with the contacts integration below.
-  - Tabs to browse the whole chat's Photos, Attachments and Links.
-- imsg has no "messages with attachments only" query, so read chat.db directly over SSH (as `mac::add_services` already does): `attachment` joined through `message_attachment_join` and `chat_message_join` for one chat, newest first, paged. Links come from message text.
-- The photo viewer can then walk every photo in the chat, not only the ones loaded in the conversation (for now it stops at the earliest loaded photo).
+- An info button in the conversation header opens a panel over the chat's right side: participants and contact cards (phones, emails, addresses with maps, birthday), and Photos, Videos, Files and Links tabs for the whole chat, read from chat.db over SSH (imsg has no attachments-only query) and paged ("Show more"). Details are in `CLAUDE.md`.
+- The viewer walks the loaded photos, or the loaded videos and YouTube links, of the tab it was opened from. It never loads older history on its own (Peter's call).
 
 ### Polish (later)
 
 - All text in the app should be selectable to copy (message text already is; contact cards, the info panel, headers and so on aren't).
 - Contact cards: a copy-to-clipboard button on each phone number and email, next to the message and email buttons.
-- Info panel: open or save a file from the Files tab (they live on the Mac), and a way to scroll the photo viewer past the loaded photos.
+- Files: a way to save a file from the Files tab to a chosen place (clicking one opens it from the app's cache).
+- The control-layout question for the viewer is settled: photos and video files use the shared control bar and fading buttons; YouTube keeps its own player controls with our buttons in a strip above it that shrinks away when they hide.
 
 ### App icon (before the first release)
 
 A chat bubble with a cartoon magic wand: a stick with a five-point star on the end, drawn in a cartoon style with a few little sparkles around the star. Peter will generate options with Draw Things on his Mac; Claude writes the prompt (a bold, simple, flat-colour sticker look that still reads at 16 px) and later turns the chosen picture into the Flatpak icon set (scalable SVG plus a symbolic version). Needs to be done before Flathub submission.
 
-### Contacts integration (later phase, read-only)
+### Contacts integration (read-only; built except where noted)
 
 The Mac's Contacts databases are readable over SSH (about 360 contacts on Peter's Mac, with names, organisations, phones, emails, addresses, birthdays, notes and photos), through the same Full Disk Access as chat.db. Editing isn't possible, and isn't wanted. Planned uses:
 
@@ -117,9 +119,11 @@ The wizard does everything else:
 8. Sends a test message (optional). It warns the user to watch the Mac for the Automation prompt.
 9. Flatpak packaging and a GitHub Actions release workflow (push a tag `vX.Y.Z` to build the Flatpak bundle), then submission to Flathub.
 
+Flatpak needs found while building (not yet in a manifest): the PulseAudio socket (video and YouTube audio), the GNOME runtime's WebKitGTK 6.0 (the `webkit6` crate), GStreamer's `gtk4paintablesink` for local video, our icons from `data/icons` installed under `share/icons`, network access, and Wayland/X11 and DRI. Check that WebKit works without its own sandbox when it runs inside Flatpak.
+
 ### Later
 
-Reactions/tapbacks, search, running in the background or in the tray, photos people share through Messages' Name & Photo. A Mac companion app is a possibility. An iPhone-only route is unlikely, because iOS gives third-party apps no access to iMessage (not researched).
+Reactions/tapbacks, message search, running in the background or in the tray, a privacy setting for the address maps and for YouTube (both contact third parties from the Linux machine or the Mac when used), photos people share through Messages' Name & Photo. A Mac companion app is a possibility. An iPhone-only route is unlikely, because iOS gives third-party apps no access to iMessage (not researched).
 
 ## Design direction
 
