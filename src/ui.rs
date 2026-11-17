@@ -89,7 +89,6 @@ struct State {
     /// per chat and kind: where the next page starts, and whether there is one
     media: HashMap<(i64, Kind), (usize, bool)>,
     /// the info panel's photo thumbnails, for the viewer
-    info_photos: Vec<(String, bubble::Bubble)>,
     /// the viewer was opened from the info panel (so a conversation redraw mustn't swap its photos)
     viewer_panel: bool,
     /// address text -> its map (None: couldn't be found, don't ask again this session)
@@ -110,7 +109,7 @@ struct State {
     /// pictures to ask the Mac for, oldest first; sent newest-first once the chat has been built
     fetch_q: Vec<(String, bool)>,
     /// photo widgets of the open chat in display order (the viewer cycles through these)
-    photos: Vec<(String, bubble::Bubble)>,
+    photos: Vec<crate::viewer::Item>,
     /// full-size viewer fetches in flight
     waiting_full: HashSet<String>,
     host_key: String,
@@ -1020,6 +1019,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         let u = ui.clone();
         glib::timeout_add_local_once(Duration::from_millis(ms), move || u.side_toggle.emit_clicked());
     }
+    if let Ok(id) = std::env::var("BF_YT") {
+        // dev aid: open the viewer on this YouTube video id
+        let u = ui.clone();
+        glib::timeout_add_local_once(Duration::from_millis(1500), move || u.viewer.open_youtube(&id));
+    }
     if std::env::var_os("BF_VIEW").is_some() {
         // dev aid: open the viewer on the newest loaded photo shortly before BF_SHOT fires
         // BF_VIEW=<ms> sets when it opens; otherwise 0.9 s before the shot
@@ -1028,7 +1032,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         let u = ui.clone();
         glib::timeout_add_local_once(Duration::from_millis(at), move || {
             let items = u.st.borrow().photos.clone();
-            if let Some((last, _)) = items.iter().rev().find(|(_, b)| b.texture().is_some()).cloned() {
+            if let Some((last, _)) = items.iter().rev().find(|(_, w)| w.downcast_ref::<bubble::Bubble>().is_some_and(|b| b.texture().is_some())).cloned() {
                 u.viewer.open(items, &last);
             }
         });
@@ -2547,11 +2551,12 @@ fn plain_link_card(u: &Rc<Ui>, url: &str, look: bubble::Look) -> gtk::Widget {
     b.add(&row);
     b.set_tooltip_text(Some(url));
     b.set_cursor_from_name(Some("pointer"));
-    let (u2, url) = (u.clone(), url.to_string());
+    let key = chat_youtube(u, url, b.upcast_ref());
+    let (u2, url, b2) = (u.clone(), url.to_string(), b.clone().upcast::<gtk::Widget>());
     let click = gtk::GestureClick::new();
     click.connect_released(move |g, _, _, _| {
         g.set_state(gtk::EventSequenceState::Claimed);
-        open_link(&u2, &url);
+        open_link(&u2, &url, &b2, key.as_deref());
     });
     b.add_controller(click);
     b.upcast()
@@ -2702,10 +2707,11 @@ fn link_card_w(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look, link
     b.set_tooltip_text(Some(&l.url));
     b.set_cursor_from_name(Some("pointer"));
     let click = gtk::GestureClick::new();
-    let (u2, url) = (u.clone(), l.url.clone());
+    let key = chat_youtube(u, &l.url, b.upcast_ref());
+    let (u2, url, b2) = (u.clone(), l.url.clone(), b.clone().upcast::<gtk::Widget>());
     click.connect_released(move |g, _, _, _| {
         g.set_state(gtk::EventSequenceState::Claimed);
-        open_link(&u2, &url);
+        open_link(&u2, &url, &b2, key.as_deref());
     });
     b.add_controller(click);
     b.upcast()
@@ -2820,15 +2826,13 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
     }
     p.set_cursor_from_name(Some("pointer"));
     let click = gtk::GestureClick::new();
-    let (u2, path2) = (u.clone(), path.to_string());
+    let (u2, path2, p2) = (u.clone(), path.to_string(), p.clone().upcast::<gtk::Widget>());
     click.connect_released(move |g, _, _, _| {
         g.set_state(gtk::EventSequenceState::Claimed);
-        let items = u2.st.borrow().photos.clone();
-        u2.st.borrow_mut().viewer_panel = false;
-        u2.viewer.open(items, &path2);
+        open_media(&u2, &path2, &p2);
     });
     p.add_controller(click);
-    u.st.borrow_mut().photos.push((path.to_string(), p.clone()));
+    u.st.borrow_mut().photos.push((path.to_string(), p.clone().upcast()));
     load_texture(u, &p, path);
     p
 }
@@ -3344,12 +3348,58 @@ fn close_info(u: &Rc<Ui>) {
     u.st.borrow_mut().info_chat = None;
 }
 
-/// A clicked link: YouTube plays in the viewer, anything else opens in the browser.
-fn open_link(u: &Rc<Ui>, url: &str) {
-    match crate::mac::youtube_id(url) {
-        Some(id) => u.viewer.open_youtube(&id),
-        None => gtk::UriLauncher::new(url).launch(Some(&u.win), gio::Cancellable::NONE, |_| {}),
+/// A clicked link: a YouTube one (with its `key` in the viewer's sequence) plays in the viewer, anything else opens
+/// in the browser.
+fn open_link(u: &Rc<Ui>, url: &str, from: &gtk::Widget, key: Option<&str>) {
+    match (key, crate::mac::youtube_id(url)) {
+        (Some(k), _) => open_media(u, k, from),
+        (None, Some(id)) => open_media(u, &crate::viewer::yt_key(&id, 0), from), // alone: not in any list
+        (None, None) => gtk::UriLauncher::new(url).launch(Some(&u.win), gio::Cancellable::NONE, |_| {}),
     }
+}
+
+/// A YouTube link card in the chat joins the viewer's sequence of the chat's pictures and videos; returns its key.
+fn chat_youtube(u: &Rc<Ui>, url: &str, card: &gtk::Widget) -> Option<String> {
+    let id = crate::mac::youtube_id(url)?;
+    let mut st = u.st.borrow_mut();
+    let key = crate::viewer::yt_key(&id, st.photos.len());
+    st.photos.push((key.clone(), card.clone()));
+    Some(key)
+}
+
+/// Open the viewer on `key`, walking the chat's pictures and videos if `from` is in the chat, or the info panel's
+/// the photos or the videos and YouTube links (newest first) of the tab it is in, if it is in the panel.
+fn open_media(u: &Rc<Ui>, key: &str, from: &gtk::Widget) {
+    let in_panel = from.is_ancestor(&u.info.panel);
+    let mut items = if in_panel { info_sequence(u, from.is_ancestor(&u.info.videos)) } else { u.st.borrow().photos.clone() };
+    u.st.borrow_mut().viewer_panel = in_panel;
+    if !items.iter().any(|i| i.0 == key) {
+        items = vec![(key.to_string(), from.clone())]; // not in the list (yet): just this one
+    }
+    u.viewer.open(items, key);
+}
+
+/// The info panel's sequence for the viewer, newest first: the Photos tab's photos, or the Videos tab's video files and
+/// YouTube links together (you chose one kind to look at). The tiles carry "<date>|<key>" as their widget name.
+fn info_sequence(u: &Rc<Ui>, videos: bool) -> Vec<crate::viewer::Item> {
+    let mut v: Vec<(i64, crate::viewer::Item)> = vec![];
+    for flow in [if videos { &u.info.videos } else { &u.info.photos }] {
+        let mut c = flow.first_child();
+        while let Some(fc) = c {
+            if let Some(w) = fc.downcast_ref::<gtk::FlowBoxChild>().and_then(|f| f.child()) {
+                if let Some((date, key)) = w.widget_name().split_once('|')
+                    && let Ok(date) = date.parse::<i64>()
+                {
+                    // a video's picture is the tile's inner bubble; a YouTube tile is its own widget
+                    let item = if key.starts_with("yt:") { w.clone() } else { w.clone().downcast::<gtk::Overlay>().ok().and_then(|o| o.child()).unwrap_or(w.clone()) };
+                    v.push((date, (key.to_string(), item)));
+                }
+            }
+            c = fc.next_sibling();
+        }
+    }
+    v.sort_by_key(|(d, _)| std::cmp::Reverse(*d));
+    v.into_iter().map(|(_, i)| i).collect()
 }
 
 fn clear(b: &impl IsA<gtk::Widget>) {
@@ -3364,7 +3414,6 @@ fn refresh_info(u: &Rc<Ui>) {
     {
         let mut st = u.st.borrow_mut();
         st.info_chat = Some(id);
-        st.info_photos.clear();
         st.info_links.clear();
         st.info_files.clear();
         st.info_videos.clear();
@@ -3434,16 +3483,14 @@ fn on_media(u: &Rc<Ui>, chat_id: i64, kind: Kind, offset: usize, items: Vec<Medi
                 let b = bubble::Bubble::tile(THUMB);
                 b.add_css_class("fixed");
                 b.set_cursor_from_name(Some("pointer"));
-                let (u2, path) = (u.clone(), it.path.clone());
+                let (u2, path, b2) = (u.clone(), it.path.clone(), b.clone().upcast::<gtk::Widget>());
                 let g = gtk::GestureClick::new();
                 g.connect_released(move |g, _, _, _| {
                     g.set_state(gtk::EventSequenceState::Claimed);
-                    let items = u2.st.borrow().info_photos.clone();
-                    u2.st.borrow_mut().viewer_panel = true;
-                    u2.viewer.open(items, &path);
+                    open_media(&u2, &path, &b2);
                 });
                 b.add_controller(g);
-                u.st.borrow_mut().info_photos.push((it.path.clone(), b.clone()));
+                b.set_widget_name(&format!("{}|{}", it.date, it.path)); // read back by `info_sequence`
                 load_texture_in(u, &b, &it.path, true);
                 u.info.photos.append(&b);
             }
@@ -3531,12 +3578,10 @@ fn file_tile(u: &Rc<Ui>, it: &MediaItem) -> gtk::Widget {
         let b = frame.child().and_downcast::<bubble::Bubble>().expect("video tile picture");
         b.add_css_class("video");
         u.st.borrow_mut().video_meta.insert(it.path.clone(), (it.name.clone(), it.size));
+        frame.set_widget_name(&format!("{}|{}", it.date, it.path)); // read back by `info_sequence`
         let (u2, path) = (u.clone(), it.path.clone());
         let g = gtk::GestureClick::new();
-        g.connect_released(move |_, _, _, _| {
-            u2.st.borrow_mut().viewer_panel = true;
-            u2.viewer.open(vec![(path.clone(), b.clone())], &path);
-        });
+        g.connect_released(move |_, _, _, _| open_media(&u2, &path, b.upcast_ref()));
         frame.add_controller(g);
     } else {
         frame.set_tooltip_text(Some(&format!("{}\n{}\nClick to copy from the Mac and open", it.name, detail.join(" · "))));
@@ -3788,15 +3833,13 @@ fn video_preview(u: &Rc<Ui>, f: &FileRef, look: bubble::Look) -> gtk::Widget {
     {
         let mut st = u.st.borrow_mut();
         st.video_meta.insert(f.path.clone(), (f.name.clone(), f.size));
-        st.photos.push((f.path.clone(), p.clone()));
+        st.photos.push((f.path.clone(), p.clone().upcast()));
     }
-    let (u2, path) = (u.clone(), f.path.clone());
+    let (u2, path, p2) = (u.clone(), f.path.clone(), p.clone().upcast::<gtk::Widget>());
     let click = gtk::GestureClick::new();
     click.connect_released(move |g, _, _, _| {
         g.set_state(gtk::EventSequenceState::Claimed);
-        let items = u2.st.borrow().photos.clone();
-        u2.st.borrow_mut().viewer_panel = false;
-        u2.viewer.open(items, &path);
+        open_media(&u2, &path, &p2);
     });
     p.add_controller(click);
     p.upcast()
@@ -3905,9 +3948,14 @@ fn link_tile(u: &Rc<Ui>, url: &str, l: Option<&crate::mac::LinkPreview>) -> gtk:
         None => url.to_string(),
     }));
     frame.set_cursor_from_name(Some("pointer"));
-    let (u2, url) = (u.clone(), url.to_string());
+    let (u2, url, f2) = (u.clone(), url.to_string(), frame.clone());
     let g = gtk::GestureClick::new();
-    g.connect_released(move |_, _, _, _| open_link(&u2, &url));
+    g.connect_released(move |_, _, _, _| {
+        // a YouTube tile's slot (its parent) is named "<date>|<key>": the key in the panel's sequence
+        let slot = f2.parent();
+        let key = slot.as_ref().map(|p| p.widget_name().to_string()).and_then(|n| n.split_once('|').map(|x| x.1.to_string()));
+        open_link(&u2, &url, slot.as_ref().unwrap_or(f2.upcast_ref()), key.as_deref());
+    });
     frame.add_controller(g);
     frame.upcast()
 }
@@ -3961,7 +4009,11 @@ fn render_videos(u: &Rc<Ui>) {
         if it.url.is_empty() {
             u.info.videos.append(&file_tile(u, it));
         } else {
-            u.info.videos.append(&link_slot(u, it));
+            let slot = link_slot(u, it);
+            if let Some(id) = crate::mac::youtube_id(&it.url) {
+                slot.set_widget_name(&format!("{}|{}", it.date, crate::viewer::yt_key(&id, it.row as usize)));
+            }
+            u.info.videos.append(&slot);
         }
     }
     if all.is_empty() && !u.info.more[1].is_visible() {

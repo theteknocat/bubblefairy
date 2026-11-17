@@ -36,13 +36,34 @@ pub struct Hooks {
     pub set_fullscreen: Box<dyn Fn(bool)>,
 }
 
+/// What the viewer walks through: a key and the widget it sits in (to zoom from and back to). A photo or video's key is
+/// its path and its widget a `Bubble` with the picture; a YouTube video's key is `yt:<id>:<n>`.
+pub type Item = (String, gtk::Widget);
+
+fn yt_id(key: &str) -> Option<&str> {
+    key.strip_prefix("yt:").and_then(|k| k.get(..11))
+}
+
+/// A YouTube item's key.
+pub fn yt_key(id: &str, n: usize) -> String {
+    format!("yt:{id}:{n}")
+}
+
+fn ready(item: &Item) -> bool {
+    yt_id(&item.0).is_some() || item.1.downcast_ref::<Bubble>().is_some_and(|b| b.texture().is_some())
+}
+
 pub struct Viewer {
     pub root: gtk::Overlay,
     canvas: Canvas,
     prev: gtk::Button,
     next: gtk::Button,
     /// (path, widget) for every photo in the chat, in display order
-    items: RefCell<Vec<(String, Bubble)>>,
+    items: RefCell<Vec<Item>>,
+    /// the next video to show starts playing: true for the one the user clicked, false when flipping between items
+    autoplay: Cell<bool>,
+    /// the YouTube entry (its key) the web view is showing
+    yt_key: RefCell<Option<String>>,
     idx: Cell<usize>,
     full: RefCell<HashMap<String, gdk::Texture>>,
     hooks: RefCell<Option<Hooks>>,
@@ -202,6 +223,8 @@ impl Viewer {
             close: close.clone(),
             full_btn,
             fullscreen: Cell::new(false),
+            autoplay: Cell::new(false),
+            yt_key: RefCell::new(None),
             web: RefCell::new(None),
         });
         *v.me.borrow_mut() = Rc::downgrade(&v);
@@ -320,11 +343,12 @@ impl Viewer {
     }
 
     /// Open on the photo at `path` (it must have its texture), with `items` to walk through.
-    pub fn open(&self, items: Vec<(String, Bubble)>, path: &str) {
-        let Some(i) = items.iter().position(|(p, b)| p == path && b.texture().is_some()) else { return };
+    pub fn open(&self, items: Vec<Item>, path: &str) {
+        let Some(i) = items.iter().position(|it| it.0 == path && ready(it)) else { return };
         let from = self.source_rect(&items[i].1);
         *self.items.borrow_mut() = items;
         self.idx.set(i);
+        self.autoplay.set(true);
         self.canvas.imp().from.set(from);
         self.canvas.imp().t.set(0.0);
         self.root.set_visible(true);
@@ -334,7 +358,7 @@ impl Viewer {
     }
 
     /// The chat re-rendered (new or older messages): take the new widgets, staying on the same photo.
-    pub fn refresh(&self, items: Vec<(String, Bubble)>) {
+    pub fn refresh(&self, items: Vec<Item>) {
         if !self.is_open() {
             return;
         }
@@ -428,26 +452,49 @@ impl Viewer {
         let found = {
             let items = self.items.borrow();
             let mut j = self.idx.get() as isize + d;
-            while (0..items.len() as isize).contains(&j) && items[j as usize].1.texture().is_none() {
+            while (0..items.len() as isize).contains(&j) && !ready(&items[j as usize]) {
                 j += d;
             }
             (0..items.len() as isize).contains(&j).then_some(j as usize)
         };
         if let Some(j) = found {
+            let prev = self.canvas.imp().tex.borrow().clone();
+            self.autoplay.set(false);
             self.idx.set(j);
             self.show_current();
+            // slide the old picture out and the new one in (not for YouTube, whose web view isn't drawn by the canvas)
+            if let (Some(prev), Some(_)) = (prev, self.canvas.imp().tex.borrow().clone())
+                && self.web.borrow().is_none()
+            {
+                self.canvas.slide(prev, d.signum() as f32);
+            }
         }
     }
 
     /// Show the photo at `idx`: the big version if we have it, else the chat copy plus a fetch.
     fn show_current(&self) {
         let Some((path, b)) = self.items.borrow().get(self.idx.get()).cloned() else { return };
+        if let Some(id) = yt_id(&path) {
+            // the chat re-rendering under us must not reload the video
+            if self.yt_key.borrow().as_deref() != Some(&path) {
+                self.stop_video();
+                self.canvas.imp().tex.take();
+                self.canvas.set_loading(false);
+                self.canvas.queue_draw();
+                self.play_youtube(id);
+                *self.yt_key.borrow_mut() = Some(path.clone());
+            }
+            let (i, n) = (self.idx.get(), self.items.borrow().len());
+            self.prev.set_visible(i > 0);
+            self.next.set_visible(i + 1 < n);
+            return;
+        }
         let hooks = self.hooks.borrow();
         let full = self.full.borrow().get(&path).cloned();
         if let Some(t) = full {
             self.canvas.imp().tex.replace(Some(t));
             self.canvas.set_loading(false);
-        } else if let Some(t) = b.texture() {
+        } else if let Some(t) = b.downcast_ref::<Bubble>().and_then(|b| b.texture()) {
             // the chat copy is capped at CHAT_PX; only a copy that hit the cap has a bigger original
             let bigger = t.width().max(t.height()) as u32 >= crate::mac::CHAT_PX - 10;
             self.canvas.imp().tex.replace(Some(t));
@@ -467,7 +514,7 @@ impl Viewer {
     // ---- video ----
 
     /// The photo on show is a video: copy it from the Mac and play it (once); anything else stops the player.
-    fn sync_video(&self, path: &str, b: &Bubble) {
+    fn sync_video(&self, path: &str, b: &gtk::Widget) {
         if !b.has_css_class("video") {
             self.stop_video();
             return;
@@ -493,45 +540,57 @@ impl Viewer {
         }
     }
 
-    /// Play a YouTube video in an embedded web view over the (black) viewer. Nothing is loaded until this is called.
+    /// Open the viewer on a lone YouTube video (a dev aid; the app opens it through `open` with the others).
     pub fn open_youtube(&self, id: &str) {
+        let key = yt_key(id, 0);
+        self.open(vec![(key.clone(), self.canvas.clone().upcast())], &key);
+    }
+
+    /// Play a YouTube video in an embedded web view over the (black) viewer. Nothing is loaded until this is called.
+    fn play_youtube(&self, id: &str) {
         use webkit6::prelude::*;
-        self.stop_video();
-        self.items.borrow_mut().clear();
-        self.canvas.imp().tex.take();
-        self.prev.set_visible(false);
-        self.next.set_visible(false);
         // no cookies or storage survive the viewer
         let session = webkit6::NetworkSession::new_ephemeral();
-        let web = webkit6::WebView::builder().network_session(&session).build();
+        // WebKit's default lets only silent video start by itself; the one just clicked should play with sound
+        let policies = webkit6::WebsitePolicies::builder().autoplay(webkit6::AutoplayPolicy::Allow).build();
+        let web = webkit6::WebView::builder().network_session(&session).website_policies(&policies).build();
         if let Some(s) = webkit6::prelude::WebViewExt::settings(&web) {
             s.set_media_playback_requires_user_gesture(false);
         }
         web.set_background_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 1.0));
         // the page needs an https origin: YouTube refuses to play without a referrer (error 153)
+        // the player options: no fullscreen button (ours does the whole window), no YouTube logo, no end-card
+        // suggestions or annotations, no keyboard shortcuts (Space and F are ours)
         let html = format!(
-            "<body style='margin:0;background:#000'><iframe style='position:fixed;inset:0;width:100%;height:100%;border:0' \
-             src='https://www.youtube-nocookie.com/embed/{id}?autoplay=1&rel=0' allow='autoplay; fullscreen; encrypted-media' \
-             referrerpolicy='strict-origin-when-cross-origin' allowfullscreen></iframe>"
+            "<body style='margin:0;background:#000'><div id=p style='position:fixed;inset:0'></div><script>\
+             var tag=document.createElement('script');tag.src='https://www.youtube.com/iframe_api';document.head.appendChild(tag);\
+             function onYouTubeIframeAPIReady(){{new YT.Player('p',{{width:'100%',height:'100%',videoId:'{id}',\
+             playerVars:{{autoplay:{ap},rel:0,fs:0,modestbranding:1,disablekb:1,iv_load_policy:3,playsinline:1,controls:1}},\
+             host:'https://www.youtube-nocookie.com',\
+             events:{{onReady:function(e){{document.title='ready';window.bfp=e.target;}},\
+             onStateChange:function(e){{document.title='state '+e.data;}},\
+             onAutoplayBlocked:function(){{document.title='autoplay-blocked';}},\
+             onError:function(e){{document.title='error '+e.data;}}}}}});}}</script>",
+            ap = u8::from(self.autoplay.get())
         );
+        let ap = self.autoplay.get();
+        web.connect_title_notify(move |w| {
+            // started from here, not from the page: script run through WebKit's API counts as the user's own action
+            if ap && w.title().as_deref() == Some("ready") {
+                w.evaluate_javascript("window.bfp.playVideo()", None, None, gtk::gio::Cancellable::NONE, |_| {});
+            }
+        });
+        web.set_margin_top(56); // a strip of its own above the player for our close and full screen buttons
         web.load_html(&html, Some("https://bubblefairy.app/"));
         self.root.add_overlay(&web);
         web.insert_after(&self.root, Some(&self.canvas)); // sibling order = draw order: under the buttons
         *self.web.borrow_mut() = Some(web);
         self.root.add_css_class("yt");
-        let from = {
-            let (w, h) = (self.root.width() as f32, self.root.height() as f32);
-            graphene::Rect::new(w / 2.0 - 40.0, h / 2.0 - 40.0, 80.0, 80.0)
-        };
-        self.canvas.imp().from.set(from);
-        self.canvas.imp().t.set(0.0);
-        self.root.set_visible(true);
-        self.show_controls();
-        self.canvas.animate(1.0, || {});
     }
 
     /// Stop and forget the playing video (and any copy in progress).
     fn stop_video(&self) {
+        self.yt_key.borrow_mut().take();
         if let Some(w) = self.web.borrow_mut().take() {
             self.root.remove_overlay(&w);
             self.root.remove_css_class("yt");
@@ -619,7 +678,9 @@ impl Viewer {
                 self.canvas.imp().video.replace(Some(p.paintable.clone()));
                 p.set_volume(self.volume.get());
                 p.set_muted(self.muted.get());
-                p.play();
+                if self.autoplay.get() {
+                    p.play();
+                }
                 *self.player.borrow_mut() = Some(Rc::new(p));
                 self.busy.set_visible(false);
                 self.bar.set_visible(true);
@@ -710,7 +771,11 @@ impl Viewer {
     }
 
     /// Where the photo sits in the chat (or the info panel), in the viewer's coordinates.
-    fn source_rect(&self, b: &Bubble) -> graphene::Rect {
+    fn source_rect(&self, w: &gtk::Widget) -> graphene::Rect {
+        let Some(b) = w.downcast_ref::<Bubble>() else {
+            // not a picture bubble (a link tile or card): its whole box
+            return w.compute_bounds(&self.canvas).unwrap_or_else(|| graphene::Rect::new(0.0, 0.0, 1.0, 1.0));
+        };
         let body = b.body();
         b.compute_point(&self.canvas, &graphene::Point::new(body.x(), body.y()))
             .map(|p| graphene::Rect::new(p.x(), p.y(), body.width(), body.height()))
@@ -751,9 +816,45 @@ impl Canvas {
                 (t.width().max(1) as f32, t.height().max(1) as f32)
             }
         };
+        self.fit_size(tw, th)
+    }
+
+    /// Where a picture of this size sits when fully open.
+    fn fit_size(&self, tw: f32, th: f32) -> graphene::Rect {
+        let (w, h) = (self.width() as f32, self.height() as f32);
         let k = (w / tw).min(h / th).max(0.01);
         let (dw, dh) = (tw * k, th * k);
         graphene::Rect::new((w - dw) / 2.0, (h - dh) / 2.0, dw, dh)
+    }
+
+    /// Slide to the current picture from `prev`: it leaves the way the user is going (`dir` 1 = forwards, to the
+    /// left), the new one comes in behind it. Ease in and out, 320 ms.
+    fn slide(&self, prev: gdk::Texture, dir: f32) {
+        let imp = self.imp();
+        imp.prev_tex.replace(Some(prev));
+        imp.dir.set(dir);
+        imp.slide.set(0.0);
+        let gen_ = imp.slide_gen.get().wrapping_add(1);
+        imp.slide_gen.set(gen_);
+        let began = Cell::new(None::<i64>);
+        self.add_tick_callback(move |w, clock| {
+            let imp = w.imp();
+            if imp.slide_gen.get() != gen_ {
+                return glib::ControlFlow::Break; // a newer slide took over
+            }
+            let t0 = began.get().unwrap_or_else(|| {
+                began.set(Some(clock.frame_time()));
+                clock.frame_time()
+            });
+            let p = (((clock.frame_time() - t0) as f64 / 1000.0) / 320.0).min(1.0);
+            imp.slide.set(p);
+            w.queue_draw();
+            if p >= 1.0 {
+                imp.prev_tex.take();
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
     fn photo_rect(&self) -> graphene::Rect {
@@ -809,6 +910,11 @@ mod imp {
         pub loading: Cell<bool>,
         /// a playing video's frames, drawn instead of `tex` once the first one has arrived
         pub video: RefCell<Option<gdk::Paintable>>,
+        /// the picture sliding out, how far the slide has got (0..1), which way, and which slide is current
+        pub prev_tex: RefCell<Option<gdk::Texture>>,
+        pub slide: Cell<f64>,
+        pub dir: Cell<f32>,
+        pub slide_gen: Cell<u32>,
     }
 
     #[glib::object_subclass]
@@ -828,6 +934,23 @@ mod imp {
             s.append_color(&gdk::RGBA::new(0.0, 0.0, 0.0, t), &graphene::Rect::new(0.0, 0.0, width, height));
             let Some(tex) = self.tex.borrow().clone() else { return };
             let r = w.photo_rect();
+            // sliding between pictures: both move by the eased progress, a full panel width apart
+            let slide = self.prev_tex.borrow().clone().map(|p| {
+                let x = self.slide.get();
+                let e = (if x < 0.5 { 4.0 * x * x * x } else { 1.0 - (-2.0 * x + 2.0).powi(3) / 2.0 }) as f32;
+                (p, e, self.dir.get())
+            });
+            if let Some((prev, e, dir)) = &slide {
+                let pr = w.fit_size(prev.width().max(1) as f32, prev.height().max(1) as f32);
+                s.save();
+                s.translate(&graphene::Point::new(-dir * e * width, 0.0));
+                s.push_rounded_clip(&gtk::gsk::RoundedRect::from_rect(pr, 0.0));
+                bubble::draw_cover(s, prev, &pr);
+                s.pop();
+                s.restore();
+                s.save();
+                s.translate(&graphene::Point::new(dir * (1.0 - e) * width, 0.0));
+            }
             // corners go from the chat's rounded card to square as it opens
             s.push_rounded_clip(&gtk::gsk::RoundedRect::from_rect(r, lerp(18.0, 0.0, t)));
             match self.video.borrow().as_ref().filter(|v| v.intrinsic_width() > 0) {
@@ -840,6 +963,9 @@ mod imp {
                 None => bubble::draw_cover(s, &tex, &r),
             }
             s.pop();
+            if slide.is_some() {
+                s.restore();
+            }
 
             if self.loading.get() && t > 0.9 {
                 // small spinner near the photo's top-left, kept inside the panel
