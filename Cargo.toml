@@ -14,6 +14,7 @@ serde_json = "1"
 mdns-sd = "0.21"
 plist = "1"
 gstreamer = "0.25"
+webkit6 = "0.6"
 
 [profile.release]
 lto = "thin"

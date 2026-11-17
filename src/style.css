@@ -365,24 +365,25 @@ button.send-btn:disabled { filter: saturate(0.25) opacity(0.45); box-shadow: non
 
 /* photo viewer */
 .viewer-nav {
-  min-width: 52px;
-  min-height: 52px;
-  margin: 0 16px;
+  min-width: 40px;
+  min-height: 40px;
+  margin: 0 14px;
   padding: 0;
   border-radius: 99px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background-color: rgba(255, 255, 255, 0.10);
-  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(255, 255, 255, 0.30);
+  background-color: rgba(20, 20, 24, 0.55); /* dark fill so the white icon reads on light photos */
+  background-image: none;
   color: #ffffff;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45), inset 0 1px rgba(255, 255, 255, 0.25);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
   opacity: 0;
   transition: opacity 180ms ease, background-color 120ms ease;
 }
-.viewer-nav image { -gtk-icon-size: 22px; }
+.viewer-nav image { -gtk-icon-size: 18px; }
 .viewer.controls .viewer-nav { opacity: 1; }
 .viewer-nav { transition: opacity 400ms ease, background-color 120ms ease; }
-.viewer-nav:hover { background-color: rgba(255, 255, 255, 0.22); }
-.viewer-close { min-width: 40px; min-height: 40px; margin: 16px; }
+.viewer-nav:hover { background-color: rgba(20, 20, 24, 0.75); }
+.viewer.yt .viewer-nav { opacity: 1; } /* the web view takes the pointer, so the buttons stay */
+.viewer-close { min-width: 32px; min-height: 32px; margin: 14px; }
 
 /* the photo viewer: a panel of its own over the sidebar and chat. The panels under it drop their shadows and
    bevels so nothing shows around it or adds to its own shadow */

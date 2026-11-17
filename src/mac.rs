@@ -62,8 +62,28 @@ pub enum Cmd {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     Photos,
+    Videos,
     Files,
     Links,
+}
+
+/// The video id of a YouTube link (watch, youtu.be, shorts, embed, live), if it is one.
+pub fn youtube_id(url: &str) -> Option<String> {
+    let rest = url.split("://").nth(1)?;
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.trim_start_matches("www.").trim_start_matches("m.");
+    let path = path.split(['#']).next().unwrap_or("");
+    let (path, query) = path.split_once('?').unwrap_or((path, ""));
+    let id = match host {
+        "youtu.be" => path.split('/').next()?.to_string(),
+        "youtube.com" | "music.youtube.com" => match path.split('/').collect::<Vec<_>>()[..] {
+            ["watch"] => query.split('&').find_map(|p| p.strip_prefix("v="))?.to_string(),
+            ["shorts" | "embed" | "live", id, ..] => id.to_string(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    (id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')).then_some(id)
 }
 
 /// More about a file than chat.db knows (see `file_info`).
@@ -846,10 +866,10 @@ async fn chat_media(session: &client::Handle<Handler>, chat_id: i64, kind: Kind,
             page + 1
         ),
         _ => {
-            let cond = if kind == Kind::Photos {
-                "a.mime_type like 'image/%'"
-            } else {
-                "coalesce(a.mime_type,'') not like 'image/%' and a.filename not like '%.pluginPayloadAttachment'"
+            let cond = match kind {
+                Kind::Photos => "a.mime_type like 'image/%'",
+                Kind::Videos => "a.mime_type like 'video/%'",
+                _ => "coalesce(a.mime_type,'') not like 'image/%' and coalesce(a.mime_type,'') not like 'video/%' and a.filename not like '%.pluginPayloadAttachment'",
             };
             format!(
                 "select m.date/1000000000+978307200, coalesce(a.total_bytes,0), hex(a.filename), hex(coalesce(a.transfer_name,'')) \
@@ -1434,6 +1454,10 @@ mod link_tests {
         assert_eq!(super::urls_in("see https://a.com/x, and (http://b.org/y). ok"), vec!["https://a.com/x", "http://b.org/y"]);
         assert_eq!(super::urls_in("look:https://a.com/x"), vec!["https://a.com/x"]);
         assert_eq!(super::single_link("pfft! brilliant. https://youtu.be/x?si=1"), Some("https://youtu.be/x?si=1".into()));
+        assert_eq!(super::youtube_id("https://youtu.be/dQw4w9WgXcQ?si=1").as_deref(), Some("dQw4w9WgXcQ"));
+        assert_eq!(super::youtube_id("https://www.youtube.com/watch?feature=x&v=dQw4w9WgXcQ").as_deref(), Some("dQw4w9WgXcQ"));
+        assert_eq!(super::youtube_id("https://m.youtube.com/shorts/dQw4w9WgXcQ").as_deref(), Some("dQw4w9WgXcQ"));
+        assert_eq!(super::youtube_id("https://www.youtube.com/@channel"), None);
         assert_eq!(super::single_link("https://a.com/x and https://b.com/y"), None);
         assert_eq!(super::single_link("see https://a.com/x for more"), None);
         assert_eq!(super::strip_url("pfft! brilliant. https://youtu.be/x", "https://youtu.be/x"), "pfft! brilliant.");

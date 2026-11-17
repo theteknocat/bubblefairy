@@ -76,6 +76,8 @@ pub struct Viewer {
     close: gtk::Button,
     full_btn: gtk::Button,
     fullscreen: Cell<bool>,
+    /// the YouTube player, while one is open
+    web: RefCell<Option<webkit6::WebView>>,
 }
 
 fn clock(secs: f64) -> String {
@@ -119,7 +121,7 @@ impl Viewer {
         let full_btn = nav("view-fullscreen-symbolic", gtk::Align::End, "Full screen (F)");
         full_btn.set_valign(gtk::Align::Start);
         full_btn.add_css_class("viewer-close");
-        full_btn.set_margin_end(16 + 40 + 8); // beside the close button
+        full_btn.set_margin_end(14 + 32 + 8); // beside the close button
 
         // video controls along the bottom, and the copy's progress in the middle (both hidden until a video is open)
         let play_btn = icon_btn("bf-play-symbolic", "Play / pause (Space)");
@@ -200,6 +202,7 @@ impl Viewer {
             close: close.clone(),
             full_btn,
             fullscreen: Cell::new(false),
+            web: RefCell::new(None),
         });
         *v.me.borrow_mut() = Rc::downgrade(&v);
         let w = v.clone();
@@ -490,8 +493,49 @@ impl Viewer {
         }
     }
 
+    /// Play a YouTube video in an embedded web view over the (black) viewer. Nothing is loaded until this is called.
+    pub fn open_youtube(&self, id: &str) {
+        use webkit6::prelude::*;
+        self.stop_video();
+        self.items.borrow_mut().clear();
+        self.canvas.imp().tex.take();
+        self.prev.set_visible(false);
+        self.next.set_visible(false);
+        // no cookies or storage survive the viewer
+        let session = webkit6::NetworkSession::new_ephemeral();
+        let web = webkit6::WebView::builder().network_session(&session).build();
+        if let Some(s) = webkit6::prelude::WebViewExt::settings(&web) {
+            s.set_media_playback_requires_user_gesture(false);
+        }
+        web.set_background_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 1.0));
+        // the page needs an https origin: YouTube refuses to play without a referrer (error 153)
+        let html = format!(
+            "<body style='margin:0;background:#000'><iframe style='position:fixed;inset:0;width:100%;height:100%;border:0' \
+             src='https://www.youtube-nocookie.com/embed/{id}?autoplay=1&rel=0' allow='autoplay; fullscreen; encrypted-media' \
+             referrerpolicy='strict-origin-when-cross-origin' allowfullscreen></iframe>"
+        );
+        web.load_html(&html, Some("https://bubblefairy.app/"));
+        self.root.add_overlay(&web);
+        web.insert_after(&self.root, Some(&self.canvas)); // sibling order = draw order: under the buttons
+        *self.web.borrow_mut() = Some(web);
+        self.root.add_css_class("yt");
+        let from = {
+            let (w, h) = (self.root.width() as f32, self.root.height() as f32);
+            graphene::Rect::new(w / 2.0 - 40.0, h / 2.0 - 40.0, 80.0, 80.0)
+        };
+        self.canvas.imp().from.set(from);
+        self.canvas.imp().t.set(0.0);
+        self.root.set_visible(true);
+        self.show_controls();
+        self.canvas.animate(1.0, || {});
+    }
+
     /// Stop and forget the playing video (and any copy in progress).
     fn stop_video(&self) {
+        if let Some(w) = self.web.borrow_mut().take() {
+            self.root.remove_overlay(&w);
+            self.root.remove_css_class("yt");
+        }
         self.poll_gen.set(self.poll_gen.get().wrapping_add(1));
         self.player.borrow_mut().take();
         self.want_video.borrow_mut().take();
