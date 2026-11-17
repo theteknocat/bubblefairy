@@ -31,6 +31,8 @@ pub struct Store {
     pub image_cache: PathBuf,
     /// newest message seen in BubbleFairy per chat (`chat_id=message_id` lines)
     pub seen_file: PathBuf,
+    /// pinned chats, one chat identifier per line, in pin order (our own: Messages' pins aren't readable)
+    pub pins_file: PathBuf,
     pub public_key: String,
 }
 
@@ -127,6 +129,8 @@ struct State {
     outgoing: Vec<PathBuf>,
     /// chat id -> newest message id seen in BubbleFairy; hides the unread dot the Mac can't clear
     seen: HashMap<i64, i64>,
+    /// identifiers (`pin_key`) of the pinned chats, in pin order
+    pins: Vec<String>,
     /// address a new conversation's first message went to; its chat opens once it shows up
     new_pending: Option<String>,
     /// addresses already looked up on the Mac for an older chat (new-message view)
@@ -144,6 +148,8 @@ pub struct Ui {
     st: RefCell<State>,
     // widgets
     chat_list: gtk::ListBox,
+    /// the pinned chats above the list
+    tiles: gtk::FlowBox,
     msgs: gtk::Box,
     scroller: gtk::ScrolledWindow,
     stack: gtk::Stack,
@@ -246,7 +252,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // sidebar
     let chat_list = gtk::ListBox::new();
     chat_list.add_css_class("chat-list");
-    let side_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&chat_list).build();
+    let tiles = gtk::FlowBox::new();
+    tiles.add_css_class("tiles");
+    tiles.set_selection_mode(gtk::SelectionMode::None);
+    tiles.set_homogeneous(true);
+    tiles.set_max_children_per_line(3);
+    tiles.set_min_children_per_line(1);
+    tiles.set_visible(false);
+    let side_inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    side_inner.append(&tiles);
+    side_inner.append(&chat_list);
+    let side_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&side_inner).build();
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar.add_css_class("sidebar");
     let side_title = gtk::Label::new(Some("Conversations"));
@@ -592,14 +608,18 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     win.set_child(Some(&root));
 
     let seen = load_seen(&store.seen_file);
+    let pins: Vec<String> = std::fs::read_to_string(&store.pins_file).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(String::from).collect();
+    // dev: BF_PINS=<key>,<key> pins those chats (demo chats' keys are their participants)
+    let pins = std::env::var("BF_PINS").map(|v| v.split(';').map(String::from).collect()).unwrap_or(pins);
     let ui = Rc::new(Ui {
         app: app.clone(),
         win: win.clone(),
         store,
         cmd,
         viewer,
-        st: RefCell::new(State { cfg, seen, ..Default::default() }),
+        st: RefCell::new(State { cfg, seen, pins, ..Default::default() }),
         chat_list,
+        tiles,
         msgs,
         scroller,
         stack,
@@ -1543,11 +1563,24 @@ fn select_in_list(u: &Ui, id: i64) {
     }
 }
 
+/// Highlight the pinned tile of this chat (if it has one), clear the others.
+fn mark_tile(u: &Ui, id: i64) {
+    let mut c = u.tiles.first_child();
+    while let Some(w) = c {
+        if let Some(t) = w.downcast_ref::<gtk::FlowBoxChild>().and_then(|f| f.child()) {
+            if t.widget_name() == id.to_string() { t.add_css_class("selected") } else { t.remove_css_class("selected") }
+        }
+        c = w.next_sibling();
+    }
+}
+
 fn select(u: &Rc<Ui>, id: i64) {
     fold_side(u);
     end_new(u);
     u.viewer.close_now();
     u.st.borrow_mut().sel = Some(id);
+    select_in_list(u, id);
+    mark_tile(u, id);
     u.stick_bottom.set(true);
     render_conv(u); // cached view right away, fresh history shortly
     // debounce: holding an arrow key shouldn't fire one history call per row
@@ -1907,7 +1940,7 @@ fn scroll_list_to(u: &Rc<Ui>, id: i64) {
     glib::timeout_add_local_once(Duration::from_millis(150), move || {
         // already in view where the list was scrolled to (list rebuilds since may have reset it): leave it there
         let idx = u.st.borrow().chats.iter().position(|c| c["id"].as_i64() == Some(id));
-        if let Some(b) = idx.and_then(|i| u.chat_list.row_at_index(i as i32)).and_then(|r| r.compute_bounds(&u.chat_list))
+        if let Some(b) = idx.and_then(|i| u.chat_list.row_at_index(i as i32)).and_then(|r| r.compute_bounds(&u.tiles.parent().unwrap()))
             && b.height() > 1.0
             && b.y() as f64 >= from
             && (b.y() + b.height()) as f64 <= from + adj.page_size()
@@ -1921,7 +1954,7 @@ fn scroll_list_to(u: &Rc<Ui>, id: i64) {
         u.chat_list.add_tick_callback(move |_, clock| {
             let (u, adj) = (&uu, &adj);
             let idx = u.st.borrow().chats.iter().position(|c| c["id"].as_i64() == Some(id));
-            if let Some(b) = idx.and_then(|i| u.chat_list.row_at_index(i as i32)).and_then(|r| r.compute_bounds(&u.chat_list))
+            if let Some(b) = idx.and_then(|i| u.chat_list.row_at_index(i as i32)).and_then(|r| r.compute_bounds(&u.tiles.parent().unwrap()))
                 && b.height() > 1.0
             {
                 to.set(Some((b.y() as f64 - 6.0).clamp(0.0, (adj.upper() - adj.page_size()).max(0.0))));
@@ -2084,7 +2117,11 @@ fn render_chats(u: &Rc<Ui>) {
     u.selecting.set(true);
     u.chat_list.remove_all();
     let mut new_rows = Vec::new();
+    let pins = u.st.borrow().pins.clone();
+    let mut pinned: Vec<(usize, i64, String, bool, Value)> = Vec::new();
     for (title, preview, when, unread, id, chat) in rows {
+        let key = pin_key(&chat);
+        let pin_at = pins.iter().position(|p| *p == key);
         let name = gtk::Label::new(Some(&title));
         name.add_css_class("chat-name");
         name.set_xalign(0.0);
@@ -2136,6 +2173,12 @@ fn render_chats(u: &Rc<Ui>) {
             row.add_css_class("unread");
         }
         row.set_child(Some(&row_box));
+        pin_menu(u, row.upcast_ref(), &key, pin_at.is_some());
+        if let Some(i) = pin_at {
+            // hidden, not left out: row indexes must keep matching `State.chats`
+            row.set_visible(false);
+            pinned.push((i, id, title.clone(), unread, chat.clone()));
+        }
         u.chat_list.append(&row);
         if Some(id) == sel {
             u.chat_list.select_row(Some(&row));
@@ -2143,6 +2186,8 @@ fn render_chats(u: &Rc<Ui>) {
     }
     *u.rows.borrow_mut() = new_rows;
     u.selecting.set(false);
+    pinned.sort_by_key(|p| p.0);
+    render_tiles(u, pinned, sel);
     if let (Some(adj), true) = (side_adj, keep > 0.0 && !u.side_anim.get()) {
         // the new rows have no size until the next layout: set the value again each frame until it holds
         let (n, u) = (Cell::new(0), u.clone());
@@ -2154,6 +2199,105 @@ fn render_chats(u: &Rc<Ui>) {
             }
             if n.get() < 10 && adj.upper() - adj.page_size() < keep - 0.5 { glib::ControlFlow::Continue } else { glib::ControlFlow::Break }
         });
+    }
+}
+
+/// A chat's stable identity for pinning (its row id changes between runs of the Mac's database).
+fn pin_key(c: &Value) -> String {
+    c["identifier"].as_str().or(c["guid"].as_str()).map(String::from).unwrap_or_else(|| {
+        c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).collect::<Vec<_>>().join(",")
+    })
+}
+
+/// Right-click menu on a row or tile: Pin / Unpin.
+fn pin_menu(u: &Rc<Ui>, w: &gtk::Widget, key: &str, pinned: bool) {
+    let g = gtk::GestureClick::new();
+    g.set_button(3);
+    let (u, w2, key) = (u.clone(), w.clone(), key.to_string());
+    g.connect_pressed(move |g, _, x, y| {
+        g.set_state(gtk::EventSequenceState::Claimed);
+        let b = gtk::Button::with_label(if pinned { "Unpin" } else { "Pin to top" });
+        b.add_css_class("flat");
+        let pop = gtk::Popover::new();
+        pop.set_child(Some(&b));
+        pop.set_has_arrow(false);
+        pop.set_parent(&w2);
+        pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        let (u, key, p2) = (u.clone(), key.clone(), pop.clone());
+        b.connect_clicked(move |_| {
+            p2.popdown();
+            toggle_pin(&u, &key);
+        });
+        pop.connect_closed(|p| {
+            let p = p.clone();
+            glib::idle_add_local_once(move || p.unparent());
+        });
+        pop.popup();
+    });
+    w.add_controller(g);
+}
+
+fn toggle_pin(u: &Rc<Ui>, key: &str) {
+    {
+        let mut st = u.st.borrow_mut();
+        match st.pins.iter().position(|p| p == key) {
+            Some(i) => {
+                st.pins.remove(i);
+            }
+            None => st.pins.push(key.to_string()),
+        }
+        let _ = std::fs::create_dir_all(u.store.pins_file.parent().unwrap());
+        let _ = std::fs::write(&u.store.pins_file, st.pins.iter().map(|p| format!("{p}\n")).collect::<String>());
+    }
+    render_chats(u);
+}
+
+/// The pinned chats as avatar tiles above the list (names hide when the sidebar is avatars-only).
+fn render_tiles(u: &Rc<Ui>, pinned: Vec<(usize, i64, String, bool, Value)>, sel: Option<i64>) {
+    u.tiles.remove_all();
+    u.tiles.set_visible(!pinned.is_empty());
+    for (_, id, title, unread, chat) in pinned {
+        let av = chat_avatar(u, &chat, &title);
+        av.set_halign(gtk::Align::Center);
+        let holder = gtk::Overlay::new();
+        holder.set_halign(gtk::Align::Center);
+        holder.set_child(Some(&av));
+        if unread {
+            let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            dot.add_css_class("unread-dot");
+            dot.set_halign(gtk::Align::Start);
+            dot.set_valign(gtk::Align::Start);
+            holder.add_overlay(&dot);
+        }
+        let name = gtk::Label::new(Some(&title));
+        name.add_css_class("tile-name");
+        name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        name.set_width_chars(1);
+        name.set_max_width_chars(9);
+        name.set_visible(!u.collapsed.get());
+        let tile = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        tile.add_css_class("tile");
+        tile.set_widget_name(&id.to_string());
+        tile.set_hexpand(true);
+        tile.set_tooltip_text(Some(&title));
+        tile.append(&holder);
+        tile.append(&name);
+        let key = pin_key(&chat);
+        if sel == Some(id) {
+            tile.add_css_class("selected");
+        }
+        let g = gtk::GestureClick::new();
+        let u2 = u.clone();
+        g.connect_released(move |_, _, _, _| {
+            select(&u2, id);
+            u2.compose.grab_focus();
+        });
+        tile.add_controller(g);
+        pin_menu(u, tile.upcast_ref(), &key, true);
+        u.tiles.append(&tile);
+        if let Some(f) = tile.parent() {
+            f.set_focusable(false); // no focus box round a clicked tile
+        }
     }
 }
 
@@ -3236,6 +3380,14 @@ fn show_collapsed(u: &Rc<Ui>, collapsed: bool) {
     }
     for (row, _, title) in u.rows.borrow().iter() {
         row.set_tooltip_text(collapsed.then_some(title.as_str()));
+    }
+    // a pinned tile's name goes away with the rest of the text (hidden, it also takes no room under the avatar)
+    let mut c = u.tiles.first_child();
+    while let Some(w) = c {
+        if let Some(name) = w.downcast_ref::<gtk::FlowBoxChild>().and_then(|f| f.child()).and_then(|t| t.last_child()) {
+            name.set_visible(!collapsed);
+        }
+        c = w.next_sibling();
     }
 }
 
