@@ -161,7 +161,8 @@ pub struct Ui {
     send_btn: gtk::Button,
     attach_bar: gtk::Box,
     side_stack: gtk::Stack,
-    head_spin: gtk::Spinner,
+    /// spinner and text in the middle of the empty message area while a chat's first messages load
+    msgs_loading: gtk::Box,
     head_titles: gtk::Box,
     to_row: gtk::Box,
     to_entry: gtk::Entry,
@@ -175,6 +176,10 @@ pub struct Ui {
     stick_bottom: Rc<Cell<bool>>,
     /// when not pinned to the bottom, keep this distance from the bottom while content changes above
     selecting: Cell<bool>,
+    /// a `render_chats_soon` is waiting
+    list_queued: Cell<bool>,
+    /// bumped by every `render_conv`: a batch of older messages still being drawn stops when it is stale
+    conv_gen: Cell<u32>,
     sel_gen: Cell<u32>,
     banner_offline: Cell<bool>,
     chats_queued: Cell<bool>,
@@ -307,7 +312,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     sl.add_css_class("loading-text");
     side_loading.append(&sl);
     let side_stack = gtk::Stack::new();
-    side_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    side_stack.set_transition_type(gtk::StackTransitionType::None); // a fade froze half way while the rows were built
     side_stack.add_named(&side_loading, Some("loading"));
     side_stack.add_named(&side_scroll, Some("list"));
     side_stack.set_vexpand(true);
@@ -327,16 +332,12 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let titles = gtk::Box::new(gtk::Orientation::Vertical, 1);
     titles.set_valign(gtk::Align::Center);
     titles.set_hexpand(true);
-    let head_spin = gtk::Spinner::new();
-    head_spin.set_valign(gtk::Align::Center);
-    head_spin.set_size_request(22, 22);
     titles.append(&head_title);
     titles.append(&head_sub);
     let conv_head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     conv_head.add_css_class("conv-head");
     conv_head.append(&head_avatar);
     conv_head.append(&titles);
-    conv_head.append(&head_spin);
     let info = build_info();
     conv_head.append(&info.refresh);
     conv_head.append(&info.btn);
@@ -507,6 +508,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let scroll_over = gtk::Overlay::new();
     scroll_over.set_child(Some(&scroller));
     scroll_over.add_overlay(&to_bottom);
+    let msgs_loading = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    msgs_loading.set_halign(gtk::Align::Center);
+    msgs_loading.set_valign(gtk::Align::Center);
+    let sp = gtk::Spinner::new();
+    sp.set_size_request(28, 28);
+    msgs_loading.append(&sp);
+    let ml = gtk::Label::new(Some("Loading messages…"));
+    ml.add_css_class("loading-text");
+    msgs_loading.append(&ml);
+    msgs_loading.set_visible(false);
+    scroll_over.add_overlay(&msgs_loading);
     scroll_over.set_vexpand(true);
     scroll_over.set_visible(scroller.property("visible"));
     let so = scroll_over.clone();
@@ -631,7 +643,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         send_btn,
         attach_bar,
         side_stack,
-        head_spin,
+        msgs_loading,
         head_titles: titles,
         to_row,
         to_entry,
@@ -643,6 +655,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         banner_text,
         stick_bottom: stick.clone(),
         selecting: Cell::new(false),
+        list_queued: Cell::new(false),
+        conv_gen: Cell::new(0),
         sel_gen: Cell::new(0),
         banner_offline: Cell::new(false),
         chats_queued: Cell::new(false),
@@ -1143,8 +1157,8 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             for id in ask {
                 u.send(Cmd::Preview(id));
             }
+            render_chats(u); // before the fade starts: building the rows takes long enough to freeze it half way
             u.side_stack.set_visible_child_name("list");
-            render_chats(u);
             let first = {
                 let st = u.st.borrow();
                 // BF_CHAT=<id>: dev aid to open a given chat first
@@ -1189,7 +1203,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
         Event::Preview(id, m) => {
             learn_names(u, std::slice::from_ref(&m));
             u.st.borrow_mut().preview.insert(id, m);
-            render_chats(u);
+            render_chats_soon(u);
         }
         Event::History(id, msgs) => {
             learn_names(u, &msgs);
@@ -1623,10 +1637,13 @@ fn refresh_chat(u: &Rc<Ui>) {
 fn update_spinner(u: &Ui) {
     let on = {
         let st = u.st.borrow();
-        st.sel.is_some_and(|id| st.loading.contains(&id))
+        // only while there is nothing to look at: a reload of messages already showing is silent
+        st.sel.is_some_and(|id| st.loading.contains(&id) && st.hist.get(&id).is_none_or(|h| h.is_empty()))
     };
-    u.head_spin.set_spinning(on);
-    u.head_spin.set_visible(on);
+    u.msgs_loading.set_visible(on);
+    if let Some(sp) = u.msgs_loading.first_child().and_downcast::<gtk::Spinner>() {
+        sp.set_spinning(on);
+    }
 }
 
 /// Scrolled near the top: fetch the next page of older messages.
@@ -1788,7 +1805,7 @@ fn start_new(u: &Rc<Ui>) {
     close_info(u);
     u.info.btn.set_visible(false);
     u.info.refresh.set_visible(false);
-    for w in [u.head_avatar.upcast_ref::<gtk::Widget>(), u.head_titles.upcast_ref(), u.head_spin.upcast_ref(), u.scroller.upcast_ref()] {
+    for w in [u.head_avatar.upcast_ref::<gtk::Widget>(), u.head_titles.upcast_ref(), u.scroller.upcast_ref()] {
         w.set_visible(false);
     }
     u.to_row.set_visible(true);
@@ -2090,6 +2107,19 @@ fn same_addr(typed: &str, ident: &str) -> bool {
 
 // ---------- chat list ----------
 
+/// Same as `render_chats`, but a burst of calls (one preview arrives per chat, dozens at start-up) becomes a
+/// single rebuild shortly after the last: each rebuild takes ~23 ms of the GTK thread, longer than a frame.
+fn render_chats_soon(u: &Rc<Ui>) {
+    if u.list_queued.replace(true) {
+        return;
+    }
+    let u = u.clone();
+    glib::timeout_add_local_once(Duration::from_millis(120), move || {
+        u.list_queued.set(false);
+        render_chats(&u);
+    });
+}
+
 fn render_chats(u: &Rc<Ui>) {
     let rows: Vec<(String, String, String, bool, i64, Value)> = {
         let st = u.st.borrow();
@@ -2307,6 +2337,79 @@ fn side_adjustment(u: &Ui) -> Option<gtk::Adjustment> {
 
 // ---------- conversation ----------
 
+const FIRST_BUILD: usize = 8; // newest messages drawn at once
+const LATER_BUILD: usize = 8; // older ones per idle batch
+
+/// What drawing one message needs to know about the whole conversation.
+struct ConvCtx {
+    msgs: Vec<Value>,
+    times: Vec<Option<i64>>,
+    names: HashMap<String, String>,
+    group: bool,
+    chat_svc: String,
+    /// my messages still on their way follow the last one
+    pending_tail: bool,
+}
+
+/// The widgets of message `i` (time separator, sender name, one line per part), top to bottom.
+fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
+    let (msgs, times, names, group) = (&c.msgs, &c.times, &c.names, c.group);
+    let mut out: Vec<gtk::Widget> = Vec::new();
+    let m = &msgs[i];
+    if m["is_reaction"].as_bool() == Some(true) {
+        return out;
+    }
+    let who = |m: &Value| (m["is_from_me"].as_bool() == Some(true), m["sender"].as_str().unwrap_or("").to_string());
+    let me = m["is_from_me"].as_bool() == Some(true);
+    let gap = |a: usize, b: usize| match (times[a], times[b]) {
+        (Some(x), Some(y)) => (y - x).abs(),
+        _ => 0,
+    };
+    let sep = i == 0 || gap(i - 1, i) > 30 * 60 || day(times[i - 1]) != day(times[i]);
+    if sep && let Some(dt) = m["created_at"].as_str().and_then(local) {
+        let l = gtk::Label::new(Some(&sep_time(&dt)));
+        l.add_css_class("time-sep");
+        out.push(l.upcast());
+    }
+    // a "run" = same sender, close together: shares one name label and one avatar
+    let run_prev = !sep && i > 0 && who(&msgs[i - 1]) == who(m) && gap(i - 1, i) < 180;
+    let run_next = i + 1 < msgs.len() && who(&msgs[i + 1]) == who(m) && gap(i, i + 1) < 180 && day(times[i]) == day(times[i + 1]);
+    // my messages still on their way continue my last run: no tail on the one above them
+    let run_next = run_next || (i + 1 == msgs.len() && me && c.pending_tail);
+    if group && !me && !run_prev {
+        let n = gtk::Label::new(Some(&sender_name(m, names)));
+        n.add_css_class("sender-name");
+        n.set_xalign(0.0);
+        out.push(n.upcast());
+    }
+    let svc = m["service"].as_str().unwrap_or(&c.chat_svc);
+    let parts = message_parts(u, m, me, svc != "iMessage", !run_next);
+    let n = parts.len();
+    for (k, part) in parts.into_iter().enumerate() {
+        let last = k + 1 == n;
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        line.add_css_class("msg-line");
+        if !last || run_next {
+            line.add_css_class("tight"); // same sender close together: a smaller gap
+        }
+        line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+        if group && !me {
+            if last && !run_next {
+                let a = avatar(u, &sender_name(m, names), m["sender"].as_str(), true);
+                a.set_valign(gtk::Align::End);
+                line.append(&a);
+            } else {
+                let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                spacer.add_css_class("avatar-spacer");
+                line.append(&spacer);
+            }
+        }
+        line.append(&part);
+        out.push(line.upcast());
+    }
+    out
+}
+
 fn render_conv(u: &Rc<Ui>) {
     update_spinner(u);
     let (chat, msgs, names, older, preview_svc) = {
@@ -2377,58 +2480,50 @@ fn render_conv(u: &Rc<Ui>) {
         st.pending.iter().filter(|p| Some(p.chat_id) == st.sel).cloned().collect()
     };
     let times: Vec<Option<i64>> = msgs.iter().map(|m| m["created_at"].as_str().and_then(local).map(|d| d.to_unix())).collect();
-    let who = |m: &Value| (m["is_from_me"].as_bool() == Some(true), m["sender"].as_str().unwrap_or("").to_string());
-    for (i, m) in msgs.iter().enumerate() {
-        if m["is_reaction"].as_bool() == Some(true) {
-            continue;
+    let ctx = Rc::new(ConvCtx { msgs, times, names, group, chat_svc, pending_tail: !pending.is_empty() });
+    // The newest messages are built now, the older ones in small batches while the app is idle and put in above
+    // (the scroll is anchored to the bottom, so nothing moves): drawing a whole page at once froze the app for
+    // 200 ms, with the "loading" spinner stopped mid-turn.
+    let stamp = u.conv_gen.get().wrapping_add(1);
+    u.conv_gen.set(stamp);
+    let split = ctx.msgs.len().saturating_sub(FIRST_BUILD);
+    for i in split..ctx.msgs.len() {
+        for w in conv_widgets(u, &ctx, i) {
+            u.msgs.append(&w);
         }
-        let me = m["is_from_me"].as_bool() == Some(true);
-        let gap = |a: usize, b: usize| match (times[a], times[b]) {
-            (Some(x), Some(y)) => (y - x).abs(),
-            _ => 0,
-        };
-        let sep = i == 0 || gap(i - 1, i) > 30 * 60 || day(times[i - 1]) != day(times[i]);
-        if sep && let Some(dt) = m["created_at"].as_str().and_then(local) {
-            let l = gtk::Label::new(Some(&sep_time(&dt)));
-            l.add_css_class("time-sep");
-            u.msgs.append(&l);
-        }
-        // a "run" = same sender, close together: shares one name label and one avatar
-        let run_prev = !sep && i > 0 && who(&msgs[i - 1]) == who(m) && gap(i - 1, i) < 180;
-        let run_next = i + 1 < msgs.len() && who(&msgs[i + 1]) == who(m) && gap(i, i + 1) < 180 && day(times[i]) == day(times[i + 1]);
-        // my messages still on their way continue my last run: no tail on the one above them
-        let run_next = run_next || (i + 1 == msgs.len() && me && !pending.is_empty());
-        if group && !me && !run_prev {
-            let n = gtk::Label::new(Some(&sender_name(m, &names)));
-            n.add_css_class("sender-name");
-            n.set_xalign(0.0);
-            u.msgs.append(&n);
-        }
-        let svc = m["service"].as_str().unwrap_or(&chat_svc);
-        let parts = message_parts(u, m, me, svc != "iMessage", !run_next);
-        let n = parts.len();
-        for (k, part) in parts.into_iter().enumerate() {
-            let last = k + 1 == n;
-            let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-            line.add_css_class("msg-line");
-            if !last || run_next {
-                line.add_css_class("tight"); // same sender close together: a smaller gap
+    }
+    if split > 0 {
+        // where the older ones go in: after the "loading more" row when there is one
+        let anchor = Rc::new(RefCell::new(if older { u.msgs.first_child() } else { None }));
+        let (u2, ctx2, end) = (u.clone(), ctx.clone(), Cell::new(split));
+        glib::idle_add_local(move || {
+            if u2.conv_gen.get() != stamp {
+                return glib::ControlFlow::Break; // the conversation was drawn again since
             }
-            line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
-            if group && !me {
-                if last && !run_next {
-                    let a = avatar(u, &sender_name(m, &names), m["sender"].as_str(), true);
-                    a.set_valign(gtk::Align::End);
-                    line.append(&a);
-                } else {
-                    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-                    spacer.add_css_class("avatar-spacer");
-                    line.append(&spacer);
+            let start = end.get().saturating_sub(LATER_BUILD);
+            let before = u2.st.borrow().photos.len();
+            for i in start..end.get() {
+                for w in conv_widgets(&u2, &ctx2, i) {
+                    u2.msgs.insert_child_after(&w, anchor.borrow().as_ref());
+                    *anchor.borrow_mut() = Some(w);
                 }
             }
-            line.append(&part);
-            u.msgs.append(&line);
-        }
+            {
+                // photos were pushed in build order; this batch is older than everything built so far
+                let mut st = u2.st.borrow_mut();
+                let fresh: Vec<_> = st.photos.drain(before..).collect();
+                st.photos.splice(0..0, fresh);
+            }
+            end.set(start);
+            if start == 0 {
+                let photos = u2.st.borrow().photos.clone();
+                if !(u2.st.borrow().viewer_panel && u2.viewer.is_open()) {
+                    u2.viewer.refresh(photos);
+                }
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
     }
     append_pending(u, &pending, sms);
     let photos = u.st.borrow().photos.clone(); // the viewer's hooks borrow State
