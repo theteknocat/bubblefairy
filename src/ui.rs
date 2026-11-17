@@ -1101,6 +1101,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 let mut st = u.st.borrow_mut();
                 st.contacts = Some(c);
                 st.avatar_tex.clear();
+                fill_names(&mut st);
             }
             render_chats(u);
             if u.st.borrow().sel.is_some() {
@@ -1147,6 +1148,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                     insert_chat(&mut st.chats, c);
                 }
                 st.chats_loaded = true;
+                fill_names(&mut st);
                 let st = &mut *st;
                 let ids: Vec<i64> = st.chats.iter().filter_map(|c| c["id"].as_i64()).collect();
                 let ask: Vec<i64> =
@@ -1518,6 +1520,23 @@ fn watch_for_preview(u: &Rc<Ui>, cid: i64, m: &Value) {
             }
         });
     }
+}
+
+/// Names for the people in group chats from the Mac's contacts: imsg only names the other person of a 1:1 chat, and
+/// the rest were only learned from messages, so a group's title showed an address until the chat had been opened.
+fn fill_names(st: &mut State) {
+    let Some(contacts) = &st.contacts else { return };
+    let mut found = Vec::new();
+    for c in &st.chats {
+        for h in c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()) {
+            if !st.names.contains_key(h)
+                && let Some(p) = contacts.person(h).filter(|p| !p.name.is_empty())
+            {
+                found.push((h.to_string(), p.name.clone()));
+            }
+        }
+    }
+    st.names.extend(found);
 }
 
 fn learn_names(u: &Ui, msgs: &[Value]) {
