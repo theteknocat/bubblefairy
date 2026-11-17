@@ -164,6 +164,8 @@ pub struct Ui {
     side_more: gtk::Label,
     search: gtk::SearchEntry,
     side_none: gtk::Label,
+    /// the unread count after the app's title in the header, and the spacer that balances it
+    title_badge: (gtk::Label, gtk::Box),
     search_slot: gtk::Overlay,
     /// the pinned chats above the list
     tiles: gtk::FlowBox,
@@ -258,7 +260,22 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let title = gtk::Label::new(None);
     title.set_markup("<span foreground='#7b5cff'>Bubble</span><span foreground='#ff5fa8'>Fairy</span> ✨");
     title.add_css_class("app-title");
-    head.set_title_widget(Some(&title));
+    // the unread count sits in a round badge after the title; a spacer of the same width before it keeps the title
+    // centred (they share a width)
+    let title_badge = gtk::Label::new(None);
+    title_badge.add_css_class("title-badge");
+    title_badge.set_visible(false);
+    title_badge.set_valign(gtk::Align::Center);
+    let title_gap = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    title_gap.set_visible(false);
+    let badge_size = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
+    badge_size.add_widget(&title_badge);
+    badge_size.add_widget(&title_gap);
+    let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    title_box.append(&title_gap);
+    title_box.append(&title);
+    title_box.append(&title_badge);
+    head.set_title_widget(Some(&title_box));
     let status_text = gtk::Label::new(Some("Starting"));
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     dot.add_css_class("dot");
@@ -674,6 +691,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         side_more,
         search,
         side_none,
+        title_badge: (title_badge, title_gap),
         search_slot,
         tiles,
         msgs,
@@ -2279,6 +2297,10 @@ fn update_title(u: &Ui) {
         st.chats.iter().filter(|c| row_info(&st, c).3).count()
     };
     u.win.set_title(Some(&if n > 0 { format!("({n}) BubbleFairy") } else { "BubbleFairy".into() }));
+    let (badge, gap) = &u.title_badge;
+    badge.set_text(&if n > 99 { "99+".to_string() } else { n.to_string() });
+    badge.set_visible(n > 0);
+    gap.set_visible(n > 0);
 }
 
 /// A chat's last message arrived: change its row's texts in place. Rebuilding the whole list for each of the
