@@ -2534,6 +2534,8 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         out.push(n.upcast());
     }
     let svc = m["service"].as_str().unwrap_or(&c.chat_svc);
+    // hovering a message shows its full date and time (the separators only show them for a group of messages)
+    let when = m["created_at"].as_str().and_then(local).and_then(|d| d.format("%A, %B %-d, %Y at %H:%M").ok()).map(|g| g.to_string());
     let parts = message_parts(u, m, me, svc != "iMessage", !run_next);
     let n = parts.len();
     for (k, part) in parts.into_iter().enumerate() {
@@ -2544,6 +2546,7 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
             line.add_css_class("tight"); // same sender close together: a smaller gap
         }
         line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+        line.set_tooltip_text(when.as_deref());
         if group && !me {
             if last && !run_next {
                 let a = avatar(u, &sender_name(m, names), m["sender"].as_str(), true);
