@@ -23,7 +23,8 @@ pub struct Config {
 
 pub enum Cmd {
     Configure(Config),
-    Chats,
+    /// the newest `n` chats (imsg has no offset: loading more means asking for more)
+    Chats(usize),
     /// The newest 1:1 chat with any of these addresses (one person's numbers and emails: Messages keeps one conversation
     /// per contact), which can be older than the chats list's 100 (answer: `Event::FoundChat`)
     FindChat(Vec<String>),
@@ -1199,7 +1200,7 @@ const READ: Duration = Duration::from_secs(30);
 
 async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: mpsc::UnboundedSender<Event>) {
     match cmd {
-        Cmd::Chats => match rpc.call("chats.list", json!({"limit": 100}), READ).await {
+        Cmd::Chats(n) => match rpc.call("chats.list", json!({"limit": n}), READ).await {
             Ok(r) => {
                 let mut chats = r.get("chats").and_then(Value::as_array).cloned().unwrap_or_default();
                 fix_unread(&session, &mut chats).await;

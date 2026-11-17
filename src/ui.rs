@@ -17,6 +17,8 @@ use crate::mac::{Cmd, Config, Event, Kind, MediaItem};
 
 const SIDEBAR_MIN: i32 = 260; // paned positions and widths below include the panels' side margins
 const CHAT_MIN: i32 = 440;
+/// Chats asked for at first, and added each time the sidebar is scrolled to its end.
+const CHATS_PAGE: usize = 100;
 const COLLAPSED_W: i32 = 96;
 const NO_SLIDE: i32 = i32::MIN;
 const AVATAR: i32 = 44; // the chat list's avatar size // the sidebar showing avatars only (side margins included)
@@ -117,6 +119,12 @@ struct State {
     host_key: String,
     connected: bool,
     chats_loaded: bool,
+    /// how many chats are asked for (imsg has no offset); more are asked for as the sidebar is scrolled down
+    chat_limit: usize,
+    /// the last answer filled the limit, so there may be older chats
+    more_chats: bool,
+    /// asking for more chats
+    more_loading: bool,
     /// chats with a history request in flight (header spinner)
     loading: HashSet<i64>,
     older_loading: bool,
@@ -150,6 +158,8 @@ pub struct Ui {
     st: RefCell<State>,
     // widgets
     chat_list: gtk::ListBox,
+    /// "Retrieving more chats…" under the list while older chats are asked for
+    side_more: gtk::Label,
     /// the pinned chats above the list
     tiles: gtk::FlowBox,
     msgs: gtk::Box,
@@ -272,6 +282,12 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let side_inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
     side_inner.append(&tiles);
     side_inner.append(&chat_list);
+    let side_more = gtk::Label::new(Some("Retrieving more chats…"));
+    side_more.add_css_class("loading-text");
+    side_more.set_margin_top(12);
+    side_more.set_margin_bottom(16);
+    side_more.set_visible(false);
+    side_inner.append(&side_more);
     let side_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&side_inner).build();
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar.add_css_class("sidebar");
@@ -627,8 +643,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         store,
         cmd,
         viewer,
-        st: RefCell::new(State { cfg, seen, pins, ..Default::default() }),
+        st: RefCell::new(State { cfg, seen, pins, chat_limit: CHATS_PAGE, ..Default::default() }),
         chat_list,
+        side_more,
         tiles,
         msgs,
         scroller,
@@ -706,6 +723,16 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         glib::Propagation::Proceed
     });
     ui.compose.add_controller(keys);
+
+    // scrolled to the end of the list: ask for older chats
+    if let Some(adj) = side_adjustment(&ui) {
+        let u = ui.clone();
+        adj.connect_value_changed(move |a| {
+            if a.upper() > a.page_size() && a.value() + a.page_size() >= a.upper() - 300.0 {
+                load_more_chats(&u);
+            }
+        });
+    }
 
     let u = ui.clone();
     ui.chat_list.connect_row_selected(move |_, row| {
@@ -850,7 +877,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     glib::timeout_add_seconds_local(60, move || {
         let Some(u) = w.upgrade() else { return glib::ControlFlow::Break };
         if u.st.borrow().connected {
-            u.send(Cmd::Chats);
+            u.send(Cmd::Chats(u.st.borrow().chat_limit));
         }
         glib::ControlFlow::Continue
     });
@@ -1119,7 +1146,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             if u.banner_offline.get() {
                 u.banner.set_reveal_child(false);
             }
-            u.send(Cmd::Chats);
+            u.send(Cmd::Chats(u.st.borrow().chat_limit));
             let sel = u.st.borrow().sel;
             if let Some(id) = sel {
                 request_history(u, id);
@@ -1150,11 +1177,13 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                     insert_chat(&mut st.chats, c);
                 }
                 st.chats_loaded = true;
+                st.more_chats = st.chats.len() >= st.chat_limit;
+                st.more_loading = false;
                 fill_names(&mut st);
                 let st = &mut *st;
                 let ids: Vec<i64> = st.chats.iter().filter_map(|c| c["id"].as_i64()).collect();
                 let ask: Vec<i64> =
-                    ids.into_iter().filter(|id| !st.preview.contains_key(id) && !st.hist.contains_key(id)).take(60).collect();
+                    ids.into_iter().filter(|id| !st.preview.contains_key(id) && !st.hist.contains_key(id)).take(150).collect();
                 st.preview_asked.extend(ask.iter().copied());
                 ask
             };
@@ -1162,6 +1191,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 u.send(Cmd::Preview(id));
             }
             prefetch_avatars(u);
+            u.side_more.set_visible(false);
             render_chats(u); // before the fade starts: building the rows takes long enough to freeze it half way
             u.side_stack.set_visible_child_name("list");
             let first = {
@@ -1247,7 +1277,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
         }
         Event::Message(m) => on_message(u, m),
         Event::Resync => {
-            u.send(Cmd::Chats);
+            u.send(Cmd::Chats(u.st.borrow().chat_limit));
             let sel = u.st.borrow().sel;
             if let Some(id) = sel {
                 request_history(u, id);
@@ -1505,7 +1535,7 @@ fn on_message(u: &Rc<Ui>, m: Value) {
         let u2 = u.clone();
         glib::timeout_add_local_once(Duration::from_millis(700), move || {
             u2.chats_queued.set(false);
-            u2.send(Cmd::Chats);
+            u2.send(Cmd::Chats(u2.st.borrow().chat_limit));
         });
     }
     if !known_chat {
@@ -2301,6 +2331,31 @@ fn render_chats(u: &Rc<Ui>) {
             if n.get() < 10 && adj.upper() - adj.page_size() < keep - 0.5 { glib::ControlFlow::Continue } else { glib::ControlFlow::Break }
         });
     }
+}
+
+/// imsg's chat list has no offset, so older chats mean asking for a longer list; the answer replaces the list.
+fn load_more_chats(u: &Rc<Ui>) {
+    let n = {
+        let mut st = u.st.borrow_mut();
+        if !st.chats_loaded || !st.more_chats || st.more_loading || !st.connected {
+            return;
+        }
+        st.more_loading = true;
+        st.chat_limit += CHATS_PAGE;
+        st.chat_limit
+    };
+    u.side_more.set_visible(true);
+    u.send(Cmd::Chats(n));
+    // no answer (an error): don't stay stuck on it
+    let u2 = u.clone();
+    glib::timeout_add_local_once(Duration::from_secs(30), move || {
+        let mut st = u2.st.borrow_mut();
+        if st.more_loading {
+            st.more_loading = false;
+            drop(st);
+            u2.side_more.set_visible(false);
+        }
+    });
 }
 
 /// A chat's stable identity for pinning (its row id changes between runs of the Mac's database).
