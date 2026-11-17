@@ -180,10 +180,6 @@ pub struct Ui {
     selecting: Cell<bool>,
     /// a `render_chats_soon` is waiting
     list_queued: Cell<bool>,
-    /// bumped by every `render_conv`: a batch of older messages still being drawn stops when it is stale
-    conv_gen: Cell<u32>,
-    /// the older part of the open chat is still being built (see `render_conv`)
-    staging: Cell<bool>,
     sel_gen: Cell<u32>,
     banner_offline: Cell<bool>,
     chats_queued: Cell<bool>,
@@ -662,8 +658,6 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         stick_bottom: stick.clone(),
         selecting: Cell::new(false),
         list_queued: Cell::new(false),
-        conv_gen: Cell::new(0),
-        staging: Cell::new(false),
         sel_gen: Cell::new(0),
         banner_offline: Cell::new(false),
         chats_queued: Cell::new(false),
@@ -1692,7 +1686,7 @@ fn load_older(u: &Rc<Ui>) {
     let req = {
         let mut st = u.st.borrow_mut();
         let Some(id) = st.sel else { return };
-        if st.older_loading || st.no_more.contains(&id) || !st.connected || u.staging.get() {
+        if st.older_loading || st.no_more.contains(&id) || !st.connected {
             return;
         }
         let Some(before) = st.hist.get(&id).and_then(|h| h.first()).and_then(|m| m["created_at"].as_str()).map(String::from) else {
@@ -2416,8 +2410,6 @@ fn side_adjustment(u: &Ui) -> Option<gtk::Adjustment> {
 
 // ---------- conversation ----------
 
-const FIRST_MIN: usize = 3; // newest messages drawn at once: at least this many, until the window is full
-const FIRST_MAX: usize = 40; // and never more than this
 
 /// What drawing one message needs to know about the whole conversation.
 struct ConvCtx {
@@ -2428,25 +2420,6 @@ struct ConvCtx {
     chat_svc: String,
     /// my messages still on their way follow the last one
     pending_tail: bool,
-}
-
-/// Draw message `i` at the front of the message list (after `base`), its photos at the front of the photo list.
-/// Returns about how tall it is, for deciding when the window is full.
-fn put_front(u: &Rc<Ui>, c: &ConvCtx, i: usize, base: &Option<gtk::Widget>, width: i32, measure: bool) -> f64 {
-    let before = u.st.borrow().photos.len();
-    let (mut h, mut prev) = (0.0, base.clone());
-    for w in conv_widgets(u, c, i) {
-        if measure {
-            h += w.measure(gtk::Orientation::Vertical, width).1 as f64 + 8.0;
-        }
-        u.msgs.insert_child_after(&w, prev.as_ref());
-        prev = Some(w);
-    }
-    // conv_widgets pushed this message's photos at the end of the list; it is older than all built so far
-    let mut st = u.st.borrow_mut();
-    let fresh: Vec<_> = st.photos.drain(before..).collect();
-    st.photos.splice(0..0, fresh);
-    h
 }
 
 /// The widgets of message `i` (time separator, sender name, one line per part), top to bottom.
@@ -2583,48 +2556,12 @@ fn render_conv(u: &Rc<Ui>) {
     };
     let times: Vec<Option<i64>> = msgs.iter().map(|m| m["created_at"].as_str().and_then(local).map(|d| d.to_unix())).collect();
     let ctx = Rc::new(ConvCtx { msgs, times, names, group, chat_svc, pending_tail: !pending.is_empty() });
-    // Built newest first, each message put in at the front. At the bottom of the chat (opening it, a new message)
-    // that is done in two steps: the messages that fill the window now, all the rest in one go as soon as that
-    // has been drawn; they land above the top edge of the view, which is anchored to the bottom, so nothing moves.
-    // Away from the bottom (older messages just arrived while scrolling up) everything is built at once, or the
-    // view would lose its place while only the newest part existed.
-    let stamp = u.conv_gen.get().wrapping_add(1);
-    u.conv_gen.set(stamp);
-    u.staging.set(false);
-    let staged = u.stick_bottom.get();
-    // where messages go in: after the "loading more" row when there is one
-    let base: Option<gtk::Widget> = if older { u.msgs.first_child() } else { None };
-    let width = match u.scroller.hadjustment().page_size() as i32 {
-        w if w > 100 => w,
-        _ => 600,
-    };
-    let want = match u.scroller.vadjustment().page_size() {
-        h if h > 100.0 => h,
-        _ => 700.0,
-    } * 1.1;
-    let (mut split, mut filled) = (ctx.msgs.len(), 0.0);
-    while split > 0 && (!staged || ((filled < want || ctx.msgs.len() - split < FIRST_MIN) && ctx.msgs.len() - split < FIRST_MAX)) {
-        split -= 1;
-        filled += put_front(u, &ctx, split, &base, width, staged);
-    }
-    if split > 0 {
-        // no loading of older messages until the rest is in: with only the window's worth built, the view is "at
-        // the top" and would ask for more again and again
-        u.staging.set(true);
-        let (u2, ctx2) = (u.clone(), ctx.clone());
-        glib::idle_add_local_once(move || {
-            if u2.conv_gen.get() != stamp {
-                return; // the conversation was drawn again since
-            }
-            for i in (0..split).rev() {
-                put_front(&u2, &ctx2, i, &base, width, false);
-            }
-            u2.staging.set(false);
-            let photos = u2.st.borrow().photos.clone();
-            if !(u2.st.borrow().viewer_panel && u2.viewer.is_open()) {
-                u2.viewer.refresh(photos);
-            }
-        });
+    // All at once: with the pictures decoded on another thread this takes ~45 ms for 150 messages. Building the
+    // newest part first and the rest afterwards was tried; both parts showed up together anyway.
+    for i in 0..ctx.msgs.len() {
+        for w in conv_widgets(u, &ctx, i) {
+            u.msgs.append(&w);
+        }
     }
     append_pending(u, &pending, sms);
     let photos = u.st.borrow().photos.clone(); // the viewer's hooks borrow State
@@ -2640,12 +2577,12 @@ fn mark_seen(u: &Rc<Ui>) {
     if !u.win.is_active() {
         return;
     }
-    let changed = {
+    let (changed, id) = {
         let mut st = u.st.borrow_mut();
         let Some(id) = st.sel else { return };
         let Some(last) = st.hist.get(&id).and_then(|h| h.iter().filter_map(|m| m["id"].as_i64()).max()) else { return };
         let old = st.seen.insert(id, last);
-        old.is_none_or(|o| o < last)
+        (old.is_none_or(|o| o < last), id)
     };
     if changed {
         let st = u.st.borrow();
@@ -2653,7 +2590,7 @@ fn mark_seen(u: &Rc<Ui>) {
         let _ = std::fs::create_dir_all(u.store.seen_file.parent().unwrap());
         let _ = std::fs::write(&u.store.seen_file, text);
         drop(st);
-        render_chats(u);
+        update_row(u, id); // its dot only: a rebuild of the whole list right after drawing the chat was a second stall
     }
 }
 
