@@ -2,6 +2,7 @@ mod bubble;
 mod chatscroll;
 mod demo;
 mod mac;
+mod player;
 mod ui;
 mod viewer;
 
@@ -60,6 +61,7 @@ fn prune_cache(dir: &Path, max: u64) {
 }
 
 fn main() -> glib::ExitCode {
+    let _ = gstreamer::init(); // for the video player
     let config_file = glib::user_config_dir().join("bubblefairy/config");
     let data = glib::user_data_dir().join("bubblefairy");
     let paths = mac::Paths { key: data.join("id_ed25519"), known_host: data.join("mac_host_key") };

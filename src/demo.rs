@@ -88,7 +88,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
                 ev.send(Event::Image { path, full, bytes })
             }
             Cmd::Recent(id) => ev.send(Event::Recent(id, Vec::new())),
-            Cmd::Download { path, dest } => ev.send(Event::Downloaded { path, dest, err: Some("demo".into()) }),
+            Cmd::Download { path, dest, .. } => ev.send(Event::Downloaded { path, dest, err: Some("demo".into()) }),
             Cmd::Bulk(path) => ev.send(Event::Image { path, full: false, bytes: None }),
             Cmd::Map(q) => ev.send(Event::Map(q, None)),
             Cmd::Media { chat_id, kind, offset } => {

@@ -75,6 +75,9 @@ struct State {
     link_waiters: HashMap<i64, Vec<glib::WeakRef<gtk::Box>>>,
     /// files being copied from the Mac, with the chip that was clicked
     downloading: HashMap<String, glib::WeakRef<gtk::Widget>>,
+    /// videos the viewer is waiting on (Mac path), and what we need to copy them (name, size)
+    video_wait: std::collections::HashSet<String>,
+    video_meta: HashMap<String, (String, i64)>,
     /// messages we've already set a "look for its link preview" timer for
     preview_watch: HashSet<String>,
     /// how much the window was widened to fit the info panel (and is narrowed by when it closes)
@@ -857,7 +860,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     });
     win.add_controller(keys);
     let w = Rc::downgrade(&ui);
-    ui.viewer.set_hooks(viewer::Hooks { fetch_full: Box::new(move |p| if let Some(u) = w.upgrade() { fetch_full(&u, p) }) });
+    ui.viewer.set_hooks(viewer::Hooks {
+        fetch_full: Box::new(move |p| if let Some(u) = w.upgrade() { fetch_full(&u, p) }),
+        fetch_video: Box::new({
+            let w = Rc::downgrade(&ui);
+            move |p| if let Some(u) = w.upgrade() { fetch_video(&u, p) }
+        }),
+        open_external: Box::new({
+            let w = Rc::downgrade(&ui);
+            move |p| if let Some(u) = w.upgrade() { open_file(&u, p) }
+        }),
+    });
     let u = ui.clone();
     ui.scroller.hadjustment().connect_page_size_notify(move |_| {
         let fs: Vec<_> = u.stacks.borrow().clone();
@@ -1202,11 +1215,19 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 c.set_opacity(1.0);
                 c.set_tooltip_text(Some("Copy from the Mac and open"));
             }
-            match err {
-                Some(e) => show_banner(u, &format!("Couldn't copy the file from the Mac: {e}"), false),
-                None => open_file(u, &dest),
+            if u.st.borrow_mut().video_wait.remove(&path) {
+                match err {
+                    Some(e) => u.viewer.video_failed(&path, &e),
+                    None => u.viewer.video_ready(&path, dest),
+                }
+            } else {
+                match err {
+                    Some(e) => show_banner(u, &format!("Couldn't copy the file from the Mac: {e}"), false),
+                    None => open_file(u, &dest),
+                }
             }
         }
+        Event::DownloadProgress { path, got, total } => u.viewer.video_progress(&path, got, total),
         Event::FileInfo(path, info) => {
             let found = info.is_some();
             u.st.borrow_mut().file_info.insert(path, info);
@@ -3299,6 +3320,19 @@ fn file_tile(u: &Rc<Ui>, it: &MediaItem) -> gtk::Widget {
     if it.missing {
         frame.add_css_class("file-missing");
         frame.set_tooltip_text(Some(&format!("{}\n{}\nMessages hasn't downloaded this file to your Mac", it.name, detail.join(" · "))));
+    } else if kind == FileKind::Video && thumb {
+        frame.set_tooltip_text(Some(&format!("{}\n{}\nClick to play", it.name, detail.join(" · "))));
+        frame.set_cursor_from_name(Some("pointer"));
+        let b = frame.child().and_downcast::<bubble::Bubble>().expect("video tile picture");
+        b.add_css_class("video");
+        u.st.borrow_mut().video_meta.insert(it.path.clone(), (it.name.clone(), it.size));
+        let (u2, path) = (u.clone(), it.path.clone());
+        let g = gtk::GestureClick::new();
+        g.connect_released(move |_, _, _, _| {
+            u2.st.borrow_mut().viewer_panel = true;
+            u2.viewer.open(vec![(path.clone(), b.clone())], &path);
+        });
+        frame.add_controller(g);
     } else {
         frame.set_tooltip_text(Some(&format!("{}\n{}\nClick to copy from the Mac and open", it.name, detail.join(" · "))));
         frame.set_cursor_from_name(Some("pointer"));
@@ -3542,15 +3576,22 @@ fn video_preview(u: &Rc<Ui>, f: &FileRef, look: bubble::Look) -> gtk::Widget {
         over.append(&pill);
     }
     p.append(&over);
-    let tip = [f.name.clone(), [f.kind.label().to_string(), fmt_size(f.size)].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "), "Click to copy from the Mac and open".into()];
+    let tip = [f.name.clone(), [f.kind.label().to_string(), fmt_size(f.size)].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "), "Click to play".into()];
     p.set_tooltip_text(Some(&tip.join("\n")));
     p.set_cursor_from_name(Some("pointer"));
-    let item = crate::mac::MediaItem { path: f.path.clone(), name: f.name.clone(), ..Default::default() };
-    let (u2, p2) = (u.clone(), p.clone());
+    p.add_css_class("video");
+    {
+        let mut st = u.st.borrow_mut();
+        st.video_meta.insert(f.path.clone(), (f.name.clone(), f.size));
+        st.photos.push((f.path.clone(), p.clone()));
+    }
+    let (u2, path) = (u.clone(), f.path.clone());
     let click = gtk::GestureClick::new();
     click.connect_released(move |g, _, _, _| {
         g.set_state(gtk::EventSequenceState::Claimed);
-        start_download(&u2, &item, p2.upcast_ref());
+        let items = u2.st.borrow().photos.clone();
+        u2.st.borrow_mut().viewer_panel = false;
+        u2.viewer.open(items, &path);
     });
     p.add_controller(click);
     p.upcast()
@@ -3577,12 +3618,27 @@ fn open_file(u: &Ui, path: &std::path::Path) {
 
 /// Copy a chat file from the Mac (once; kept under the cache folder) and open it with the default app.
 // ponytail: the copies are never cleaned up; prune by age like the image cache would need to
-fn start_download(u: &Rc<Ui>, it: &MediaItem, chip: &gtk::Widget) {
+fn file_dest(u: &Ui, path: &str, name: &str) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    it.path.hash(&mut h);
-    let name: String = it.name.chars().map(|c| if c == '/' || c.is_control() { '_' } else { c }).collect();
-    let dest = files_dir(u).join(format!("{:016x}", h.finish())).join(if name.is_empty() { "file" } else { &name });
+    path.hash(&mut h);
+    let name: String = name.chars().map(|c| if c == '/' || c.is_control() { '_' } else { c }).collect();
+    files_dir(u).join(format!("{:016x}", h.finish())).join(if name.is_empty() { "file" } else { &name })
+}
+
+/// The viewer wants a video: use our copy, or copy it from the Mac (progress comes back as events).
+fn fetch_video(u: &Rc<Ui>, path: &str) {
+    let (name, size) = u.st.borrow().video_meta.get(path).cloned().unwrap_or_default();
+    let dest = file_dest(u, path, &name);
+    if dest.exists() && std::fs::metadata(&dest).is_ok_and(|m| size <= 0 || m.len() as i64 >= size * 98 / 100) {
+        u.viewer.video_ready(path, dest);
+    } else if u.st.borrow_mut().video_wait.insert(path.to_string()) {
+        u.send(Cmd::Download { path: path.to_string(), dest, size });
+    }
+}
+
+fn start_download(u: &Rc<Ui>, it: &MediaItem, chip: &gtk::Widget) {
+    let dest = file_dest(u, &it.path, &it.name);
     if dest.exists() {
         open_file(u, &dest);
         return;
@@ -3593,7 +3649,7 @@ fn start_download(u: &Rc<Ui>, it: &MediaItem, chip: &gtk::Widget) {
     chip.set_opacity(0.5);
     chip.set_tooltip_text(Some("Copying from the Mac…"));
     u.st.borrow_mut().downloading.insert(it.path.clone(), chip.downgrade());
-    u.send(Cmd::Download { path: it.path.clone(), dest });
+    u.send(Cmd::Download { path: it.path.clone(), dest, size: it.size });
 }
 
 /// A link as a square tile like the photos: Messages' preview picture cropped to fit (or a link glyph

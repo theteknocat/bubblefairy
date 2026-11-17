@@ -35,7 +35,8 @@ pub enum Cmd {
     /// `token` names this send, so the answer (`Event::Sent`) can be matched to its waiting bubbles
     Send { chat_id: i64, to: Option<String>, text: String, files: Vec<PathBuf>, token: u64 },
     /// Copy a file of a chat from the Mac to `dest` (to open it on this computer)
-    Download { path: String, dest: PathBuf },
+    /// `size` (from chat.db, 0 if unknown) is for the progress and for spotting a copy that was cut short
+    Download { path: String, dest: PathBuf, size: i64 },
     /// A chat copy for the info panel's grid: same as `Image` but at most two at a time, so a screenful
     /// of thumbnails can't crowd out the conversation's own pictures, previews and maps
     Bulk(String),
@@ -121,6 +122,8 @@ pub enum Event {
     /// oldest first
     Recent(i64, Vec<Value>),
     Downloaded { path: String, dest: PathBuf, err: Option<String> },
+    /// a copy from the Mac is under way: bytes so far of `total` (0 = unknown)
+    DownloadProgress { path: String, got: usize, total: i64 },
 }
 
 pub struct Paths {
@@ -664,7 +667,10 @@ async fn file_info(session: &client::Handle<Handler>, path: &str, contact: bool)
     }
 }
 
-async fn download(session: &client::Handle<Handler>, path: &str, dest: &Path) -> Result<(), String> {
+/// Copied files (chat attachments opened here, videos played here) older than this much total are deleted, oldest first.
+const FILES_CAP: u64 = 2 * 1024 * 1024 * 1024;
+
+async fn download(session: &client::Handle<Handler>, path: &str, dest: &Path, size: i64, progress: impl Fn(usize)) -> Result<(), String> {
     use std::io::Write;
     let _permit = CHANNELS.acquire().await.map_err(|_| "busy".to_string())?;
     let remote = path.strip_prefix("~/").map(|p| format!("\"$HOME\"/{}", sh_quote(p))).unwrap_or_else(|| sh_quote(path));
@@ -676,23 +682,63 @@ async fn download(session: &client::Handle<Handler>, path: &str, dest: &Path) ->
     let mut ch = session.channel_open_session().await.map_err(|e| e.to_string())?;
     ch.exec(true, format!("cat {remote}")).await.map_err(|e| e.to_string())?;
     let mut got = 0usize;
+    let mut told = std::time::Instant::now();
     while let Some(msg) = ch.wait().await {
         match msg {
             ChannelMsg::Data { data } => {
                 f.write_all(&data).map_err(|e| e.to_string())?;
                 got += data.len();
+                if told.elapsed() >= Duration::from_millis(100) {
+                    told = std::time::Instant::now();
+                    progress(got);
+                }
             }
             ChannelMsg::Eof | ChannelMsg::Close => break,
             _ => {}
         }
     }
     drop(f);
-    // ponytail: a cut connection halfway looks like a short file; compare with the size from chat.db if that bites
     if got == 0 {
         let _ = std::fs::remove_file(&part);
         return Err("the file isn't on the Mac (or is empty)".into());
     }
-    std::fs::rename(&part, dest).map_err(|e| e.to_string())
+    // a connection cut halfway looks like a short file; chat.db's size says so (with a little room for it being off)
+    if size > 0 && (got as i64) < size * 98 / 100 {
+        let _ = std::fs::remove_file(&part);
+        return Err("the copy was cut short".into());
+    }
+    std::fs::rename(&part, dest).map_err(|e| e.to_string())?;
+    if let Some(root) = dest.parent().and_then(Path::parent) {
+        prune_files(root, dest);
+    }
+    Ok(())
+}
+
+/// Keep the folder of copied files under `FILES_CAP`: each file sits in its own subfolder, oldest go first, never `keep`.
+fn prune_files(root: &Path, keep: &Path) {
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    for dir in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        for f in std::fs::read_dir(dir.path()).into_iter().flatten().flatten() {
+            if let Ok(md) = f.metadata()
+                && md.is_file()
+            {
+                files.push((md.modified().unwrap_or(std::time::UNIX_EPOCH), md.len(), f.path()));
+            }
+        }
+    }
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    files.sort();
+    for (_, len, p) in files {
+        if total <= FILES_CAP {
+            break;
+        }
+        if p != keep && std::fs::remove_file(&p).is_ok() {
+            total -= len;
+            if let Some(d) = p.parent() {
+                let _ = std::fs::remove_dir(d);
+            }
+        }
+    }
 }
 
 /// `http(s)://` words in some message text, minus the punctuation a sentence puts after a link.
@@ -1178,8 +1224,12 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let info = file_info(&session, &path, contact).await;
             let _ = ev.send(Event::FileInfo(path, info));
         }
-        Cmd::Download { path, dest } => {
-            let err = download(&session, &path, &dest).await.err();
+        Cmd::Download { path, dest, size } => {
+            let (ev2, p2) = (ev.clone(), path.clone());
+            let progress = move |got: usize| {
+                let _ = ev2.send(Event::DownloadProgress { path: p2.clone(), got, total: size });
+            };
+            let err = download(&session, &path, &dest, size, progress).await.err();
             let _ = ev.send(Event::Downloaded { path, dest, err });
         }
         Cmd::Bulk(path) => {

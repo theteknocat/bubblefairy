@@ -407,3 +407,17 @@ window.viewing .sidebar, window.viewing .conv, window.viewing .info-panel { box-
 .to-bottom image { -gtk-icon-size: 18px; }
 .to-bottom.shown { opacity: 1; }
 .to-bottom:hover { background-color: alpha(var(--ink), 0.18); }
+
+/* video player controls in the viewer: a translucent bar along the bottom, shown with the other controls */
+.viewer-bar { background: rgba(20, 20, 24, 0.72); border-radius: 16px; margin: 0 16px 16px 16px; padding: 6px 12px; opacity: 0; transition: opacity 200ms; }
+.viewer.controls .viewer-bar { opacity: 1; }
+.viewer-ctl { background: none; border: none; box-shadow: none; color: #fff; min-width: 28px; min-height: 28px; padding: 0; border-radius: 14px; }
+.viewer-ctl:hover { background: rgba(255, 255, 255, 0.18); }
+.viewer-ctl-text { background: rgba(255, 255, 255, 0.18); color: #fff; border: none; box-shadow: none; border-radius: 14px; padding: 4px 14px; }
+.viewer-time { color: #fff; font-size: 12px; font-variant-numeric: tabular-nums; }
+.viewer-scale trough { background: rgba(255, 255, 255, 0.28); min-height: 4px; }
+.viewer-scale highlight { background: #fff; }
+.viewer-scale slider { background: #fff; min-width: 12px; min-height: 12px; border: none; box-shadow: none; }
+.viewer-busy { background: rgba(20, 20, 24, 0.78); border-radius: 16px; padding: 14px 18px; margin-bottom: 24px; }
+.viewer-progress trough { background: rgba(255, 255, 255, 0.28); min-height: 6px; }
+.viewer-progress progress { background: #fff; min-height: 6px; }
