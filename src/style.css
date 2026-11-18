@@ -474,4 +474,6 @@ window.viewing .sidebar, window.viewing .conv, window.viewing .info-panel { box-
 /* the blinking text cursor: the full text colour, so it shows against the panel in both schemes */
 text, textview > text { caret-color: var(--ink); }
 
-.reactions { background: var(--them-a); color: var(--them-ink); border: 1px solid var(--them-edge); box-shadow: 0 1px 3px var(--shadow); border-radius: 999px; padding: 1px 7px; font-size: 0.82em; margin: 0 6px; }
+.reactions { background: var(--them-a); color: var(--them-ink); border: 1px solid var(--them-edge); box-shadow: 0 1px 3px var(--shadow); border-radius: 999px; min-height: 28px; padding: 0 8px; font-size: 1.15em; margin: 0 6px; }
+.reactions.one { min-width: 28px; padding: 0; }
+.reactions label { padding: 0; }

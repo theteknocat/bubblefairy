@@ -1979,7 +1979,7 @@ fn retry_failed(u: &Rc<Ui>, m: &Value) {
 
 /// Reactions (tapbacks) on a message: a small pill of the distinct emoji, with a count when there are more
 /// reactions than emoji; the tooltip says who reacted with what.
-fn reactions_pill(m: &Value, me: bool) -> Option<gtk::Box> {
+fn reactions_pill(m: &Value) -> Option<gtk::Box> {
     let rs = m["reactions"].as_array().filter(|r| !r.is_empty())?;
     let emoji = |r: &Value| match (r["emoji"].as_str().filter(|e| !e.is_empty()), r["type"].as_str()) {
         (Some(e), _) => e.to_string(),
@@ -2003,9 +2003,10 @@ fn reactions_pill(m: &Value, me: bool) -> Option<gtk::Box> {
     let l = gtk::Label::new(Some(&label));
     let pill = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     pill.add_css_class("reactions");
-    if me {
-        pill.add_css_class("mine");
+    if distinct.len() == 1 && rs.len() == 1 {
+        pill.add_css_class("one"); // a single reaction is a circle
     }
+    l.set_hexpand(true);
     pill.append(&l);
     let tip: Vec<String> = rs
         .iter()
@@ -2979,12 +2980,12 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
             line.append(&spin);
             part.add_css_class("pending");
         }
-        match reactions_pill(m, me).filter(|_| k == 0) {
+        match reactions_pill(m).filter(|_| k == 0) {
             Some(pill) => {
                 // the pill sits over the bubble's top corner (the side away from its tail); room above it
                 let ov = gtk::Overlay::new();
                 ov.set_halign(part.halign());
-                part.set_margin_top(12);
+                part.set_margin_top(20);
                 ov.set_child(Some(&part));
                 pill.set_valign(gtk::Align::Start);
                 pill.set_halign(if me { gtk::Align::Start } else { gtk::Align::End });
