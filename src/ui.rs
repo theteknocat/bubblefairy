@@ -4367,7 +4367,10 @@ fn link_for(u: &Ui, row: i64) -> Option<crate::mac::LinkPreview> {
     None
 }
 
-const LINK_W: i32 = 300;
+/// The width of every preview in the chat (photos, videos, link and file cards), like Messages: a portrait
+/// and a landscape photo are equally wide, the height follows the picture.
+const MEDIA_W: i32 = 300;
+const LINK_W: i32 = MEDIA_W;
 
 /// A shared link as Apple saved it, as one bubble: the preview image (if any) across the top, then
 /// the title and site. Clicking opens it in the browser.
@@ -4567,7 +4570,7 @@ fn photo_stack(u: &Rc<Ui>, paths: &[String], look: bubble::Look) -> gtk::Widget 
 /// A photo card. `card` = fixed square size (stacks); otherwise it takes the photo's own shape.
 /// Clicking opens the viewer.
 fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubble::Bubble {
-    let (w, h) = card.map(|c| (c, c)).unwrap_or((240, 180));
+    let (w, h) = card.map(|c| (c, c)).unwrap_or((MEDIA_W, MEDIA_W * 3 / 4));
     let p = bubble::Bubble::photo(look, w, h);
     if card.is_some() {
         p.add_css_class("stacked");
@@ -4780,9 +4783,10 @@ fn spin_host(p: &bubble::Bubble) -> gtk::Box {
 fn show_texture(p: &bubble::Bubble, t: &gdk::Texture) {
     stop_spin(p);
     if !p.has_css_class("stacked") && !p.has_css_class("fixed") {
-        // a single photo takes its own shape; stacked cards stay square and crop to fill
+        // a single photo is as wide as every other preview and as tall as its shape makes it (a very tall one is
+        // narrowed instead); stacked cards stay square and crop to fill
         let (w, h) = (t.width().max(1) as f64, t.height().max(1) as f64);
-        let s = (300.0 / w).min(340.0 / h).min(1.0);
+        let s = (f64::from(MEDIA_W) / w).min(2.2 * f64::from(MEDIA_W) / h);
         p.set_photo_size((w * s) as i32, (h * s) as i32);
     }
     p.set_texture(Some(t));
@@ -5583,7 +5587,7 @@ struct FileRef {
     missing: bool,
 }
 
-const FILE_W: i32 = 300;
+const FILE_W: i32 = MEDIA_W;
 
 /// The extra facts for a file, asked of the Mac once (the chat redraws when they arrive).
 fn file_info_for(u: &Ui, f: &FileRef) -> Option<crate::mac::FileInfo> {
@@ -5687,7 +5691,7 @@ fn file_card(u: &Rc<Ui>, f: &FileRef, look: bubble::Look) -> gtk::Widget {
 /// length in a corner. Clicking copies it from the Mac and opens it (playing it inside the app comes later).
 fn video_preview(u: &Rc<Ui>, f: &FileRef, look: bubble::Look) -> gtk::Widget {
     let info = file_info_for(u, f);
-    let p = bubble::Bubble::photo(look, 240, 180);
+    let p = bubble::Bubble::photo(look, MEDIA_W, MEDIA_W * 3 / 4);
     load_texture(u, &p, &f.path); // first, so its spinner is the first child (see `stop_spin`)
     let over = gtk::Box::new(gtk::Orientation::Vertical, 0);
     over.set_hexpand(true);
