@@ -70,6 +70,16 @@ fn history(id: i64) -> Vec<Value> {
     if id == 4 && std::env::var_os("BF_DEMO_FAIL").is_some() && let Some(m) = v.iter_mut().rev().find(|m| m["is_from_me"] == true) {
         m["error"] = json!(35);
     }
+    // BF_DEMO_REACT=1: reactions on my newest and on the newest received message
+    if std::env::var_os("BF_DEMO_REACT").is_some() {
+        let r = |who: &str, me: bool, e: &str| json!({"sender": who, "sender_name": who, "emoji": e, "is_from_me": me, "type": "custom"});
+        if let Some(m) = v.iter_mut().rev().find(|m| m["is_from_me"] == true) {
+            m["reactions"] = json!([r("Maya Thompson", false, "❤️")]);
+        }
+        if let Some(m) = v.iter_mut().rev().find(|m| m["is_from_me"] == false) {
+            m["reactions"] = json!([r("You", true, "😂"), r("Dad", false, "😂"), r("Sam", false, "👍")]);
+        }
+    }
     v
 }
 

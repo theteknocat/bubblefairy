@@ -1710,6 +1710,9 @@ fn on_message(u: &Rc<Ui>, m: Value) {
     if mutation {
         return;
     }
+    if m["is_reaction"].as_bool() == Some(true) {
+        u.send(Cmd::Recent(cid)); // the target message's reaction list comes with its history row
+    }
     watch_for_preview(u, cid, &m);
     // chat order and unread counts come from the Mac; coalesce bursts into one reload
     if !u.chats_queued.replace(true) {
@@ -1972,6 +1975,47 @@ fn retry_failed(u: &Rc<Ui>, m: &Value) {
     }
     u.send(Cmd::Resend { chat_id, to: direct_to(u, chat_id), text, mac_files, token });
     render_conv(u);
+}
+
+/// Reactions (tapbacks) on a message: a small pill of the distinct emoji, with a count when there are more
+/// reactions than emoji; the tooltip says who reacted with what.
+fn reactions_pill(m: &Value, me: bool) -> Option<gtk::Box> {
+    let rs = m["reactions"].as_array().filter(|r| !r.is_empty())?;
+    let emoji = |r: &Value| match (r["emoji"].as_str().filter(|e| !e.is_empty()), r["type"].as_str()) {
+        (Some(e), _) => e.to_string(),
+        (None, Some("love")) => "❤️".into(),
+        (None, Some("like")) => "👍".into(),
+        (None, Some("dislike")) => "👎".into(),
+        (None, Some("laugh")) => "😂".into(),
+        (None, Some("emphasis")) => "‼️".into(),
+        (None, Some("question")) => "❓".into(),
+        _ => "•".into(),
+    };
+    let mut distinct: Vec<String> = Vec::new();
+    for r in rs {
+        let e = emoji(r);
+        if !distinct.contains(&e) {
+            distinct.push(e);
+        }
+    }
+    let text = distinct.iter().take(3).cloned().collect::<Vec<_>>().join("");
+    let label = if rs.len() > distinct.len().min(3) { format!("{text} {}", rs.len()) } else { text };
+    let l = gtk::Label::new(Some(&label));
+    let pill = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    pill.add_css_class("reactions");
+    if me {
+        pill.add_css_class("mine");
+    }
+    pill.append(&l);
+    let tip: Vec<String> = rs
+        .iter()
+        .map(|r| {
+            let who = if r["is_from_me"].as_bool() == Some(true) { "You" } else { r["sender_name"].as_str().or(r["sender"].as_str()).unwrap_or("Someone") };
+            format!("{who}: {}", emoji(r))
+        })
+        .collect();
+    pill.set_tooltip_text(Some(&tip.join("\n")));
+    Some(pill)
 }
 
 /// The red "!" beside a failed message: a popup says so and offers to try again.
@@ -2935,7 +2979,20 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
             line.append(&spin);
             part.add_css_class("pending");
         }
-        line.append(&part);
+        match reactions_pill(m, me).filter(|_| k == 0) {
+            Some(pill) => {
+                // the pill sits over the bubble's top corner (the side away from its tail); room above it
+                let ov = gtk::Overlay::new();
+                ov.set_halign(part.halign());
+                part.set_margin_top(12);
+                ov.set_child(Some(&part));
+                pill.set_valign(gtk::Align::Start);
+                pill.set_halign(if me { gtk::Align::Start } else { gtk::Align::End });
+                ov.add_overlay(&pill);
+                line.append(&ov);
+            }
+            None => line.append(&part),
+        }
         // a failed message moves in from the edge for a red "!" that offers to send it again
         if last && failed_msg && !resending {
             line.append(&failed_button(u, m));
