@@ -39,6 +39,12 @@ pub enum Cmd {
     Preview(i64),
     /// Older messages, before the given ISO time (the oldest one loaded).
     Older { id: i64, before: String },
+    /// Message search over all chats (newest hits first); the answer carries `seq` back
+    Search { q: String, seq: u64 },
+    /// About 30 messages before and 30 after the message with row id `row` (a search hit)
+    Window { id: i64, row: i64 },
+    /// The page of messages after row `last` (created at `iso`): scrolled down inside a search window
+    Newer { id: i64, last: i64, iso: String },
     /// `to`: the other person in a 1:1 chat, sent directly so Messages picks the service (see handle)
     /// `files` go first, one message each, then `text` (if any) as its own message
     /// `token` names this send, so the answer (`Event::Sent`) can be matched to its waiting bubbles
@@ -169,6 +175,10 @@ pub enum Event {
     /// oldest first
     Recent(i64, Vec<Value>),
     Downloaded { path: String, dest: PathBuf, err: Option<String> },
+    Found { seq: u64, hits: Vec<Value> },
+    /// oldest first; `more`: there are newer messages than these
+    Window { id: i64, msgs: Vec<Value>, more: bool },
+    Newer { id: i64, msgs: Vec<Value>, more: bool },
     /// a copy from the Mac is under way: bytes so far of `total` (0 = unknown)
     DownloadProgress { path: String, got: usize, total: i64 },
 }
@@ -182,6 +192,8 @@ type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
 
 #[derive(Clone)]
 struct Rpc {
+    /// the imsg path on the Mac (reads run as one-off commands: `--no-contacts` is only there, see `cli`)
+    imsg: Arc<str>,
     tx: mpsc::UnboundedSender<String>,
     pending: Pending,
     next: Arc<AtomicU64>,
@@ -400,7 +412,7 @@ async fn connect(cfg: &Config, paths: &Paths, ev: &mpsc::UnboundedSender<Event>)
             let _ = ev3.send(Event::Message(m));
         }
     });
-    Ok(Conn { session, rpc: Rpc { tx, pending, next: Arc::new(AtomicU64::new(1)) }, dead })
+    Ok(Conn { session, rpc: Rpc { imsg: cfg.imsg.as_str().into(), tx, pending, next: Arc::new(AtomicU64::new(1)) }, dead })
 }
 
 fn dispatch(v: Value, pending: &Pending, ev: &mpsc::UnboundedSender<Event>, live: &mpsc::UnboundedSender<Value>) {
@@ -482,6 +494,36 @@ fn parse_receipt(line: &str) -> Option<Receipt> {
         read_at: unix(date_read),
         silenced: quiet == 1 && notified == 0,
     })
+}
+
+/// Run `imsg <args> --json --no-contacts` on the Mac and read its JSON lines. imsg looks up every contact on every
+/// call (over RPC it can't be turned off, and it costs ~1.2 s per chat list or history), so reads come this way and
+/// the names are filled in afterwards from our own reading of the Contacts.
+async fn cli(session: &client::Handle<Handler>, rpc: &Rpc, args: &str) -> Option<Vec<Value>> {
+    let out = exec(session, format!("{} {args} --json --no-contacts", sh_quote(&rpc.imsg))).await?;
+    Some(String::from_utf8_lossy(&out).lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+}
+
+/// One line of output from a read-only query on the Mac's chat.db.
+async fn chat_db(session: &client::Handle<Handler>, sql: &str) -> Option<String> {
+    let out = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(sql))).await?;
+    Some(String::from_utf8_lossy(&out).trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// The messages of chat `id` after row `after` (created at `iso`), about `n` of them, oldest first, and whether
+/// newer ones follow. imsg's history gives the newest messages of a range, so the range is bounded by the time
+/// of the n-th later message; that way the page has no gap before it.
+async fn page_after(session: &client::Handle<Handler>, rpc: &Rpc, id: i64, after: i64, iso: &str, n: usize) -> (Vec<Value>, bool) {
+    let sql = format!(
+        "select strftime('%Y-%m-%dT%H:%M:%SZ', m.date/1000000000+978307200+1,'unixepoch') from message m join chat_message_join j on j.message_id=m.ROWID where j.chat_id={id} and m.ROWID>{after} order by m.ROWID limit 1 offset {}",
+        n - 1
+    );
+    let end = chat_db(session, &sql).await;
+    let end_arg = end.as_ref().map(|e| format!(" --end {}", sh_quote(e))).unwrap_or_default();
+    let mut msgs = cli(session, rpc, &format!("history --chat-id {id} --limit 500 --start {}{end_arg} --attachments", sh_quote(iso))).await.unwrap_or_default();
+    msgs.reverse();
+    msgs.retain(|m| m["id"].as_i64().is_some_and(|i| i > after));
+    (msgs, end.is_some())
 }
 
 async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
@@ -1239,14 +1281,13 @@ const READ: Duration = Duration::from_secs(30);
 
 async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: mpsc::UnboundedSender<Event>) {
     match cmd {
-        Cmd::Chats(n) => match rpc.call("chats.list", json!({"limit": n}), READ).await {
-            Ok(r) => {
-                let mut chats = r.get("chats").and_then(Value::as_array).cloned().unwrap_or_default();
+        Cmd::Chats(n) => match cli(&session, &rpc, &format!("chats --limit {n}")).await {
+            Some(mut chats) => {
                 fix_unread(&session, &mut chats).await;
                 let _ = ev.send(Event::Chats(chats));
             }
-            Err(e) => {
-                let _ = ev.send(Event::Warn(e));
+            None => {
+                let _ = ev.send(Event::Warn("couldn't read the chat list from the Mac".into()));
             }
         },
         Cmd::FindChat(addr) => {
@@ -1254,28 +1295,71 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let _ = ev.send(Event::FoundChat(addr.first().cloned().unwrap_or_default(), found));
         }
         Cmd::History(id, limit) => {
-            let r = rpc.call("messages.history", json!({"chat_id": id, "limit": limit, "attachments": true}), READ).await;
-            if let Ok(r) = r {
-                let mut msgs = r.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
+            if let Some(mut msgs) = cli(&session, &rpc, &format!("history --chat-id {id} --limit {limit} --attachments")).await {
                 msgs.reverse(); // imsg returns newest first
                 add_services(&session, &mut msgs).await;
                 let _ = ev.send(Event::History(id, msgs));
             }
         }
         Cmd::Older { id, before } => {
-            let q = json!({"chat_id": id, "limit": 100, "end": before, "attachments": true});
-            let mut msgs = match rpc.call("messages.history", q, READ).await {
-                Ok(r) => r.get("messages").and_then(Value::as_array).cloned().unwrap_or_default(),
-                Err(_) => Vec::new(),
-            };
+            let mut msgs = cli(&session, &rpc, &format!("history --chat-id {id} --limit 100 --end {} --attachments", sh_quote(&before))).await.unwrap_or_default();
             msgs.reverse();
             add_services(&session, &mut msgs).await;
             let _ = ev.send(Event::Older(id, msgs));
         }
+        Cmd::Search { q, seq } => {
+            // Straight from chat.db: imsg's own search looks up a contact for every hit and took 6 s for a common word.
+            // Over half of all messages keep their text only in `attributedBody`, so those are searched too (candidates
+            // by a byte match on the blob, which also matches its markup, then checked against the decoded text).
+            let needle = q.to_lowercase();
+            let lit = needle.replace('\'', "''");
+            let sql = format!(
+                "select m.ROWID||'⁂'||m.guid||'⁂'||j.chat_id||'⁂'||m.is_from_me||'⁂'||\
+                 case when coalesce(m.text,'')='' then 'B'||hex(m.attributedBody) \
+                 else 'T'||replace(replace(replace(m.text,char(10),' '),char(13),' '),'⁂',' ') end \
+                 from message m join chat_message_join j on j.message_id=m.ROWID \
+                 where m.associated_message_type=0 and (instr(lower(m.text), '{lit}')>0 \
+                 or (coalesce(m.text,'')='' and instr(lower(cast(m.attributedBody as text)), '{lit}')>0)) \
+                 order by m.date desc limit 400"
+            );
+            let out = exec(&session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await.unwrap_or_default();
+            let hits: Vec<Value> = String::from_utf8_lossy(&out)
+                .lines()
+                .filter_map(|l| {
+                    let mut f = l.splitn(5, '⁂');
+                    let (id, guid, chat, mine, body) = (f.next()?.parse::<i64>().ok()?, f.next()?, f.next()?.parse::<i64>().ok()?, f.next()? == "1", f.next()?);
+                    let text = match body.split_at_checked(1)? {
+                        ("T", t) => t.to_string(),
+                        (_, b) => text_from_blob(&hex(b)?)?.replace(['\n', '\r'], " "),
+                    };
+                    text.to_lowercase().contains(&needle).then(|| json!({"id": id, "guid": guid, "chat_id": chat, "is_from_me": mine, "text": text}))
+                })
+                .take(100)
+                .collect();
+            let _ = ev.send(Event::Found { seq, hits });
+        }
+        Cmd::Window { id, row } => {
+            let iso = chat_db(&session, &format!("select strftime('%Y-%m-%dT%H:%M:%SZ', date/1000000000+978307200+1,'unixepoch') from message where ROWID={row}")).await.unwrap_or_default();
+            // before and after the hit at the same time (each is a round trip to the Mac)
+            let before_args = format!("history --chat-id {id} --limit 30 --end {} --attachments", sh_quote(&iso));
+            let (before, (after, more)) = tokio::join!(
+                cli(&session, &rpc, &before_args),
+                page_after(&session, &rpc, id, row, &iso, 30)
+            );
+            let mut msgs: Vec<Value> = before.unwrap_or_default();
+            msgs.reverse();
+            let have: std::collections::HashSet<String> = msgs.iter().filter_map(|m| m["guid"].as_str().map(String::from)).collect();
+            msgs.extend(after.into_iter().filter(|m| m["guid"].as_str().is_some_and(|g| !have.contains(g))));
+            add_services(&session, &mut msgs).await;
+            let _ = ev.send(Event::Window { id, msgs, more });
+        }
+        Cmd::Newer { id, last, iso } => {
+            let (mut msgs, more) = page_after(&session, &rpc, id, last, &iso, 40).await;
+            add_services(&session, &mut msgs).await;
+            let _ = ev.send(Event::Newer { id, msgs, more });
+        }
         Cmd::Recent(id) => {
-            let r = rpc.call("messages.history", json!({"chat_id": id, "limit": 10, "attachments": true}), READ).await;
-            if let Ok(r) = r {
-                let mut msgs = r.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
+            if let Some(mut msgs) = cli(&session, &rpc, &format!("history --chat-id {id} --limit 10 --attachments")).await {
                 msgs.reverse();
                 add_services(&session, &mut msgs).await;
                 let _ = ev.send(Event::Recent(id, msgs));
@@ -1292,8 +1376,7 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let _ = ev.send(Event::Receipt(id, receipt));
         }
         Cmd::Preview(id) => {
-            let r = rpc.call("messages.history", json!({"chat_id": id, "limit": 1, "attachments": true}), READ).await;
-            if let Some(mut m) = r.ok().and_then(|r| r.pointer("/messages/0").cloned()) {
+            if let Some(mut m) = cli(&session, &rpc, &format!("history --chat-id {id} --limit 1 --attachments")).await.and_then(|v| v.into_iter().next()) {
                 add_services(&session, std::slice::from_mut(&mut m)).await;
                 let _ = ev.send(Event::Preview(id, m));
             }

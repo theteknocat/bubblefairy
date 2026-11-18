@@ -110,6 +110,14 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
                 ev.send(Event::Sent { text: String::new(), files: Vec::new(), err: None, token })
             }
             Cmd::Older { id, .. } => ev.send(Event::Older(id, Vec::new())),
+            Cmd::Search { q, seq } => {
+                let q = q.to_lowercase();
+                let mut hits: Vec<Value> = (1..=7).flat_map(history).filter(|m| m["text"].as_str().is_some_and(|t| t.to_lowercase().contains(&q))).collect();
+                hits.reverse();
+                ev.send(Event::Found { seq, hits })
+            }
+            Cmd::Window { id, .. } => ev.send(Event::Window { id, msgs: history(id), more: false }),
+            Cmd::Newer { id, .. } => ev.send(Event::Newer { id, msgs: Vec::new(), more: false }),
             Cmd::Contacts => ev.send(Event::Contacts(Default::default())),
             Cmd::Link(id) => ev.send(Event::Link(id, None)),
             Cmd::FileInfo { path, .. } => ev.send(Event::FileInfo(path, None)),

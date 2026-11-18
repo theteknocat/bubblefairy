@@ -29,6 +29,13 @@ impl ChatScroll {
         s.imp().child.replace(Some(child.clone().upcast()));
         s
     }
+
+    /// The next layout keeps the view where it is (distance from the top) instead of the distance from the
+    /// bottom: for messages added below what's showing.
+    pub fn hold(&self) {
+        self.imp().hold.set(true);
+        self.queue_allocate();
+    }
 }
 
 mod imp {
@@ -54,6 +61,7 @@ mod imp {
         pub gap: Cell<f64>,
         /// we are changing the adjustment ourselves (not the user scrolling)
         pub adjusting: Cell<bool>,
+        pub hold: Cell<bool>,
     }
 
     impl Default for ChatScroll {
@@ -67,6 +75,7 @@ mod imp {
                 stuck: RefCell::default(),
                 gap: Cell::new(0.0),
                 adjusting: Cell::new(false),
+                hold: Cell::new(false),
             }
         }
     }
@@ -139,6 +148,12 @@ mod imp {
             let page = height as f64;
             let upper = (nat as f64).max(page);
             let max = upper - page;
+            if self.hold.replace(false)
+                && let Some(a) = self.vadjustment.borrow().as_ref()
+            {
+                self.gap.set((max - a.value()).max(0.0));
+                self.stuck.borrow().set(false);
+            }
             let value = if self.stuck.borrow().get() { max } else { (max - self.gap.get()).clamp(0.0, max) };
             // the gap is only ever changed by the user's scrolling: while the content is briefly shorter (a re-render)
             // the view is clamped, but the gap to return to is kept
