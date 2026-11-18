@@ -1558,15 +1558,14 @@ fn on_receipt(u: &Rc<Ui>, chat: i64, r: Option<crate::mac::Receipt>) {
     }
 }
 
-/// "Read 10:32", "Delivered", "Notifications silenced": the line under my newest message.
-fn receipt_text(r: &crate::mac::Receipt) -> Option<String> {
+/// "Read 10:32" or "Delivered": the line under my newest message. A message delivered while the recipient's Focus
+/// silenced notifications says "Delivered" too (what Messages on the phone shows); the tooltip tells.
+fn receipt_text(r: &crate::mac::Receipt) -> Option<(String, Option<&'static str>)> {
     if let Some(d) = r.read_at.and_then(|t| glib::DateTime::from_unix_local(t).ok()) {
-        return Some(format!("Read {}", short_time(&d)));
+        return Some((format!("Read {}", short_time(&d)), None));
     }
-    if r.silenced {
-        return Some("Notifications silenced".into());
-    }
-    r.delivered.then(|| "Delivered".into())
+    let tip = r.silenced.then_some("Delivered quietly: their Focus silenced notifications when it arrived");
+    r.delivered.then(|| ("Delivered".to_string(), tip))
 }
 
 /// Forget a send's waiting bubbles (it failed, or never showed up).
@@ -2778,13 +2777,25 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         line.append(&part);
         out.push(line.upcast());
     }
-    // under my newest message: delivered / read
-    if me && let Some(text) = m["chat_id"].as_i64().and_then(|chat| {
-        let st = u.st.borrow();
-        st.receipts.get(&chat).filter(|r| Some(r.msg) == m["id"].as_i64()).and_then(receipt_text)
-    }) {
+    // under a message that failed (any of mine), or my newest one: not delivered / delivered / read
+    let failed = me && m["error"].as_i64().unwrap_or(0) != 0;
+    let line = if failed {
+        Some(("Not delivered".to_string(), None))
+    } else if me {
+        m["chat_id"].as_i64().and_then(|chat| {
+            let st = u.st.borrow();
+            st.receipts.get(&chat).filter(|r| Some(r.msg) == m["id"].as_i64()).and_then(receipt_text)
+        })
+    } else {
+        None
+    };
+    if let Some((text, tip)) = line {
         let l = gtk::Label::new(Some(&text));
         l.add_css_class("receipt");
+        if failed {
+            l.add_css_class("failed");
+        }
+        l.set_tooltip_text(tip);
         l.set_halign(gtk::Align::End);
         out.push(l.upcast());
     }

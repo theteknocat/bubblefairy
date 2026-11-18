@@ -484,16 +484,19 @@ async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
     if ids.is_empty() {
         return;
     }
-    let sql = format!("select ROWID||'|'||service from message where ROWID in ({})", ids.join(","));
+    let sql = format!("select ROWID||'|'||service||'|'||error from message where ROWID in ({})", ids.join(","));
     let Some(out) = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await else { return };
-    let map: HashMap<i64, String> = String::from_utf8_lossy(&out)
+    let map: HashMap<i64, (String, i64)> = String::from_utf8_lossy(&out)
         .lines()
-        .filter_map(|l| l.split_once('|'))
-        .filter_map(|(id, svc)| Some((id.parse().ok()?, svc.to_string())))
+        .filter_map(|l| {
+            let mut f = l.splitn(3, '|');
+            Some((f.next()?.parse().ok()?, (f.next()?.to_string(), f.next().and_then(|e| e.parse().ok()).unwrap_or(0))))
+        })
         .collect();
     for m in msgs {
-        if let Some(svc) = m["id"].as_i64().and_then(|i| map.get(&i)) {
+        if let Some((svc, err)) = m["id"].as_i64().and_then(|i| map.get(&i)) {
             m["service"] = Value::String(svc.clone());
+            m["error"] = Value::from(*err); // non-zero: Messages shows "Not Delivered"
         }
     }
 }

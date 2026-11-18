@@ -91,7 +91,9 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 
 ### Delivery line (built)
 
-- Under my newest sent message in the open chat: "Read 10:32" (date when not today; only when the recipient sends read receipts), "Delivered", or "Notifications silenced" (delivered while their Focus silenced it, and not pushed through with Notify Anyway). Data is chat.db's `is_delivered`, `date_delivered`, `date_read`, `was_delivered_quietly`, `did_notify_recipient`, read over SSH by `Cmd::Receipts` (`mac::parse_receipt`), asked when a chat's history arrives and every 10 s while the window is active; `Event::Receipt` redraws just that message. `is_delivered` counts as delivered even where `date_delivered` was never filled in (it is sparse). RCS and SMS rows rarely carry a delivered flag, so those show nothing until read. Not yet checked against Messages' own wording on the Mac.
+- Under my newest sent message in the open chat: "Read 10:32" (date when not today; only when the recipient sends read receipts) or "Delivered". Data is chat.db's `is_delivered`, `date_delivered`, `date_read`, read over SSH by `Cmd::Receipts` (`mac::parse_receipt`), asked when a chat's history arrives and every 10 s while the window is active; `Event::Receipt` redraws just that message. `is_delivered` counts as delivered even where `date_delivered` was never filled in (it is sparse). RCS and SMS rows rarely carry a delivered flag, so those show nothing until read.
+- Under ANY message of mine that failed: a red "Not delivered" (chat.db `message.error` non-zero, added to every message by `add_services`; imsg's JSON has no such field). Checked against Peter's phone (a photo with error 35 shows "Not Delivered" there).
+- "Notifications silenced" was tried as the line for `was_delivered_quietly` and was wrong: the phone said "Delivered" for such a message. The quiet flag is now only a tooltip ("Delivered quietly…"), since the recipient's Focus at the time can't be known.
 
 ### Candidate features (investigated, not built)
 
