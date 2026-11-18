@@ -3760,7 +3760,7 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         (Some(x), Some(y)) => (y - x).abs(),
         _ => 0,
     };
-    let sep = i == 0 || gap(i - 1, i) > 30 * 60 || day(times[i - 1]) != day(times[i]);
+    let sep = i == 0 || gap(i - 1, i) > 60 * 60 || day(times[i - 1]) != day(times[i]);
     // the service (iMessage, RCS, Text Message) is named at the start of the chat and wherever it changes
     let service_of = |m: &Value| m["service"].as_str().unwrap_or(&c.chat_svc).to_string();
     let svc = service_of(m);
@@ -3785,8 +3785,8 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         out.push(l.upcast());
     }
     // a "run" = same sender, close together: shares one name label and one avatar
-    let run_prev = !sep && i > 0 && who(&msgs[i - 1]) == who(m) && gap(i - 1, i) < 180;
-    let run_next = i + 1 < msgs.len() && who(&msgs[i + 1]) == who(m) && gap(i, i + 1) < 180 && day(times[i]) == day(times[i + 1]);
+    let run_prev = !sep && i > 0 && who(&msgs[i - 1]) == who(m) && gap(i - 1, i) < 300;
+    let run_next = i + 1 < msgs.len() && who(&msgs[i + 1]) == who(m) && gap(i, i + 1) < 300 && day(times[i]) == day(times[i + 1]);
     // my messages still on their way continue my last run: no tail on the one above them
     let run_next = run_next || (i + 1 == msgs.len() && me && c.pending_tail);
     if group && !me && !run_prev {
