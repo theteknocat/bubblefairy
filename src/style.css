@@ -284,6 +284,8 @@ button.failed-btn {
   box-shadow: 0 1px 5px rgba(255, 69, 58, 0.5);
 }
 button.failed-btn:hover { background-color: #ff6a60; }
+button.failed-btn.retried { background-color: transparent; color: #ff453a; border: 2px solid #ff453a; box-shadow: none; }
+button.failed-btn.retried:hover { background-color: alpha(#ff453a, 0.18); }
 .receipt.failed { color: #ff5a73; }
 .time-sep {
   color: var(--ink-soft);

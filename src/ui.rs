@@ -33,7 +33,7 @@ pub struct Store {
     pub image_cache: PathBuf,
     /// newest message seen in BubbleFairy per chat (`chat_id=message_id` lines)
     pub seen_file: PathBuf,
-    /// failed messages that were sent again (they are hidden), one message id per line
+    /// failed messages that were sent again, one message id per line
     pub resent_file: PathBuf,
     /// pinned chats, one chat identifier per line, in pin order (our own: Messages' pins aren't readable)
     pub pins_file: PathBuf,
@@ -52,8 +52,9 @@ struct Pending {
 enum PendingItem {
     Text(String),
     File(PathBuf),
-    /// a picture sent again: what the chat already shows of it, and the file name Messages will give it
-    Picture(gdk::Texture, String),
+    /// a picture sent again: what the chat already shows of it, and the file name Messages will give it. Not drawn;
+    /// it only lets the new message show that picture without fetching it back from the Mac
+    Seed(gdk::Texture, String),
 }
 
 /// The map around an address, ready to show: tiles in a grid and where the address is on it.
@@ -123,10 +124,12 @@ struct State {
     host_key: String,
     connected: bool,
     chats_loaded: bool,
-    /// failed messages that were sent again: hidden, since the new one takes their place
+    /// failed messages that were sent again (their "!" is drawn as an outline, like Messages does)
     resent: HashSet<i64>,
-    /// resend token -> the failed message it replaces
+    /// resend token -> the failed message being sent again
     resend_of: HashMap<u64, i64>,
+    /// failed messages being sent again right now (drawn as a ghost with a spinner, in place)
+    resending: HashSet<i64>,
     /// the delivery / read receipt of each chat's newest sent message
     receipts: HashMap<i64, crate::mac::Receipt>,
     /// unsent text and files of the chats not on show, by chat id
@@ -1394,13 +1397,18 @@ fn on_event(u: &Rc<Ui>, e: Event) {
         Event::Sent { text, files, err, token } if u.st.borrow().resend_of.contains_key(&token) => {
             let mid = u.st.borrow_mut().resend_of.remove(&token);
             let _ = (text, files);
+            if let Some(mid) = mid {
+                u.st.borrow_mut().resending.remove(&mid);
+            }
             match (err, mid) {
                 (Some(err), _) => {
                     drop_pending(u, token);
+                    render_conv(u); // the message is a failed one again
                     show_banner(u, &format!("Message not sent: {err}"), false);
                 }
                 (None, Some(mid)) => {
-                    // sent again: the failed one goes (it is still in the Mac's database, with its error)
+                    // sent again: the failed one stays (it is still in the Mac's database, with its error), its
+                    // "!" turns to an outline
                     let all: String = {
                         let mut st = u.st.borrow_mut();
                         st.resent.insert(mid);
@@ -1409,6 +1417,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                     let _ = std::fs::create_dir_all(u.store.resent_file.parent().unwrap());
                     let _ = std::fs::write(&u.store.resent_file, all);
                     render_conv(u);
+                    // the seed for a picture isn't needed once the new message has come (or never does)
                     let u2 = u.clone();
                     glib::timeout_add_local_once(Duration::from_secs(20), move || drop_pending(&u2, token));
                 }
@@ -1642,14 +1651,14 @@ fn settle_pending(st: &mut State, cid: i64, m: &Value) {
                     has_files
                         && m["attachments"].as_array().into_iter().flatten().any(|a| a["transfer_name"].as_str().is_none_or(|n| n == name(f)))
                 }
-                PendingItem::Picture(_, n) => {
+                PendingItem::Seed(_, n) => {
                     has_files && m["attachments"].as_array().into_iter().flatten().any(|a| a["transfer_name"].as_str().is_none_or(|t| t == n))
                 }
             }
     });
     if let Some(i) = at {
         let gone = st.pending.remove(i);
-        if let PendingItem::Picture(t, n) = &gone.item {
+        if let PendingItem::Seed(t, n) = &gone.item {
             // the new message shows the picture we already had, with no fetch from the Mac
             let att = m["attachments"].as_array().into_iter().flatten().find(|a| a["transfer_name"].as_str().is_none_or(|x| x == n));
             if let Some(path) = att.and_then(|a| a["original_path"].as_str()).filter(|p| !p.is_empty()) {
@@ -1936,7 +1945,8 @@ fn direct_to(u: &Ui, chat_id: i64) -> Option<String> {
 }
 
 /// "Try Again" on a failed message: send its text and its attachments (already on the Mac) once more. The failed
-/// one is hidden once that has gone through, as Messages replaces it.
+/// message stays where it is, as a ghost with a spinner while that goes on; the new one appears at the end when the
+/// Mac has it (as in Messages, the failed one stays in the chat).
 fn retry_failed(u: &Rc<Ui>, m: &Value) {
     let (Some(chat_id), Some(mid)) = (m["chat_id"].as_i64(), m["id"].as_i64()) else { return };
     let text = clean_text(m);
@@ -1951,15 +1961,13 @@ fn retry_failed(u: &Rc<Ui>, m: &Value) {
     {
         let mut st = u.st.borrow_mut();
         st.resend_of.insert(token, mid);
-        // pictures we already show appear as the waiting bubble, so nothing has to be fetched back
+        st.resending.insert(mid);
+        // pictures we already show: the new message will show them too, nothing is fetched back
         for a in m["attachments"].as_array().into_iter().flatten() {
             let tex = a["original_path"].as_str().and_then(|p| st.textures.get(p)).cloned();
             if let (Some(t), Some(n)) = (tex, a["transfer_name"].as_str()) {
-                st.pending.push(Pending { token, chat_id, item: PendingItem::Picture(t, n.to_string()) });
+                st.pending.push(Pending { token, chat_id, item: PendingItem::Seed(t, n.to_string()) });
             }
-        }
-        if !text.is_empty() {
-            st.pending.push(Pending { token, chat_id, item: PendingItem::Text(text.clone()) });
         }
     }
     u.send(Cmd::Resend { chat_id, to: direct_to(u, chat_id), text, mac_files, token });
@@ -1982,6 +1990,9 @@ fn failed_button(u: &Rc<Ui>, m: &Value) -> gtk::Button {
     };
     let b = gtk::Button::with_label("!");
     b.add_css_class("failed-btn");
+    if m["id"].as_i64().is_some_and(|id| u.st.borrow().resent.contains(&id)) {
+        b.add_css_class("retried"); // sent again since: an outline, as Messages draws it
+    }
     b.set_valign(gtk::Align::Center);
     b.set_tooltip_text(Some("Not delivered"));
     let (u, m, b2) = (u.clone(), m.clone(), b.clone());
@@ -2841,9 +2852,6 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     if m["is_reaction"].as_bool() == Some(true) {
         return out;
     }
-    if m["id"].as_i64().is_some_and(|id| u.st.borrow().resent.contains(&id)) {
-        return out; // failed, then sent again
-    }
     let who = |m: &Value| (m["is_from_me"].as_bool() == Some(true), m["sender"].as_str().unwrap_or("").to_string());
     let me = m["is_from_me"].as_bool() == Some(true);
     let gap = |a: usize, b: usize| match (times[a], times[b]) {
@@ -2887,6 +2895,8 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     }
     // hovering a message shows its full date and time (the separators only show them for a group of messages)
     let when = dt.and_then(|d| d.format("%A, %B %-d, %Y at %H:%M").ok()).map(|g| g.to_string());
+    let failed_msg = me && m["error"].as_i64().unwrap_or(0) != 0;
+    let resending = failed_msg && m["id"].as_i64().is_some_and(|id| u.st.borrow().resending.contains(&id));
     let parts = message_parts(u, m, me, svc != "iMessage", !run_next);
     let n = parts.len();
     for (k, part) in parts.into_iter().enumerate() {
@@ -2909,16 +2919,26 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
                 line.append(&spacer);
             }
         }
+        if resending {
+            // being sent again: a ghost with a spinner, in place
+            let spin = gtk::Spinner::new();
+            spin.start();
+            spin.set_valign(gtk::Align::Center);
+            spin.set_margin_end(8);
+            spin.set_tooltip_text(Some("Sending again…"));
+            line.append(&spin);
+            part.add_css_class("pending");
+        }
         line.append(&part);
         // a failed message moves in from the edge for a red "!" that offers to send it again
-        if last && me && m["error"].as_i64().unwrap_or(0) != 0 {
+        if last && failed_msg && !resending {
             line.append(&failed_button(u, m));
         }
         out.push(line.upcast());
     }
     // under a message that failed (any of mine), or my newest one: not delivered / delivered / read
-    let failed = me && m["error"].as_i64().unwrap_or(0) != 0;
-    let receipt = if me && !failed {
+    let failed = failed_msg && !resending; // (while it is sent again: no "Not delivered" and no "!")
+    let receipt = if me && !failed_msg {
         m["chat_id"].as_i64().and_then(|chat| u.st.borrow().receipts.get(&chat).filter(|r| Some(r.msg) == m["id"].as_i64()).cloned())
     } else {
         None
@@ -3018,7 +3038,7 @@ fn render_conv(u: &Rc<Ui>) {
     }
     let pending: Vec<Pending> = {
         let st = u.st.borrow();
-        st.pending.iter().filter(|p| Some(p.chat_id) == st.sel).cloned().collect()
+        st.pending.iter().filter(|p| Some(p.chat_id) == st.sel && !matches!(p.item, PendingItem::Seed(..))).cloned().collect()
     };
     let times: Vec<Option<i64>> = msgs.iter().map(|m| m["created_at"].as_str().and_then(local).map(|d| d.to_unix())).collect();
     let ctx = Rc::new(ConvCtx { msgs, times, names, group, chat_svc, pending_tail: !pending.is_empty() });
@@ -3118,15 +3138,10 @@ fn pending_bubble(p: &Pending, sms: bool, last: bool) -> gtk::Widget {
             show_texture(&b, &t);
             b.upcast()
         }
-        PendingItem::Picture(t, _) => {
-            let b = bubble::Bubble::photo(look, 160, 120);
-            show_texture(&b, t);
-            b.upcast()
-        }
         item => {
             let b = bubble::Bubble::new(look);
             let text = match item {
-                PendingItem::Picture(_, n) => format!("📎 {n}"),
+                PendingItem::Seed(_, n) => format!("📎 {n}"),
                 PendingItem::Text(t) => t.clone(),
                 PendingItem::File(f) => format!("📎 {}", f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
             };

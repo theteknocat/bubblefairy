@@ -87,7 +87,12 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
                 let r = last.map(|msg| crate::mac::Receipt { msg, delivered: true, read_at: (id == 1).then(|| now_unix() - 600), silenced: id == 4 });
                 ev.send(Event::Receipt(id, r))
             }
-            Cmd::Resend { token, .. } => ev.send(Event::Sent { text: String::new(), files: Vec::new(), err: None, token }),
+            Cmd::Resend { token, .. } => {
+                if std::env::var_os("BF_DEMO_SLOW").is_some() {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await; // dev aid: time to look at the sending state
+                }
+                ev.send(Event::Sent { text: String::new(), files: Vec::new(), err: None, token })
+            }
             Cmd::Preview(id) => ev.send(Event::Preview(id, history(id).pop().unwrap())),
             Cmd::Send { chat_id, text, token, .. } => {
                 next += 1;
