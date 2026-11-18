@@ -3807,39 +3807,56 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
             mark_labels(p, &words, current);
         }
     }
-    // a reply quotes the message it answers (when that one is among those loaded)
+    // a reply: the message it answers in a small outlined bubble above the first reply of a run (like Messages),
+    // then a bar down to the replies; further replies to the same message just continue the bar
     if let Some(g) = m["reply_to_guid"].as_str().filter(|g| !g.is_empty()) {
-        let orig = msgs.iter().find(|x| x["guid"].as_str() == Some(g));
-        let (who, said) = match orig {
-            Some(o) if o["is_from_me"].as_bool() == Some(true) => ("You".to_string(), summary(o)),
-            Some(o) => (sender_name(o, names), summary(o)),
-            None => ("Earlier message".to_string(), String::new()),
+        let prev_same = msgs[..i].iter().rev().find(|x| x["is_reaction"].as_bool() != Some(true)).is_some_and(|x| x["reply_to_guid"].as_str() == Some(g));
+        let side = if me { gtk::Align::End } else { gtk::Align::Start };
+        let indent = |line: &gtk::Box| {
+            if group && !me {
+                let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                spacer.add_css_class("avatar-spacer");
+                line.append(&spacer);
+            }
         };
-        let q = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        q.add_css_class("reply-quote");
-        let h = gtk::Label::new(Some(&who));
-        h.add_css_class("reply-who");
-        h.set_xalign(0.0);
-        h.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        q.append(&h);
-        if !said.is_empty() {
+        if !prev_same {
+            let said = match msgs.iter().find(|x| x["guid"].as_str() == Some(g)) {
+                Some(o) => {
+                    let who = if o["is_from_me"].as_bool() == Some(true) { None } else { Some(sender_name(o, names)) };
+                    let t = clip_words(&summary(o), 160);
+                    match who.filter(|_| group) {
+                        Some(w) => format!("{w}: {t}"),
+                        None => t,
+                    }
+                }
+                None => "Earlier message".to_string(),
+            };
             let t = gtk::Label::new(Some(&said));
             t.add_css_class("reply-text");
+            t.set_wrap(true);
+            t.set_wrap_mode(gtk::pango::WrapMode::WordChar);
             t.set_xalign(0.0);
-            t.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            t.set_max_width_chars(36);
+            t.set_max_width_chars(34);
+            let q = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            q.add_css_class("reply-bubble");
             q.append(&t);
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            line.add_css_class("msg-line");
+            line.add_css_class("tight");
+            line.set_halign(side);
+            indent(&line);
+            line.append(&q);
+            out.push(line.upcast());
         }
+        let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        bar.add_css_class("thread-bar");
+        bar.set_halign(side);
+        bar.set_size_request(3, 16);
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        line.add_css_class("msg-line");
         line.add_css_class("tight");
-        line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
-        if group && !me {
-            let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-            spacer.add_css_class("avatar-spacer");
-            line.append(&spacer);
-        }
-        line.append(&q);
+        line.set_halign(side);
+        indent(&line);
+        line.append(&bar);
         out.push(line.upcast());
     }
     let n = parts.len();
@@ -3899,6 +3916,29 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
             line.append(&failed_button(u, m));
         }
         out.push(line.upcast());
+    }
+    // the message that was answered: how many replies it has (among the loaded ones); a click goes to the first
+    if let Some(g) = m["guid"].as_str() {
+        let first = msgs.iter().position(|x| x["reply_to_guid"].as_str() == Some(g));
+        let n = msgs.iter().filter(|x| x["reply_to_guid"].as_str() == Some(g)).count();
+        if let Some(first) = first {
+            let l = gtk::Label::new(Some(&format!("{n} {}", if n == 1 { "Reply" } else { "Replies" })));
+            l.add_css_class("reply-count");
+            l.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+            l.set_cursor_from_name(Some("pointer"));
+            let click = gtk::GestureClick::new();
+            let u2 = u.clone();
+            click.connect_released(move |_, _, _, _| {
+                let w = u2.msg_widgets.borrow().get(first).and_then(|ws| ws.iter().find(|w| w.has_css_class("msg-line") || w.has_css_class("tight")).or(ws.first()).cloned());
+                let adj = u2.scroller.vadjustment();
+                if let Some(y) = w.and_then(|w| w.compute_point(&u2.msgs, &gtk::graphene::Point::new(0.0, 0.0))).map(|p| p.y()) {
+                    u2.stick_bottom.set(false);
+                    adj.set_value((y as f64 - adj.page_size() / 3.0).max(0.0));
+                }
+            });
+            l.add_controller(click);
+            out.push(l.upcast());
+        }
     }
     // under a message that failed (any of mine), or my newest one: not delivered / delivered / read
     let failed = failed_msg && !resending; // (while it is sent again: no "Not delivered" and no "!")
@@ -6353,6 +6393,16 @@ fn sender_name(m: &Value, names: &HashMap<String, String>) -> String {
     }
     let h = m["sender"].as_str().unwrap_or("?");
     names.get(h).cloned().unwrap_or_else(|| pretty_handle(h))
+}
+
+/// `s` cut to about `max` characters at a word boundary, with an ellipsis.
+fn clip_words(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max).collect();
+    let cut = cut.rsplit_once(char::is_whitespace).map_or(cut.as_str(), |(a, _)| a);
+    format!("{}…", cut.trim_end())
 }
 
 fn clean_text(m: &Value) -> String {

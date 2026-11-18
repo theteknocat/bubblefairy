@@ -485,7 +485,8 @@ button.save-btn.done:disabled { opacity: 1; }
 
 .find-bar { margin: 0 14px; padding: 4px 6px 4px 12px; border-radius: 12px; background: var(--panel); font-size: 0.9em; font-weight: 600; color: var(--ink-soft); }
 
-/* the message a reply answers: a small quote above the bubble */
-.reply-quote { border-left: 3px solid var(--ink-soft); padding: 1px 0 1px 8px; margin: 4px 10px 0 10px; opacity: 0.8; }
-.reply-who { color: var(--ink-soft); font-size: 0.78em; font-weight: 700; }
-.reply-text { color: var(--ink-soft); font-size: 0.85em; }
+/* a reply: the message it answers in a small outlined bubble, a bar down to the replies, "N Replies" under the original */
+.reply-bubble { border: 1px solid var(--them-edge); border-radius: 16px; padding: 6px 12px; margin: 6px 6px 0 6px; opacity: 0.85; }
+.reply-text { color: var(--ink-soft); font-size: 0.86em; }
+.thread-bar { background-color: var(--ink-soft); min-width: 3px; min-height: 16px; border-radius: 2px; margin: 0 18px; }
+.reply-count { color: #3b82f6; font-size: 0.85em; margin: 5px 14px 4px 14px; }

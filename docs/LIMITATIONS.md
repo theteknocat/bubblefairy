@@ -15,8 +15,8 @@ BubbleFairy never asks you to do that.
 
 - **Send tapback reactions.** You see reactions on messages, but you can't add one. (The only other route is
   automating Messages' screen, which can react only to a chat's newest message and is unreliable.)
-- **Send inline replies.** A reply someone sends you shows the message it answers as a small quote above it, but
-  BubbleFairy can't send a threaded reply. Messages can't be told which message to answer.
+- **Send inline replies.** Replies are shown like in Messages (the original in a small bubble above the replies, "N Replies"
+  under the original), but BubbleFairy can't send a threaded reply. Messages can't be told which message to answer.
 - **Typing indicators.** You don't see that someone is typing, and they don't see that you are.
 - **Send read receipts.** Reading a chat in BubbleFairy doesn't tell the sender you read it, and doesn't mark it
   read on your Mac or other devices.
