@@ -3762,6 +3762,41 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
             mark_labels(p, &words, current);
         }
     }
+    // a reply quotes the message it answers (when that one is among those loaded)
+    if let Some(g) = m["reply_to_guid"].as_str().filter(|g| !g.is_empty()) {
+        let orig = msgs.iter().find(|x| x["guid"].as_str() == Some(g));
+        let (who, said) = match orig {
+            Some(o) if o["is_from_me"].as_bool() == Some(true) => ("You".to_string(), summary(o)),
+            Some(o) => (sender_name(o, names), summary(o)),
+            None => ("Earlier message".to_string(), String::new()),
+        };
+        let q = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        q.add_css_class("reply-quote");
+        let h = gtk::Label::new(Some(&who));
+        h.add_css_class("reply-who");
+        h.set_xalign(0.0);
+        h.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        q.append(&h);
+        if !said.is_empty() {
+            let t = gtk::Label::new(Some(&said));
+            t.add_css_class("reply-text");
+            t.set_xalign(0.0);
+            t.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            t.set_max_width_chars(36);
+            q.append(&t);
+        }
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        line.add_css_class("msg-line");
+        line.add_css_class("tight");
+        line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+        if group && !me {
+            let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            spacer.add_css_class("avatar-spacer");
+            line.append(&spacer);
+        }
+        line.append(&q);
+        out.push(line.upcast());
+    }
     let n = parts.len();
     for (k, part) in parts.into_iter().enumerate() {
         let last = k + 1 == n;

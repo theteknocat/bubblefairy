@@ -484,3 +484,8 @@ button.save-btn.done { background: #1e7d3a; color: #fff; border-color: #1e7d3a; 
 button.save-btn.done:disabled { opacity: 1; }
 
 .find-bar { margin: 0 14px; padding: 4px 6px 4px 12px; border-radius: 12px; background: var(--panel); font-size: 0.9em; font-weight: 600; color: var(--ink-soft); }
+
+/* the message a reply answers: a small quote above the bubble */
+.reply-quote { border-left: 3px solid var(--ink-soft); padding: 1px 0 1px 8px; margin: 4px 10px 0 10px; opacity: 0.8; }
+.reply-who { color: var(--ink-soft); font-size: 0.78em; font-weight: 700; }
+.reply-text { color: var(--ink-soft); font-size: 0.85em; }

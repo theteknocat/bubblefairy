@@ -84,6 +84,13 @@ fn history(id: i64) -> Vec<Value> {
             m["reactions"] = json!([r("You", true, "😂"), r("Dad", false, "😂"), r("Sam", false, "👍")]);
         }
     }
+    // BF_DEMO_REPLY=1: my newest message replies to the newest received one
+    if std::env::var_os("BF_DEMO_REPLY").is_some() {
+        let g = v.iter().rev().find(|m| m["is_from_me"] == false).map(|m| m["guid"].clone());
+        if let (Some(g), Some(m)) = (g, v.iter_mut().rev().find(|m| m["is_from_me"] == true)) {
+            m["reply_to_guid"] = g;
+        }
+    }
     v
 }
 
