@@ -130,6 +130,8 @@ struct State {
     save_to: HashMap<String, Vec<(PathBuf, SaveDone)>>,
     /// message search: the hits (newest first) per chat for the words typed in the sidebar search
     find_hits: HashMap<i64, Vec<Value>>,
+    /// how many messages match in each chat (the sidebar's "N matches")
+    find_counts: HashMap<i64, usize>,
     /// the chat open on a search hit: a window of its history around the hit, not its newest messages
     find_view: Option<FindView>,
     waiting: HashMap<String, Vec<bubble::Bubble>>,
@@ -889,11 +891,20 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         glib::timeout_add_local_once(Duration::from_millis(5000), move || u.search.set_text(&q)); // dev aid (after the connection is up)
     }
     if let Ok(id) = std::env::var("BF_FIND_OPEN").map(|v| v.parse::<i64>().unwrap_or(1)) {
-        // dev aid: open this chat from the search results, 2 s in
+        // dev aid: open this chat from the search results, 9 s in
         let u = ui.clone();
-        glib::timeout_add_local_once(Duration::from_millis(2000), move || select(&u, id));
+        glib::timeout_add_local_once(Duration::from_millis(9000), move || select(&u, id));
     }
 
+    if let Ok(ms) = std::env::var("BF_SIDE_END").map(|v| v.parse::<u64>().unwrap_or(9000)) {
+        // dev aid: scroll the sidebar to its end after this many ms
+        let u = ui.clone();
+        glib::timeout_add_local_once(Duration::from_millis(ms), move || {
+            if let Some(a) = side_adjustment(&u) {
+                a.set_value(a.upper());
+            }
+        });
+    }
     // scrolled to the end of the list: ask for older chats
     if let Some(adj) = side_adjustment(&ui) {
         let u = ui.clone();
@@ -1448,7 +1459,10 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 if let Some(last) = msgs.last() {
                     st.preview.insert(id, last.clone());
                 }
-                st.hist.insert(id, msgs);
+                // a chat open on a search hit shows a window of its history, not its newest messages
+                if st.find_view.as_ref().is_none_or(|f| f.chat != id) {
+                    st.hist.insert(id, msgs);
+                }
                 st.loading.remove(&id);
                 st.sel == Some(id)
             };
@@ -1477,7 +1491,34 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 render_conv(u);
             }
         }
-        Event::Found { seq, hits } => on_found(u, seq, hits),
+        Event::Found { seq, hits, counts } => on_found(u, seq, hits, counts),
+        Event::ChatFound { chat, q, hits } => {
+            // the chat's own list of matches (the sidebar's came from the newest 100 across all chats): the real
+            // count, and every match to step through. The hit on show stays the current one.
+            if u.search.text().trim() != q || hits.is_empty() {
+                return;
+            }
+            let (showing, opened) = {
+                let st = u.st.borrow();
+                (st.find_view.as_ref().is_some_and(|f| f.chat == chat), st.sel == Some(chat))
+            };
+            {
+                let mut st = u.st.borrow_mut();
+                let cur = st.find_view.as_ref().filter(|f| f.chat == chat).and_then(|f| st.find_hits.get(&chat)?.get(f.idx)).map(|h| h["guid"].clone());
+                let idx = cur.and_then(|g| hits.iter().position(|h| h["guid"] == g)).unwrap_or(0);
+                st.find_counts.entry(chat).or_insert(hits.len());
+                st.find_hits.insert(chat, hits);
+                if let Some(f) = st.find_view.as_mut().filter(|f| f.chat == chat) {
+                    f.idx = idx;
+                }
+            }
+            if showing {
+                update_find_bar(u);
+            } else if opened {
+                begin_find(u, chat, 0); // a chat whose matches were all older than the sidebar's 100
+            }
+            style_rows(u);
+        }
         Event::Window { id, msgs, more } => {
             let ok = {
                 let mut st = u.st.borrow_mut();
@@ -2033,14 +2074,21 @@ fn select(u: &Rc<Ui>, id: i64) {
     mark_tile(u, id);
     u.stick_bottom.set(true);
     // picked from a message search: open on its newest hit instead of the newest messages
-    let on_hit = !u.search.text().trim().is_empty() && u.st.borrow().find_hits.contains_key(&id);
+    let searching = !u.search.text().trim().is_empty();
+    let on_hit = searching && u.st.borrow().find_hits.contains_key(&id);
+    // matches only older than the 100 newest: the chat's own list comes first (`Event::ChatFound`)
+    let counted = searching && !on_hit && u.st.borrow().find_counts.contains_key(&id);
     if !on_hit {
         u.st.borrow_mut().find_view = None;
         update_find_bar(u);
     }
     render_conv(u); // cached view right away, fresh history shortly
+    if counted {
+        u.send(Cmd::ChatHits { chat: id, q: u.search.text().trim().to_string() });
+    }
     if on_hit {
         begin_find(u, id, 0);
+        u.send(Cmd::ChatHits { chat: id, q: u.search.text().trim().to_string() });
         u.compose.grab_focus();
         return;
     }
@@ -2349,6 +2397,29 @@ fn reactions_pill(m: &Value) -> Option<gtk::Box> {
         .collect();
     pill.set_tooltip_text(Some(&tip.join("\n")));
     Some(pill)
+}
+
+/// Where the first match of the words sits, as a y in `to`: the line of the label it is in (a long message is
+/// taller than the view, so its top says nothing about where the word is).
+fn match_y(ws: &[gtk::Widget], words: &[String], to: &gtk::Widget) -> Option<f32> {
+    fn find(w: &gtk::Widget, words: &[String], to: &gtk::Widget) -> Option<f32> {
+        if let Some(l) = w.downcast_ref::<gtk::Label>() {
+            let text = l.text().to_ascii_lowercase();
+            if let Some(at) = words.iter().filter(|x| x.is_ascii() && !x.is_empty()).filter_map(|x| text.find(x.as_str())).min() {
+                let line = l.layout().index_to_pos(at as i32).y() as f32 / gtk::pango::SCALE as f32 + l.layout_offsets().1 as f32;
+                return l.compute_point(to, &gtk::graphene::Point::new(0.0, line)).map(|p| p.y());
+            }
+        }
+        let mut c = w.first_child();
+        while let Some(x) = c {
+            if let Some(y) = find(&x, words, to) {
+                return Some(y);
+            }
+            c = x.next_sibling();
+        }
+        None
+    }
+    ws.iter().find_map(|w| find(w, words, to))
 }
 
 fn mark_labels(w: &gtk::Widget, words: &[String], strong: bool) {
@@ -3109,7 +3180,7 @@ fn row_matches(u: &Ui, row: &gtk::ListBoxRow) -> bool {
     }
     let Ok(st) = u.st.try_borrow() else { return true };
     let Some(c) = usize::try_from(row.index()).ok().and_then(|i| st.chats.get(i)) else { return true };
-    if c["id"].as_i64().is_some_and(|id| st.find_hits.contains_key(&id)) {
+    if c["id"].as_i64().is_some_and(|id| st.find_counts.contains_key(&id) || st.find_hits.contains_key(&id)) {
         return true; // a message in it matches
     }
     let digits: String = q.chars().filter(char::is_ascii_digit).collect();
@@ -3199,7 +3270,7 @@ fn style_rows(u: &Rc<Ui>) {
     for (id, p) in parts {
         highlight(&p.name, if searching { &words } else { &[] }, false);
         let hits = if searching { st.find_hits.get(&id) } else { None };
-        let text = match hits.and_then(|h| h.first().map(|m| (m, h.len()))) {
+        let text = match hits.and_then(|h| h.first().map(|m| (m, st.find_counts.get(&id).copied().unwrap_or(h.len())))) {
             Some((m, n)) => {
                 let s = snippet(m["text"].as_str().unwrap_or(""), &words);
                 if n > 1 { format!("{n} matches · {s}") } else { s }
@@ -3219,8 +3290,9 @@ fn search_changed(u: &Rc<Ui>) {
     if q.chars().count() < 2 {
         u.search_spin.set_spinning(false);
         u.search_spin.set_visible(false);
-        let had = !u.st.borrow().find_hits.is_empty();
+        let had = !u.st.borrow().find_counts.is_empty();
         u.st.borrow_mut().find_hits.clear();
+        u.st.borrow_mut().find_counts.clear();
         if q.is_empty() && u.st.borrow().find_view.is_some() {
             end_find(u);
         }
@@ -3241,7 +3313,7 @@ fn search_changed(u: &Rc<Ui>) {
 }
 
 /// The answer to a message search.
-fn on_found(u: &Rc<Ui>, seq: u64, hits: Vec<Value>) {
+fn on_found(u: &Rc<Ui>, seq: u64, hits: Vec<Value>, counts: HashMap<i64, usize>) {
     if seq != u.msearch_gen.get() {
         return; // typed on since
     }
@@ -3253,7 +3325,11 @@ fn on_found(u: &Rc<Ui>, seq: u64, hits: Vec<Value>) {
             by_chat.entry(c).or_default().push(h);
         }
     }
-    u.st.borrow_mut().find_hits = by_chat;
+    {
+        let mut st = u.st.borrow_mut();
+        st.find_hits = by_chat;
+        st.find_counts = counts;
+    }
     apply_search(u);
 }
 
@@ -3329,7 +3405,7 @@ fn load_newer(u: &Rc<Ui>) {
         }
         (chat, last, iso)
     };
-    u.send(Cmd::Newer { id: req.0, last: req.1, iso: req.2 });
+    u.send(Cmd::Newer { id: req.0, iso: req.2 });
 }
 
 /// After a redraw: scroll to the message a search hit points at (its words are drawn in the strong colour).
@@ -3341,7 +3417,7 @@ fn show_goto(u: &Rc<Ui>) {
     let target = move |u: &Ui| {
         let st = u.st.borrow();
         let i = st.sel.and_then(|c| st.hist.get(&c)).and_then(|h| h.iter().position(|m| m["guid"].as_str() == Some(&guid)))?;
-        u.msg_widgets.borrow().get(i).and_then(|w| w.first().cloned())
+        u.msg_widgets.borrow().get(i).cloned()
     };
     // Keep the message a third of the way down for a moment: pictures and link cards below it get their size
     // late, and the view is anchored to the bottom, so without this the target would drift out of sight.
@@ -3353,12 +3429,14 @@ fn show_goto(u: &Rc<Ui>) {
             return glib::ControlFlow::Break;
         }
         let adj = u2.scroller.vadjustment();
-        if let Some(w) = target(&u2)
-            && let Some(p) = w.compute_point(&u2.msgs, &gtk::graphene::Point::new(0.0, 0.0))
+        if let Some(ws) = target(&u2)
+            && let Some(w) = ws.first()
             && w.height() > 0
             && adj.upper() > adj.page_size()
+            && let Some(y) = match_y(&ws, &search_words(u2.search.text().trim()), u2.msgs.upcast_ref())
+                .or_else(|| w.compute_point(&u2.msgs, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| p.y()))
         {
-            let want = (p.y() as f64 - adj.page_size() / 3.0).max(0.0);
+            let want = (y as f64 - adj.page_size() / 3.0).max(0.0);
             if (adj.value() - want).abs() > 1.0 {
                 u2.stick_bottom.set(false);
                 adj.set_value(want);
@@ -3370,6 +3448,11 @@ fn show_goto(u: &Rc<Ui>) {
 
 /// imsg's chat list has no offset, so older chats mean asking for a longer list; the answer replaces the list.
 fn load_more_chats(u: &Rc<Ui>) {
+    // while searching the list is a short, filtered one that is always "at its end": asking for more would chain
+    // (each answer rebuilds every row) and the results come from the search anyway
+    if !u.search.text().trim().is_empty() {
+        return;
+    }
     let n = {
         let mut st = u.st.borrow_mut();
         if !st.chats_loaded || !st.more_chats || st.more_loading || !st.connected {

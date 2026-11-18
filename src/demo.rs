@@ -114,7 +114,17 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
                 let q = q.to_lowercase();
                 let mut hits: Vec<Value> = (1..=7).flat_map(history).filter(|m| m["text"].as_str().is_some_and(|t| t.to_lowercase().contains(&q))).collect();
                 hits.reverse();
-                ev.send(Event::Found { seq, hits })
+                let mut counts = std::collections::HashMap::new();
+                for h in &hits {
+                    *counts.entry(h["chat_id"].as_i64().unwrap_or(0)).or_insert(0usize) += 1;
+                }
+                ev.send(Event::Found { seq, hits, counts })
+            }
+            Cmd::ChatHits { chat, q } => {
+                let ql = q.to_lowercase();
+                let mut hits: Vec<Value> = history(chat).into_iter().filter(|m| m["text"].as_str().is_some_and(|t| t.to_lowercase().contains(&ql))).collect();
+                hits.reverse();
+                ev.send(Event::ChatFound { chat, q, hits })
             }
             Cmd::Window { id, .. } => ev.send(Event::Window { id, msgs: history(id), more: false }),
             Cmd::Newer { id, .. } => ev.send(Event::Newer { id, msgs: Vec::new(), more: false }),

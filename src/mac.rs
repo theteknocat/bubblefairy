@@ -41,10 +41,12 @@ pub enum Cmd {
     Older { id: i64, before: String },
     /// Message search over all chats (newest hits first); the answer carries `seq` back
     Search { q: String, seq: u64 },
+    /// All the matches in one chat (up to 500), for the find bar's count and stepping
+    ChatHits { chat: i64, q: String },
     /// About 30 messages before and 30 after the message with row id `row` (a search hit)
     Window { id: i64, row: i64 },
-    /// The page of messages after row `last` (created at `iso`): scrolled down inside a search window
-    Newer { id: i64, last: i64, iso: String },
+    /// The page of messages from time `iso` on: scrolled down inside a search window
+    Newer { id: i64, iso: String },
     /// `to`: the other person in a 1:1 chat, sent directly so Messages picks the service (see handle)
     /// `files` go first, one message each, then `text` (if any) as its own message
     /// `token` names this send, so the answer (`Event::Sent`) can be matched to its waiting bubbles
@@ -175,7 +177,9 @@ pub enum Event {
     /// oldest first
     Recent(i64, Vec<Value>),
     Downloaded { path: String, dest: PathBuf, err: Option<String> },
-    Found { seq: u64, hits: Vec<Value> },
+    /// `counts`: how many messages match in each chat (the hits are only the newest ones)
+    Found { seq: u64, hits: Vec<Value>, counts: HashMap<i64, usize> },
+    ChatFound { chat: i64, q: String, hits: Vec<Value> },
     /// oldest first; `more`: there are newer messages than these
     Window { id: i64, msgs: Vec<Value>, more: bool },
     Newer { id: i64, msgs: Vec<Value>, more: bool },
@@ -504,25 +508,88 @@ async fn cli(session: &client::Handle<Handler>, rpc: &Rpc, args: &str) -> Option
     Some(String::from_utf8_lossy(&out).lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
 }
 
+/// SQL: does message `m` contain the (lower case, quote-escaped) text `lit`? A message's text is in `text`, or else
+/// in its `attributedBody` blob, where it follows the `NSString` marker and a few length bytes and ends at the first
+/// 0x86 byte; what comes after is markup (class and attribute names) that must not match.
+// ponytail: a 0x86 inside a multi-byte character (some emoji) ends the text early
+fn match_sql(lit: &str) -> String {
+    let after = "substr(m.attributedBody, instr(m.attributedBody, X'4e53537472696e67')+13)";
+    format!(
+        "(instr(lower(m.text), '{lit}')>0 or (coalesce(m.text,'')='' and \
+         instr(lower(cast(substr({after}, 1, coalesce(nullif(instr({after}, X'86'),0)-1, 100000)) as text)), '{lit}')>0))"
+    )
+}
+
+/// How many messages match in each chat (all of them, not only the newest hits).
+async fn search_counts(session: &client::Handle<Handler>, q: &str) -> HashMap<i64, usize> {
+    let lit = q.to_lowercase().replace('\'', "''");
+    let sql = format!(
+        "select j.chat_id||'⁂'||count(*) from message m join chat_message_join j on j.message_id=m.ROWID where m.associated_message_type=0 and {} group by j.chat_id",
+        match_sql(&lit)
+    );
+    let out = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await.unwrap_or_default();
+    String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|l| {
+            let (c, n) = l.split_once('⁂')?;
+            Some((c.parse().ok()?, n.parse().ok()?))
+        })
+        .collect()
+}
+
+/// Messages containing `q`, newest first, straight from chat.db (all chats, or one). imsg's own search looks up a
+/// contact for every hit and took 6 s for a common word. Over half of all messages keep their text only in
+/// `attributedBody`, so those are searched too: candidates (at most `candidates`) by a byte match on the blob, which
+/// also matches its markup, then checked against the decoded text; at most `keep` hits come back.
+async fn search_hits(session: &client::Handle<Handler>, q: &str, chat: Option<i64>, candidates: usize, keep: usize) -> Vec<Value> {
+    let needle = q.to_lowercase();
+    let lit = needle.replace('\'', "''");
+    let only = chat.map(|c| format!("and j.chat_id={c}")).unwrap_or_default();
+    let sql = format!(
+        "select m.ROWID||'⁂'||m.guid||'⁂'||j.chat_id||'⁂'||m.is_from_me||'⁂'||\
+         case when coalesce(m.text,'')='' then 'B'||hex(m.attributedBody) \
+         else 'T'||replace(replace(replace(m.text,char(10),' '),char(13),' '),'⁂',' ') end \
+         from message m join chat_message_join j on j.message_id=m.ROWID \
+         where m.associated_message_type=0 {only} and {} \
+         order by m.date desc limit {candidates}",
+        match_sql(&lit)
+    );
+    let out = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await.unwrap_or_default();
+    String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.splitn(5, '⁂');
+            let (id, guid, chat, mine, body) = (f.next()?.parse::<i64>().ok()?, f.next()?, f.next()?.parse::<i64>().ok()?, f.next()? == "1", f.next()?);
+            let text = match body.split_at_checked(1)? {
+                ("T", t) => t.to_string(),
+                (_, b) => text_from_blob(&hex(b)?)?.replace(['\n', '\r'], " "),
+            };
+            text.to_lowercase().contains(&needle).then(|| json!({"id": id, "guid": guid, "chat_id": chat, "is_from_me": mine, "text": text}))
+        })
+        .take(keep)
+        .collect()
+}
+
 /// One line of output from a read-only query on the Mac's chat.db.
 async fn chat_db(session: &client::Handle<Handler>, sql: &str) -> Option<String> {
     let out = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(sql))).await?;
     Some(String::from_utf8_lossy(&out).trim().to_string()).filter(|s| !s.is_empty())
 }
 
-/// The messages of chat `id` after row `after` (created at `iso`), about `n` of them, oldest first, and whether
+/// The messages of chat `id` from time `iso` on, about `n` of them, oldest first, and whether
 /// newer ones follow. imsg's history gives the newest messages of a range, so the range is bounded by the time
 /// of the n-th later message; that way the page has no gap before it.
-async fn page_after(session: &client::Handle<Handler>, rpc: &Rpc, id: i64, after: i64, iso: &str, n: usize) -> (Vec<Value>, bool) {
+async fn page_after(session: &client::Handle<Handler>, rpc: &Rpc, id: i64, iso: &str, n: usize) -> (Vec<Value>, bool) {
+    // by date, not by row id: messages that arrived later (iCloud syncs) can have a higher row id and an old date
     let sql = format!(
-        "select strftime('%Y-%m-%dT%H:%M:%SZ', m.date/1000000000+978307200+1,'unixepoch') from message m join chat_message_join j on j.message_id=m.ROWID where j.chat_id={id} and m.ROWID>{after} order by m.ROWID limit 1 offset {}",
+        "select strftime('%Y-%m-%dT%H:%M:%SZ', m.date/1000000000+978307200+1,'unixepoch') from message m join chat_message_join j on j.message_id=m.ROWID where j.chat_id={id} and m.date >= (strftime('%s','{}')-978307200)*1000000000 order by m.date limit 1 offset {}",
+        iso.replace('\'', ""),
         n - 1
     );
     let end = chat_db(session, &sql).await;
     let end_arg = end.as_ref().map(|e| format!(" --end {}", sh_quote(e))).unwrap_or_default();
     let mut msgs = cli(session, rpc, &format!("history --chat-id {id} --limit 500 --start {}{end_arg} --attachments", sh_quote(iso))).await.unwrap_or_default();
     msgs.reverse();
-    msgs.retain(|m| m["id"].as_i64().is_some_and(|i| i > after));
     (msgs, end.is_some())
 }
 
@@ -1308,35 +1375,12 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let _ = ev.send(Event::Older(id, msgs));
         }
         Cmd::Search { q, seq } => {
-            // Straight from chat.db: imsg's own search looks up a contact for every hit and took 6 s for a common word.
-            // Over half of all messages keep their text only in `attributedBody`, so those are searched too (candidates
-            // by a byte match on the blob, which also matches its markup, then checked against the decoded text).
-            let needle = q.to_lowercase();
-            let lit = needle.replace('\'', "''");
-            let sql = format!(
-                "select m.ROWID||'⁂'||m.guid||'⁂'||j.chat_id||'⁂'||m.is_from_me||'⁂'||\
-                 case when coalesce(m.text,'')='' then 'B'||hex(m.attributedBody) \
-                 else 'T'||replace(replace(replace(m.text,char(10),' '),char(13),' '),'⁂',' ') end \
-                 from message m join chat_message_join j on j.message_id=m.ROWID \
-                 where m.associated_message_type=0 and (instr(lower(m.text), '{lit}')>0 \
-                 or (coalesce(m.text,'')='' and instr(lower(cast(m.attributedBody as text)), '{lit}')>0)) \
-                 order by m.date desc limit 400"
-            );
-            let out = exec(&session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await.unwrap_or_default();
-            let hits: Vec<Value> = String::from_utf8_lossy(&out)
-                .lines()
-                .filter_map(|l| {
-                    let mut f = l.splitn(5, '⁂');
-                    let (id, guid, chat, mine, body) = (f.next()?.parse::<i64>().ok()?, f.next()?, f.next()?.parse::<i64>().ok()?, f.next()? == "1", f.next()?);
-                    let text = match body.split_at_checked(1)? {
-                        ("T", t) => t.to_string(),
-                        (_, b) => text_from_blob(&hex(b)?)?.replace(['\n', '\r'], " "),
-                    };
-                    text.to_lowercase().contains(&needle).then(|| json!({"id": id, "guid": guid, "chat_id": chat, "is_from_me": mine, "text": text}))
-                })
-                .take(100)
-                .collect();
-            let _ = ev.send(Event::Found { seq, hits });
+            let (hits, counts) = tokio::join!(search_hits(&session, &q, None, 400, 100), search_counts(&session, &q));
+            let _ = ev.send(Event::Found { seq, hits, counts });
+        }
+        Cmd::ChatHits { chat, q } => {
+            let hits = search_hits(&session, &q, Some(chat), 1500, 500).await;
+            let _ = ev.send(Event::ChatFound { chat, q, hits });
         }
         Cmd::Window { id, row } => {
             let iso = chat_db(&session, &format!("select strftime('%Y-%m-%dT%H:%M:%SZ', date/1000000000+978307200+1,'unixepoch') from message where ROWID={row}")).await.unwrap_or_default();
@@ -1344,7 +1388,7 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let before_args = format!("history --chat-id {id} --limit 30 --end {} --attachments", sh_quote(&iso));
             let (before, (after, more)) = tokio::join!(
                 cli(&session, &rpc, &before_args),
-                page_after(&session, &rpc, id, row, &iso, 30)
+                page_after(&session, &rpc, id, &iso, 30)
             );
             let mut msgs: Vec<Value> = before.unwrap_or_default();
             msgs.reverse();
@@ -1353,8 +1397,8 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             add_services(&session, &mut msgs).await;
             let _ = ev.send(Event::Window { id, msgs, more });
         }
-        Cmd::Newer { id, last, iso } => {
-            let (mut msgs, more) = page_after(&session, &rpc, id, last, &iso, 40).await;
+        Cmd::Newer { id, iso } => {
+            let (mut msgs, more) = page_after(&session, &rpc, id, &iso, 40).await;
             add_services(&session, &mut msgs).await;
             let _ = ev.send(Event::Newer { id, msgs, more });
         }
