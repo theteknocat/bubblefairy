@@ -2005,7 +2005,13 @@ fn failed_button(u: &Rc<Ui>, m: &Value) -> gtk::Button {
         col.set_margin_bottom(6);
         col.set_margin_start(8);
         col.set_margin_end(8);
+        let hint = gtk::Label::new(Some("Trying again sends a new message. This one stays here and stays marked as not delivered on your Apple devices until you delete it there."));
+        hint.add_css_class("dim-label");
+        hint.set_wrap(true);
+        hint.set_max_width_chars(34);
+        hint.set_xalign(0.0);
         col.append(&note);
+        col.append(&hint);
         col.append(&again);
         let pop = gtk::Popover::new();
         pop.set_child(Some(&col));
@@ -2990,6 +2996,7 @@ fn render_conv(u: &Rc<Ui>) {
     let now_svc = msgs
         .iter()
         .rev()
+        .filter(|m| m["error"].as_i64().unwrap_or(0) == 0) // a failed send says nothing about what works now
         .find_map(|m| m["service"].as_str().map(String::from))
         .or(preview_svc)
         .unwrap_or_else(|| chat_svc.clone());
