@@ -52,6 +52,8 @@ struct Pending {
 enum PendingItem {
     Text(String),
     File(PathBuf),
+    /// a picture sent again: what the chat already shows of it, and the file name Messages will give it
+    Picture(gdk::Texture, String),
 }
 
 /// The map around an address, ready to show: tiles in a grid and where the address is on it.
@@ -1640,10 +1642,20 @@ fn settle_pending(st: &mut State, cid: i64, m: &Value) {
                     has_files
                         && m["attachments"].as_array().into_iter().flatten().any(|a| a["transfer_name"].as_str().is_none_or(|n| n == name(f)))
                 }
+                PendingItem::Picture(_, n) => {
+                    has_files && m["attachments"].as_array().into_iter().flatten().any(|a| a["transfer_name"].as_str().is_none_or(|t| t == n))
+                }
             }
     });
     if let Some(i) = at {
         let gone = st.pending.remove(i);
+        if let PendingItem::Picture(t, n) = &gone.item {
+            // the new message shows the picture we already had, with no fetch from the Mac
+            let att = m["attachments"].as_array().into_iter().flatten().find(|a| a["transfer_name"].as_str().is_none_or(|x| x == n));
+            if let Some(path) = att.and_then(|a| a["original_path"].as_str()).filter(|p| !p.is_empty()) {
+                st.textures.entry(path.to_string()).or_insert_with(|| t.clone());
+            }
+        }
         if let PendingItem::File(f) = gone.item {
             // the real photo shows the local picture at once instead of waiting for the fetch back from the Mac
             let att = m["attachments"].as_array().into_iter().flatten().find(|a| a["transfer_name"].as_str().is_none_or(|n| n == name(&f)));
@@ -1939,6 +1951,13 @@ fn retry_failed(u: &Rc<Ui>, m: &Value) {
     {
         let mut st = u.st.borrow_mut();
         st.resend_of.insert(token, mid);
+        // pictures we already show appear as the waiting bubble, so nothing has to be fetched back
+        for a in m["attachments"].as_array().into_iter().flatten() {
+            let tex = a["original_path"].as_str().and_then(|p| st.textures.get(p)).cloned();
+            if let (Some(t), Some(n)) = (tex, a["transfer_name"].as_str()) {
+                st.pending.push(Pending { token, chat_id, item: PendingItem::Picture(t, n.to_string()) });
+            }
+        }
         if !text.is_empty() {
             st.pending.push(Pending { token, chat_id, item: PendingItem::Text(text.clone()) });
         }
@@ -3099,9 +3118,15 @@ fn pending_bubble(p: &Pending, sms: bool, last: bool) -> gtk::Widget {
             show_texture(&b, &t);
             b.upcast()
         }
+        PendingItem::Picture(t, _) => {
+            let b = bubble::Bubble::photo(look, 160, 120);
+            show_texture(&b, t);
+            b.upcast()
+        }
         item => {
             let b = bubble::Bubble::new(look);
             let text = match item {
+                PendingItem::Picture(_, n) => format!("📎 {n}"),
                 PendingItem::Text(t) => t.clone(),
                 PendingItem::File(f) => format!("📎 {}", f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
             };
