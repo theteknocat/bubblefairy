@@ -93,6 +93,7 @@ fn main() -> glib::ExitCode {
         seen_file: data.join("seen"),
         resent_file: data.join("resent"),
         pins_file: data.join("pins"),
+        muted_file: data.join("muted"),
         web_file: data.join("web_links"),
         public_key,
     };

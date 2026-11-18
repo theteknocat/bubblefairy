@@ -37,6 +37,8 @@ pub struct Store {
     pub resent_file: PathBuf,
     /// pinned chats, one chat identifier per line, in pin order (our own: Messages' pins aren't readable)
     pub pins_file: PathBuf,
+    /// muted chats (no notification, no sound), one chat identifier per line (our own: Messages' list is hashed)
+    pub muted_file: PathBuf,
     /// previews we made ourselves for plain links (see webpreview.rs), one JSON line per link
     pub web_file: PathBuf,
     pub public_key: String,
@@ -181,6 +183,8 @@ struct State {
     seen: HashMap<i64, i64>,
     /// identifiers (`pin_key`) of the pinned chats, in pin order
     pins: Vec<String>,
+    /// identifiers (`pin_key`) of the muted chats
+    muted: Vec<String>,
     /// address a new conversation's first message went to; its chat opens once it shows up
     new_pending: Option<String>,
     /// addresses already looked up on the Mac for an older chat (new-message view)
@@ -776,6 +780,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let seen = load_seen(&store.seen_file);
     let resent: HashSet<i64> = std::fs::read_to_string(&store.resent_file).unwrap_or_default().lines().filter_map(|l| l.parse().ok()).collect();
     let pins: Vec<String> = std::fs::read_to_string(&store.pins_file).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(String::from).collect();
+    let muted: Vec<String> = std::fs::read_to_string(&store.muted_file).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(String::from).collect();
     // dev: BF_PINS=<key>,<key> pins those chats (demo chats' keys are their participants)
     let pins = std::env::var("BF_PINS").map(|v| v.split(';').map(String::from).collect()).unwrap_or(pins);
     let ui = Rc::new(Ui {
@@ -785,7 +790,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         cmd,
         viewer,
         web,
-        st: RefCell::new(State { cfg, seen, pins, chat_limit: CHATS_PAGE, resent, web_links, ..Default::default() }),
+        st: RefCell::new(State { cfg, seen, pins, muted, chat_limit: CHATS_PAGE, resent, web_links, ..Default::default() }),
         chat_list,
         side_more,
         search,
@@ -2016,6 +2021,13 @@ fn learn_names(u: &Ui, msgs: &[Value]) {
 }
 
 fn notify(u: &Ui, cid: i64, m: &Value) {
+    {
+        // a muted chat makes no sound and shows nothing
+        let st = u.st.borrow();
+        if st.chats.iter().find(|c| c["id"].as_i64() == Some(cid)).is_some_and(|c| st.muted.contains(&pin_key(c))) {
+            return;
+        }
+    }
     let (show, sound, choice, text_level) = {
         let c = &u.st.borrow().cfg;
         (c.notify, c.notify_sound, c.sound.clone(), c.notify_text)
@@ -3164,7 +3176,7 @@ fn render_chats(u: &Rc<Ui>) {
     u.selecting.set(true);
     u.chat_list.remove_all();
     let mut new_rows = Vec::new();
-    let pins = u.st.borrow().pins.clone();
+    let (pins, muted) = { let st = u.st.borrow(); (st.pins.clone(), st.muted.clone()) };
     let mut pinned: Vec<(usize, i64, String, bool, Value)> = Vec::new();
     for (title, preview, when, unread, id, chat) in rows {
         let key = pin_key(&chat);
@@ -3179,6 +3191,13 @@ fn render_chats(u: &Rc<Ui>) {
         let time_unix = track_time(u, &time, when, TimeKind::Row, None);
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         top.append(&name);
+        let is_muted = muted.contains(&key);
+        if is_muted {
+            let m = gtk::Label::new(Some("🔕"));
+            m.add_css_class("chat-time");
+            m.set_tooltip_text(Some("Muted"));
+            top.append(&m);
+        }
         top.append(&time);
         let prev = gtk::Label::new(Some(&preview));
         prev.add_css_class("chat-preview");
@@ -3222,7 +3241,7 @@ fn render_chats(u: &Rc<Ui>) {
             row.add_css_class("unread");
         }
         row.set_child(Some(&row_box));
-        pin_menu(u, row.upcast_ref(), &key, pin_at.is_some());
+        pin_menu(u, row.upcast_ref(), &key, pin_at.is_some(), is_muted);
         if let Some(i) = pin_at {
             // hidden, not left out: row indexes must keep matching `State.chats`
             row.set_visible(!u.search.text().trim().is_empty());
@@ -3565,7 +3584,7 @@ fn pin_key(c: &Value) -> String {
 }
 
 /// Right-click menu on a row or tile: Pin / Unpin.
-fn pin_menu(u: &Rc<Ui>, w: &gtk::Widget, key: &str, pinned: bool) {
+fn pin_menu(u: &Rc<Ui>, w: &gtk::Widget, key: &str, pinned: bool, muted: bool) {
     let g = gtk::GestureClick::new();
     g.set_button(3);
     let (u, w2, key) = (u.clone(), w.clone(), key.to_string());
@@ -3573,15 +3592,25 @@ fn pin_menu(u: &Rc<Ui>, w: &gtk::Widget, key: &str, pinned: bool) {
         g.set_state(gtk::EventSequenceState::Claimed);
         let b = gtk::Button::with_label(if pinned { "Unpin" } else { "Pin to top" });
         b.add_css_class("flat");
+        let mb = gtk::Button::with_label(if muted { "Unmute" } else { "Mute" });
+        mb.add_css_class("flat");
+        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        menu.append(&b);
+        menu.append(&mb);
         let pop = gtk::Popover::new();
-        pop.set_child(Some(&b));
+        pop.set_child(Some(&menu));
         pop.set_has_arrow(false);
         pop.set_parent(&w2);
         pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        let (u, key, p2) = (u.clone(), key.clone(), pop.clone());
+        let (u2, key2, p2) = (u.clone(), key.clone(), pop.clone());
         b.connect_clicked(move |_| {
             p2.popdown();
-            toggle_pin(&u, &key);
+            toggle_pin(&u2, &key2);
+        });
+        let (u3, key3, p3) = (u.clone(), key.clone(), pop.clone());
+        mb.connect_clicked(move |_| {
+            p3.popdown();
+            toggle_mute(&u3, &key3);
         });
         pop.connect_closed(|p| {
             let p = p.clone();
@@ -3590,6 +3619,21 @@ fn pin_menu(u: &Rc<Ui>, w: &gtk::Widget, key: &str, pinned: bool) {
         pop.popup();
     });
     w.add_controller(g);
+}
+
+fn toggle_mute(u: &Rc<Ui>, key: &str) {
+    {
+        let mut st = u.st.borrow_mut();
+        match st.muted.iter().position(|p| p == key) {
+            Some(i) => {
+                st.muted.remove(i);
+            }
+            None => st.muted.push(key.to_string()),
+        }
+        let _ = std::fs::create_dir_all(u.store.muted_file.parent().unwrap());
+        let _ = std::fs::write(&u.store.muted_file, st.muted.iter().map(|p| format!("{p}\n")).collect::<String>());
+    }
+    render_chats(u);
 }
 
 fn toggle_pin(u: &Rc<Ui>, key: &str) {
@@ -3648,7 +3692,8 @@ fn render_tiles(u: &Rc<Ui>, pinned: Vec<(usize, i64, String, bool, Value)>, sel:
             u2.compose.grab_focus();
         });
         tile.add_controller(g);
-        pin_menu(u, tile.upcast_ref(), &key, true);
+        let tile_muted = u.st.borrow().muted.contains(&key);
+        pin_menu(u, tile.upcast_ref(), &key, true, tile_muted);
         u.tiles.append(&tile);
         if let Some(f) = tile.parent() {
             f.set_focusable(false); // no focus box round a clicked tile
