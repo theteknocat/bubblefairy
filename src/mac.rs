@@ -12,6 +12,13 @@ use russh::{ChannelMsg, client};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
+impl Config {
+    /// What a connection to the Mac depends on.
+    pub fn connection(&self) -> (&str, &str, &str) {
+        (&self.host, &self.user, &self.imsg)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Config {
     pub host: String,
@@ -21,6 +28,13 @@ pub struct Config {
     pub map_previews: bool,
     /// make our own preview cards for links Messages made none for (this computer fetches the page)
     pub link_previews: bool,
+    /// desktop notifications for messages that arrive while you aren't looking at that chat
+    pub notify: bool,
+    /// and a sound with them (`sound`: a bundled name, or `file:<path>`)
+    pub notify_sound: bool,
+    pub sound: String,
+    /// what a notification shows: 0 = sender and text, 1 = sender only, 2 = nothing
+    pub notify_text: u8,
     /// where the download buttons save pictures / other files; empty = ask every time
     pub dir_images: String,
     pub dir_files: String,
@@ -1573,8 +1587,9 @@ pub async fn run(mut cfg: Config, paths: Paths, mut cmds: mpsc::UnboundedReceive
                 _ = &mut conn.dead => break,
                 c = cmds.recv() => match c {
                     None => return,
-                    Some(Cmd::Configure(c)) if c != cfg => { cfg = c; break; }
-                    Some(Cmd::Configure(_)) => {}
+                    // only a change to how we connect needs a new connection; the other settings just apply
+                    Some(Cmd::Configure(c)) if c.connection() != cfg.connection() => { cfg = c; break; }
+                    Some(Cmd::Configure(c)) => cfg = c,
                     Some(c) => { tokio::spawn(handle(c, conn.rpc.clone(), conn.session.clone(), ev.clone())); }
                 },
             }

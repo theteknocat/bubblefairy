@@ -3,6 +3,7 @@ mod chatscroll;
 mod demo;
 mod mac;
 mod player;
+mod sound;
 mod ui;
 mod viewer;
 mod webpreview;
@@ -17,7 +18,7 @@ pub const APP_ID: &str = "io.github.theteknocat.BubbleFairy";
 pub const DEFAULT_IMSG: &str = "/opt/homebrew/bin/imsg";
 
 fn load_config(path: &Path) -> mac::Config {
-    let mut c = mac::Config { imsg: DEFAULT_IMSG.into(), map_previews: true, ..Default::default() };
+    let mut c = mac::Config { imsg: DEFAULT_IMSG.into(), map_previews: true, notify: true, notify_sound: true, sound: sound::DEFAULT.into(), ..Default::default() };
     for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
         match line.split_once('=') {
             Some(("host", v)) => c.host = v.trim().into(),
@@ -25,6 +26,10 @@ fn load_config(path: &Path) -> mac::Config {
             Some(("imsg", v)) if !v.trim().is_empty() => c.imsg = v.trim().into(),
             Some(("map_previews", v)) => c.map_previews = v.trim() == "1",
             Some(("link_previews", v)) => c.link_previews = v.trim() == "1",
+            Some(("notify", v)) => c.notify = v.trim() == "1",
+            Some(("notify_sound", v)) => c.notify_sound = v.trim() == "1",
+            Some(("sound", v)) if !v.trim().is_empty() => c.sound = v.trim().into(),
+            Some(("notify_text", v)) => c.notify_text = v.trim().parse().unwrap_or(0),
             Some(("dir_images", v)) => c.dir_images = v.trim().into(),
             Some(("dir_files", v)) => c.dir_files = v.trim().into(),
             _ => {}
@@ -35,7 +40,7 @@ fn load_config(path: &Path) -> mac::Config {
 
 pub fn save_config(path: &Path, c: &mac::Config) {
     let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\ndir_images={}\ndir_files={}\n", c.host, c.user, c.imsg, u8::from(c.map_previews), u8::from(c.link_previews), c.dir_images, c.dir_files));
+    let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\n", c.host, c.user, c.imsg, u8::from(c.map_previews), u8::from(c.link_previews), u8::from(c.notify), u8::from(c.notify_sound), c.sound, c.notify_text, c.dir_images, c.dir_files));
 }
 
 /// Image cache size cap. Everything in it can be fetched again from the Mac.

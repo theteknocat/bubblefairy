@@ -89,6 +89,14 @@ fn history(id: i64) -> Vec<Value> {
 
 pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSender<Event>) {
     let _ = ev.send(Event::Connected);
+    // BF_DEMO_INCOMING=<ms>: a message from chat 3 arrives after this long (to see the notification and hear the sound)
+    if let Some(ms) = std::env::var("BF_DEMO_INCOMING").ok().and_then(|v| v.parse::<u64>().ok()) {
+        let ev2 = ev.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            let _ = ev2.send(Event::Message(msg(3, 90, false, "+15550199", "", 0, "Hello from the demo")));
+        });
+    }
     let mut next = 50;
     while let Some(c) = cmds.recv().await {
         let _ = match c {

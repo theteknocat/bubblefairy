@@ -913,6 +913,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         glib::timeout_add_local_once(Duration::from_millis(9000), move || select(&u, id));
     }
 
+    if let Ok(name) = std::env::var("BF_SOUND") {
+        // dev aid: play this sound (a bundled name or file:<path>) 2 s in
+        glib::timeout_add_local_once(Duration::from_millis(2000), move || crate::sound::play(&name));
+    }
     if let Ok(ms) = std::env::var("BF_SIDE_END").map(|v| v.parse::<u64>().unwrap_or(9000)) {
         // dev aid: scroll the sidebar to its end after this many ms
         let u = ui.clone();
@@ -2012,16 +2016,37 @@ fn learn_names(u: &Ui, msgs: &[Value]) {
 }
 
 fn notify(u: &Ui, cid: i64, m: &Value) {
+    let (show, sound, choice, text_level) = {
+        let c = &u.st.borrow().cfg;
+        (c.notify, c.notify_sound, c.sound.clone(), c.notify_text)
+    };
+    if sound {
+        // not while the desktop is in do-not-disturb
+        glib::spawn_future_local(async move {
+            if !crate::sound::desktop_inhibited().await {
+                crate::sound::play_arrival(&choice);
+            }
+        });
+    }
+    if !show {
+        return;
+    }
     let st = u.st.borrow();
     let Some(chat) = st.chats.iter().find(|c| c["id"].as_i64() == Some(cid)) else { return };
     let mut title = chat_title(chat, &st.names);
     if chat["is_group"].as_bool() == Some(true) {
         title = format!("{} in {title}", sender_name(m, &st.names));
     }
+    let (title, body) = match text_level {
+        0 => (title, summary(m)),
+        1 => (title, "New message".to_string()),
+        _ => ("BubbleFairy".to_string(), "New message".to_string()),
+    };
     let n = gio::Notification::new(&title);
-    n.set_body(Some(&summary(m)));
+    n.set_body(Some(&body));
     n.set_default_action_and_target_value("app.open-chat", Some(&cid.to_variant()));
-    u.app.send_notification(Some(&format!("chat-{cid}")), &n);
+    // one per message: re-using an id per chat made the desktop update the old one quietly instead of popping up
+    u.app.send_notification(Some(&format!("chat-{cid}-{}", m["id"].as_i64().unwrap_or_default())), &n);
 }
 
 // ---------- status and banner ----------
@@ -6075,15 +6100,112 @@ fn settings(u: &Rc<Ui>) {
     dl_frame.set_child(Some(&dl));
     grid.attach(&dl_frame, 0, 7, 2, 1);
 
-    let save = gtk::Button::with_label("Save and connect");
+    // notifications: whether, with a sound (which), and what they show
+    let nb = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
+        nb.set_property(m, 10);
+    }
+    let notify_on = gtk::CheckButton::with_label("Show a notification for a new message");
+    notify_on.set_active(cfg.notify);
+    let sound_on = gtk::CheckButton::with_label("Play a sound");
+    sound_on.set_active(cfg.notify_sound);
+    // the sound: the bundled ones, then "Custom file…" (which shows the chosen file's name once there is one)
+    let custom: Rc<RefCell<String>> = Rc::new(RefCell::new(cfg.sound.strip_prefix("file:").unwrap_or("").to_string()));
+    let sounds = gtk::StringList::new(&crate::sound::BUNDLED.map(|(_, n)| n));
+    let custom_label = |c: &str| if c.is_empty() { "Custom file…".to_string() } else { format!("Custom: {}", std::path::Path::new(c).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) };
+    sounds.append(&custom_label(&custom.borrow()));
+    let picker = gtk::DropDown::new(Some(sounds.clone()), gtk::Expression::NONE);
+    picker.set_hexpand(true);
+    let current = crate::sound::BUNDLED.iter().position(|(n, _)| *n == cfg.sound).unwrap_or(if custom.borrow().is_empty() { 0 } else { crate::sound::BUNDLED.len() });
+    picker.set_selected(current as u32);
+    let chosen: Rc<RefCell<String>> = Rc::new(RefCell::new(cfg.sound.clone()));
+    let listen = gtk::Button::from_icon_name("media-playback-start-symbolic");
+    listen.set_tooltip_text(Some("Listen"));
+    let (chosen2, listen2) = (chosen.clone(), listen.clone());
+    listen2.connect_clicked(move |_| crate::sound::play(&chosen2.borrow()));
+    let last_ok = Rc::new(Cell::new(current as u32));
+    {
+        let (win, custom, chosen, sounds, last_ok) = (w.clone(), custom.clone(), chosen.clone(), sounds.clone(), last_ok.clone());
+        picker.connect_selected_notify(move |p| {
+            let i = p.selected() as usize;
+            if i < crate::sound::BUNDLED.len() {
+                *chosen.borrow_mut() = crate::sound::BUNDLED[i].0.to_string();
+                last_ok.set(i as u32);
+                crate::sound::play(&chosen.borrow()); // hear it as you choose it
+            } else if !custom.borrow().is_empty() && last_ok.get() as usize == i {
+                *chosen.borrow_mut() = format!("file:{}", custom.borrow());
+            } else {
+                // "Custom file…": ask for the file; cancelling puts the previous choice back
+                let filter = gtk::FileFilter::new();
+                filter.set_name(Some("Sounds"));
+                filter.add_mime_type("audio/*");
+                let filters = gio::ListStore::new::<gtk::FileFilter>();
+                filters.append(&filter);
+                let d = gtk::FileDialog::builder().title("Notification sound").modal(true).filters(&filters).build();
+                let (p2, custom, chosen, sounds, last_ok) = (p.clone(), custom.clone(), chosen.clone(), sounds.clone(), last_ok.clone());
+                d.open(Some(&win), gio::Cancellable::NONE, move |r| match r.ok().and_then(|f| f.path()) {
+                    Some(path) => {
+                        let path = path.to_string_lossy().to_string();
+                        *custom.borrow_mut() = path.clone();
+                        sounds.splice(crate::sound::BUNDLED.len() as u32, 1, &[&custom_label(&path)]);
+                        *chosen.borrow_mut() = format!("file:{path}");
+                        last_ok.set(crate::sound::BUNDLED.len() as u32);
+                        p2.set_selected(crate::sound::BUNDLED.len() as u32);
+                        crate::sound::play(&chosen.borrow());
+                    }
+                    None => p2.set_selected(last_ok.get()),
+                });
+            }
+        });
+    }
+    let sound_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let sound_label = gtk::Label::new(Some("Sound"));
+    sound_label.set_width_chars(8);
+    sound_label.set_xalign(0.0);
+    sound_row.append(&sound_label);
+    sound_row.append(&picker);
+    sound_row.append(&listen);
+    let text_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let text_label = gtk::Label::new(Some("Shows"));
+    text_label.set_width_chars(8);
+    text_label.set_xalign(0.0);
+    let text_pick = gtk::DropDown::from_strings(&["Sender and message", "Sender only", "Nothing about the message"]);
+    text_pick.set_hexpand(true);
+    text_pick.set_selected(u32::from(cfg.notify_text.min(2)));
+    text_row.append(&text_label);
+    text_row.append(&text_pick);
+    let notify_help = gtk::Label::new(Some(
+        "Notifications follow your desktop's own settings (do not disturb, per-app controls). The sound is played by BubbleFairy itself, and stays quiet while the desktop is in do-not-disturb. A message in the chat you are looking at makes neither.",
+    ));
+    notify_help.set_wrap(true);
+    notify_help.set_xalign(0.0);
+    notify_help.add_css_class("dim");
+    for wd in [notify_on.upcast_ref::<gtk::Widget>(), sound_on.upcast_ref(), sound_row.upcast_ref(), text_row.upcast_ref(), notify_help.upcast_ref()] {
+        nb.append(wd);
+    }
+    let notify_frame = gtk::Frame::new(Some("Notifications"));
+    notify_frame.set_child(Some(&nb));
+    grid.attach(&notify_frame, 0, 8, 2, 1);
+
+    let save = gtk::Button::with_label("Save");
     save.add_css_class("suggested-action");
     let cancel = gtk::Button::with_label("Cancel");
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     buttons.set_halign(gtk::Align::End);
     buttons.append(&cancel);
     buttons.append(&save);
-    grid.attach(&buttons, 0, 8, 2, 1);
-    w.set_child(Some(&grid));
+    // the settings scroll, the buttons stay in view; the window is never taller than the screen
+    let max_h = u.win.surface().and_then(|s| gdk::Display::default()?.monitor_at_surface(&s)).map_or(700, |m| (m.geometry().height() * 85 / 100).min(780));
+    w.set_default_height(max_h);
+    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&grid).build();
+    buttons.set_margin_top(10);
+    buttons.set_margin_bottom(14);
+    buttons.set_margin_end(18);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    root.append(&scroller);
+    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    root.append(&buttons);
+    w.set_child(Some(&root));
 
     let w2 = w.clone();
     cancel.connect_clicked(move |_| w2.close());
@@ -6093,10 +6215,10 @@ fn settings(u: &Rc<Ui>) {
         if imsg_path.is_empty() {
             imsg_path = crate::DEFAULT_IMSG.into();
         }
-        let cfg = Config { host: host.text().trim().to_string(), user: user.text().trim().to_string(), imsg: imsg_path, map_previews: previews.is_active(), link_previews: links.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone() };
+        let cfg = Config { host: host.text().trim().to_string(), user: user.text().trim().to_string(), imsg: imsg_path, map_previews: previews.is_active(), link_previews: links.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone(), notify: notify_on.is_active(), notify_sound: sound_on.is_active(), sound: chosen.borrow().clone(), notify_text: text_pick.selected() as u8 };
         crate::save_config(&u2.store.config_file, &cfg);
         u2.st.borrow_mut().cfg = cfg.clone();
-        u2.send(Cmd::Configure(cfg));
+        u2.send(Cmd::Configure(cfg)); // the connection is only redone if where we connect to changed
         w2.close();
     });
     w.present();
