@@ -5,6 +5,10 @@ use tokio::sync::mpsc;
 
 use crate::mac::{Cmd, Event};
 
+fn now_unix() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
 fn ago(min: i64) -> String {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - min * 60;
     gtk::glib::DateTime::from_unix_utc(t).unwrap().format_iso8601().unwrap().to_string()
@@ -73,6 +77,12 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
             Cmd::Chats(_) => ev.send(Event::Chats(chats())),
             Cmd::FindChat(a) => ev.send(Event::FoundChat(a.first().cloned().unwrap_or_default(), None)),
             Cmd::History(id, _) => ev.send(Event::History(id, history(id))),
+            Cmd::Receipts(id) => {
+                // the last message I sent in each demo chat: chat 1 has been read, the others only delivered
+                let last = history(id).into_iter().rev().find(|m| m["is_from_me"] == true).and_then(|m| m["id"].as_i64());
+                let r = last.map(|msg| crate::mac::Receipt { msg, delivered: true, read_at: (id == 1).then(|| now_unix() - 600), silenced: id == 4 });
+                ev.send(Event::Receipt(id, r))
+            }
             Cmd::Preview(id) => ev.send(Event::Preview(id, history(id).pop().unwrap())),
             Cmd::Send { chat_id, text, token, .. } => {
                 next += 1;

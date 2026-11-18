@@ -119,6 +119,8 @@ struct State {
     host_key: String,
     connected: bool,
     chats_loaded: bool,
+    /// the delivery / read receipt of each chat's newest sent message
+    receipts: HashMap<i64, crate::mac::Receipt>,
     /// unsent text and files of the chats not on show, by chat id
     drafts: HashMap<i64, (String, Vec<PathBuf>)>,
     /// how many chats are asked for (imsg has no offset); more are asked for as the sidebar is scrolled down
@@ -939,6 +941,16 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // coming back to the window counts as seeing the open chat
     let u = ui.clone();
     ui.win.connect_is_active_notify(move |_| mark_seen(&u));
+    // receipts (delivered, read) don't come through the live stream either: look again while a chat is open
+    let w = Rc::downgrade(&ui);
+    glib::timeout_add_seconds_local(10, move || {
+        let Some(u) = w.upgrade() else { return glib::ControlFlow::Break };
+        let sel = u.st.borrow().sel.filter(|_| u.st.borrow().connected);
+        if let Some(id) = sel.filter(|_| u.win.is_active()) {
+            u.send(Cmd::Receipts(id));
+        }
+        glib::ControlFlow::Continue
+    });
     // read state changes (chats read on other devices) don't come through the live stream
     let w = Rc::downgrade(&ui);
     glib::timeout_add_seconds_local(60, move || {
@@ -1307,6 +1319,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             u.st.borrow_mut().preview.insert(id, m);
             update_row(u, id);
         }
+        Event::Receipt(chat, r) => on_receipt(u, chat, r),
         Event::History(id, msgs) => {
             learn_names(u, &msgs);
             let is_sel = {
@@ -1320,6 +1333,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             };
             if is_sel {
                 render_conv(u);
+                u.send(Cmd::Receipts(id)); // "Delivered" / "Read": receipts come after the message
             }
         }
         Event::Older(id, older) => {
@@ -1515,6 +1529,44 @@ fn image_done(u: &Rc<Ui>, path: String, full: bool, tex: Option<gdk::Texture>) {
         }
     }
 
+}
+
+/// The receipt of a chat's newest sent message arrived: show it under that message.
+fn on_receipt(u: &Rc<Ui>, chat: i64, r: Option<crate::mac::Receipt>) {
+    let old = {
+        let mut st = u.st.borrow_mut();
+        let old = match &r {
+            Some(r) => st.receipts.insert(chat, r.clone()),
+            None => st.receipts.remove(&chat),
+        };
+        if old == r {
+            return;
+        }
+        old
+    };
+    if u.st.borrow().sel != Some(chat) {
+        return;
+    }
+    // the message that has the line now, and the one that had it before (a newer message was sent)
+    let mut stale = false;
+    for msg in [r.as_ref().map(|r| r.msg), old.as_ref().map(|r| r.msg)].into_iter().flatten().collect::<HashSet<_>>() {
+        let at = u.conv_ctx.borrow().as_ref().and_then(|c| c.msgs.iter().position(|m| m["id"].as_i64() == Some(msg)));
+        stale |= !at.is_some_and(|i| redraw_message(u, i));
+    }
+    if stale {
+        render_conv(u);
+    }
+}
+
+/// "Read 10:32", "Delivered", "Notifications silenced": the line under my newest message.
+fn receipt_text(r: &crate::mac::Receipt) -> Option<String> {
+    if let Some(d) = r.read_at.and_then(|t| glib::DateTime::from_unix_local(t).ok()) {
+        return Some(format!("Read {}", short_time(&d)));
+    }
+    if r.silenced {
+        return Some("Notifications silenced".into());
+    }
+    r.delivered.then(|| "Delivered".into())
 }
 
 /// Forget a send's waiting bubbles (it failed, or never showed up).
@@ -2725,6 +2777,16 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         }
         line.append(&part);
         out.push(line.upcast());
+    }
+    // under my newest message: delivered / read
+    if me && let Some(text) = m["chat_id"].as_i64().and_then(|chat| {
+        let st = u.st.borrow();
+        st.receipts.get(&chat).filter(|r| Some(r.msg) == m["id"].as_i64()).and_then(receipt_text)
+    }) {
+        let l = gtk::Label::new(Some(&text));
+        l.add_css_class("receipt");
+        l.set_halign(gtk::Align::End);
+        out.push(l.upcast());
     }
     out
 }

@@ -25,6 +25,8 @@ pub enum Cmd {
     Configure(Config),
     /// the newest `n` chats (imsg has no offset: loading more means asking for more)
     Chats(usize),
+    /// the receipt of the chat's newest sent message (answer: `Event::Receipt`)
+    Receipts(i64),
     /// The newest 1:1 chat with any of these addresses (one person's numbers and emails: Messages keeps one conversation
     /// per contact), which can be older than the chats list's 100 (answer: `Event::FoundChat`)
     FindChat(Vec<String>),
@@ -119,6 +121,18 @@ pub const MEDIA_PAGE: usize = 60;
 const PHOTO_PAGE: usize = 30;
 static BULK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
+/// What chat.db knows about the newest message I sent in a chat: delivery and read receipts.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Receipt {
+    /// the message row (imsg's message `id`)
+    pub msg: i64,
+    pub delivered: bool,
+    /// unix seconds, when the recipient's device has read it (only if they send read receipts)
+    pub read_at: Option<i64>,
+    /// delivered while the recipient's Focus silenced notifications, and not pushed through with "Notify Anyway"
+    pub silenced: bool,
+}
+
 pub enum Event {
     Connecting,
     Connected,
@@ -127,6 +141,8 @@ pub enum Event {
     Warn(String),
     HostKey(String),
     Chats(Vec<Value>),
+    /// the receipt for the chat's newest sent message (None: nothing sent, or nothing to show)
+    Receipt(i64, Option<Receipt>),
     /// the address that was typed, and the chat found for it or its person's other addresses
     FoundChat(String, Option<Value>),
     History(i64, Vec<Value>),
@@ -448,6 +464,21 @@ async fn fetch_image(session: &client::Handle<Handler>, path: &str, max: u32) ->
 
 /// imsg doesn't report which service carried each message (an iMessage chat can fall back to SMS),
 /// so read it straight from chat.db. ponytail: drop this once imsg exposes a per-message `service`.
+/// One `sqlite3` line of `Cmd::Receipts`: rowid|is_delivered|date_delivered|date_read|quiet|notified (dates are
+/// nanoseconds since 2001, 0 when not set).
+fn parse_receipt(line: &str) -> Option<Receipt> {
+    let f: Vec<i64> = line.trim().split('|').map(|x| x.parse().unwrap_or(0)).collect();
+    let [msg, delivered, date_delivered, date_read, quiet, notified] = f[..] else { return None };
+    let unix = |ns: i64| (ns > 0).then(|| ns / 1_000_000_000 + 978_307_200);
+    Some(Receipt {
+        msg,
+        // the flag is set for iMessages whose delivery date was never filled in
+        delivered: delivered == 1 || date_delivered > 0,
+        read_at: unix(date_read),
+        silenced: quiet == 1 && notified == 0,
+    })
+}
+
 async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
     let ids: Vec<String> = msgs.iter().filter_map(|m| m["id"].as_i64()).map(|i| i.to_string()).collect();
     if ids.is_empty() {
@@ -1241,6 +1272,16 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
                 add_services(&session, &mut msgs).await;
                 let _ = ev.send(Event::Recent(id, msgs));
             }
+        }
+        Cmd::Receipts(id) => {
+            let sql = format!(
+                "select m.ROWID, m.is_delivered, m.date_delivered, m.date_read, m.was_delivered_quietly, m.did_notify_recipient \
+                 from message m join chat_message_join j on j.message_id=m.ROWID \
+                 where j.chat_id={id} and m.is_from_me=1 order by m.date desc limit 1"
+            );
+            let out = exec(&session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await;
+            let receipt = out.and_then(|o| parse_receipt(&String::from_utf8_lossy(&o)));
+            let _ = ev.send(Event::Receipt(id, receipt));
         }
         Cmd::Preview(id) => {
             let r = rpc.call("messages.history", json!({"chat_id": id, "limit": 1, "attachments": true}), READ).await;
