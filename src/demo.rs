@@ -70,6 +70,10 @@ fn history(id: i64) -> Vec<Value> {
     if id == 4 && std::env::var_os("BF_DEMO_FAIL").is_some() && let Some(m) = v.iter_mut().rev().find(|m| m["is_from_me"] == true) {
         m["error"] = json!(35);
     }
+    // BF_DEMO_WEBLINK=<url>: a received message in chat 1 that is just this link
+    if id == 1 && let Ok(url) = std::env::var("BF_DEMO_WEBLINK") {
+        v.push(msg(1, 90, false, "+15550101", "Maya Thompson", 1, &format!("have you seen this {url}")));
+    }
     // BF_DEMO_REACT=1: reactions on my newest and on the newest received message
     if std::env::var_os("BF_DEMO_REACT").is_some() {
         let r = |who: &str, me: bool, e: &str| json!({"sender": who, "sender_name": who, "emoji": e, "is_from_me": me, "type": "custom"});

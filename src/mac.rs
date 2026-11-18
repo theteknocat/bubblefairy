@@ -19,6 +19,8 @@ pub struct Config {
     pub imsg: String,
     /// show a map picture under postal addresses on contact cards (sends the address to OpenStreetMap)
     pub map_previews: bool,
+    /// make our own preview cards for links Messages made none for (this computer fetches the page)
+    pub link_previews: bool,
     /// where the download buttons save pictures / other files; empty = ask every time
     pub dir_images: String,
     pub dir_files: String,

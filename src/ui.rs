@@ -37,6 +37,8 @@ pub struct Store {
     pub resent_file: PathBuf,
     /// pinned chats, one chat identifier per line, in pin order (our own: Messages' pins aren't readable)
     pub pins_file: PathBuf,
+    /// previews we made ourselves for plain links (see webpreview.rs), one JSON line per link
+    pub web_file: PathBuf,
     pub public_key: String,
 }
 
@@ -132,6 +134,9 @@ struct State {
     find_hits: HashMap<i64, Vec<Value>>,
     /// how many messages match in each chat (the sidebar's "N matches")
     find_counts: HashMap<i64, usize>,
+    /// our own previews for plain links; None = the page gave nothing
+    web_links: HashMap<String, Option<crate::mac::LinkPreview>>,
+    web_asked: HashSet<String>,
     /// the chat open on a search hit: a window of its history around the hit, not its newest messages
     find_view: Option<FindView>,
     waiting: HashMap<String, Vec<bubble::Bubble>>,
@@ -196,6 +201,7 @@ pub struct Ui {
     /// "Retrieving more chats…" under the list while older chats are asked for
     side_more: gtk::Label,
     search: gtk::SearchEntry,
+    web: webkit6::soup::Session,
     side_none: gtk::Label,
     /// the unread count after the app's title in the header, and the spacer that balances it
     title_badge: (gtk::Label, gtk::Box),
@@ -442,10 +448,12 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let head_title = gtk::Label::new(None);
     head_title.add_css_class("conv-title");
     head_title.set_xalign(0.0);
+    head_title.set_selectable(true);
     head_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     let head_sub = gtk::Label::new(None);
     head_sub.add_css_class("conv-sub");
     head_sub.set_xalign(0.0);
+    head_sub.set_selectable(true);
     head_sub.set_ellipsize(gtk::pango::EllipsizeMode::End);
     let titles = gtk::Box::new(gtk::Orientation::Vertical, 1);
     titles.set_valign(gtk::Align::Center);
@@ -757,6 +765,14 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     root.append(&stage);
     win.set_child(Some(&root));
 
+    let mut cfg = cfg;
+    if std::env::var_os("BF_LINKS").is_some() {
+        cfg.link_previews = true; // dev aid
+    }
+    let web_links = load_web_links(&store.web_file);
+    let web = webkit6::soup::Session::new();
+    webkit6::soup::prelude::SessionExt::set_timeout(&web, 10);
+    webkit6::soup::prelude::SessionExt::set_user_agent(&web, "Mozilla/5.0 (compatible; facebookexternalhit/1.1; BubbleFairy)"); // the form sites expect from link previewers
     let seen = load_seen(&store.seen_file);
     let resent: HashSet<i64> = std::fs::read_to_string(&store.resent_file).unwrap_or_default().lines().filter_map(|l| l.parse().ok()).collect();
     let pins: Vec<String> = std::fs::read_to_string(&store.pins_file).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(String::from).collect();
@@ -768,7 +784,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         store,
         cmd,
         viewer,
-        st: RefCell::new(State { cfg, seen, pins, chat_limit: CHATS_PAGE, resent, ..Default::default() }),
+        web,
+        st: RefCell::new(State { cfg, seen, pins, chat_limit: CHATS_PAGE, resent, web_links, ..Default::default() }),
         chat_list,
         side_more,
         search,
@@ -1149,6 +1166,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         if u.viewer.is_open() && u.viewer.key(key) { glib::Propagation::Stop } else { glib::Propagation::Proceed }
     });
     win.add_controller(keys);
+    // Esc closes the search bar over a chat (in the bubble phase: a popover or the viewer that wants it gets it first)
+    let esc_find = gtk::EventControllerKey::new();
+    let u = ui.clone();
+    esc_find.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape && u.st.borrow().find_view.is_some() && !u.viewer.is_open() {
+            end_find(&u);
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    win.add_controller(esc_find);
     let w = Rc::downgrade(&ui);
     ui.viewer.set_hooks(viewer::Hooks {
         fetch_full: Box::new(move |p| if let Some(u) = w.upgrade() { fetch_full(&u, p) }),
@@ -2229,24 +2257,52 @@ fn save_button(u: &Rc<Ui>, items: Vec<Save>) -> gtk::Button {
     b.set_tooltip_text(Some(if items.len() > 1 { "Save these photos" } else { "Save" }));
     let u = u.clone();
     b.connect_clicked(move |b| {
-        // finished: a green check for 3 s (and no clicking) before it turns back into the save icon
         let b = b.clone();
         save_items(&u, items.clone(), false, Rc::new(move |ok| {
-            if !ok {
-                return;
+            if ok {
+                show_saved(&b);
             }
-            b.set_icon_name("object-select-symbolic");
-            b.add_css_class("done");
-            b.set_sensitive(false);
-            let b = b.clone();
-            glib::timeout_add_local_once(Duration::from_secs(3), move || {
-                b.set_icon_name("document-save-symbolic");
-                b.remove_css_class("done");
-                b.set_sensitive(true);
-            });
         }));
     });
     b
+}
+
+/// Finished: the save button is a green check for 3 s (and can't be clicked) before it turns back into the save icon.
+fn show_saved(b: &gtk::Button) {
+    b.set_icon_name("object-select-symbolic");
+    b.add_css_class("done");
+    b.set_sensitive(false);
+    let b = b.clone();
+    glib::timeout_add_local_once(Duration::from_secs(3), move || {
+        b.set_icon_name("document-save-symbolic");
+        b.remove_css_class("done");
+        b.set_sensitive(true);
+    });
+}
+
+/// The save button in the same row as `w` (a photo): a right-click "Save as…" has no button of its own to confirm on.
+fn save_button_near(w: &gtk::Widget) -> Option<gtk::Button> {
+    fn find(w: &gtk::Widget) -> Option<gtk::Button> {
+        if let Some(b) = w.downcast_ref::<gtk::Button>().filter(|b| b.has_css_class("save-btn")) {
+            return Some(b.clone());
+        }
+        let mut c = w.first_child();
+        while let Some(x) = c {
+            if let Some(b) = find(&x) {
+                return Some(b);
+            }
+            c = x.next_sibling();
+        }
+        None
+    }
+    let mut at = w.parent();
+    while let Some(p) = at {
+        if p.has_css_class("msg-line") {
+            return find(&p);
+        }
+        at = p.parent();
+    }
+    None
 }
 
 /// A name that isn't taken in `dir`: "photo.jpg", "photo (2).jpg", ...
@@ -4090,7 +4146,11 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
         out.push(b.upcast());
     }
     if let Some(url) = plain {
-        out.push(plain_link_card(u, &url, bubble::Look { me, sms, tail: end_of_run }));
+        let look = bubble::Look { me, sms, tail: end_of_run };
+        out.push(match web_preview(u, &url) {
+            Some(lp) => link_card(u, &lp, look),
+            None => plain_link_card(u, &url, look),
+        });
     }
     (out, saves)
 }
@@ -4119,6 +4179,111 @@ fn glyph(icon: &str) -> gtk::Widget {
 
 /// A link with no preview from Messages, drawn like a card whose picture is just a small icon: the
 /// host as its title and a link glyph on the right.
+// ---------- our own previews for plain links ----------
+
+fn load_web_links(path: &std::path::Path) -> HashMap<String, Option<crate::mac::LinkPreview>> {
+    let mut out = HashMap::new();
+    for l in std::fs::read_to_string(path).unwrap_or_default().lines() {
+        let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
+        let Some(url) = v["url"].as_str() else { continue };
+        let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+        let size = |k: &str| Some((v[k][0].as_i64()? as i32, v[k][1].as_i64()? as i32));
+        let lp = (!v["failed"].as_bool().unwrap_or(false)).then(|| crate::mac::LinkPreview {
+            url: url.to_string(),
+            alt_url: None,
+            title: s("title"),
+            site: s("site"),
+            image: v["image"].as_str().map(String::from),
+            image_size: size("size"),
+            icon: None,
+            icon_size: None,
+        });
+        out.insert(url.to_string(), lp);
+    }
+    out
+}
+
+fn save_web_links(path: &std::path::Path, links: &HashMap<String, Option<crate::mac::LinkPreview>>) {
+    let lines: Vec<String> = links
+        .iter()
+        .map(|(url, lp)| match lp {
+            Some(l) => serde_json::json!({"url": url, "title": l.title, "site": l.site, "image": l.image, "size": l.image_size.map(|(w, h)| [w, h])}).to_string(),
+            None => serde_json::json!({"url": url, "failed": true}).to_string(),
+        })
+        .collect();
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let _ = std::fs::write(path, lines.join("\n") + "\n");
+}
+
+/// Our own preview for a link Messages made none for, if that is switched on in Settings: the saved one, else
+/// (asked once) a fetch in the background that redraws the chat when it's done. None = draw the plain card.
+fn web_preview(u: &Rc<Ui>, url: &str) -> Option<crate::mac::LinkPreview> {
+    if !u.st.borrow().cfg.link_previews {
+        return None;
+    }
+    let known = u.st.borrow().web_links.get(url).cloned();
+    match known {
+        // the picture was cleared out of the cache since: fetch it all again
+        Some(Some(lp)) if lp.image.as_ref().is_some_and(|k| !cache_path(u, k, false).exists()) => {
+            u.st.borrow_mut().web_links.remove(url);
+            request_web_preview(u, url);
+            Some(crate::mac::LinkPreview { image: None, image_size: None, ..lp })
+        }
+        Some(lp) => lp,
+        None => {
+            request_web_preview(u, url);
+            None
+        }
+    }
+}
+
+fn request_web_preview(u: &Rc<Ui>, url: &str) {
+    // addresses on the local network are never fetched
+    if !crate::webpreview::public_url(url) || !u.st.borrow_mut().web_asked.insert(url.to_string()) {
+        return;
+    }
+    let (u2, url) = (u.clone(), url.to_string());
+    glib::spawn_future_local(async move {
+        let lp = fetch_web_preview(&u2, &url).await;
+        let all = {
+            let mut st = u2.st.borrow_mut();
+            st.web_links.insert(url, lp);
+            st.web_links.clone()
+        };
+        save_web_links(&u2.store.web_file, &all);
+        queue_conv_render(&u2);
+    });
+}
+
+async fn web_get(session: &webkit6::soup::Session, url: &str, max: usize, html: bool) -> Option<Vec<u8>> {
+    use webkit6::soup::prelude::*;
+    let msg = webkit6::soup::Message::new("GET", url).ok()?;
+    let bytes = session.send_and_read_future(&msg, glib::Priority::DEFAULT).await.ok()?;
+    let is_html = msg.response_headers().and_then(|h| h.content_type()).is_some_and(|(t, _)| t.contains("html"));
+    (msg.status() == webkit6::soup::Status::Ok && bytes.len() <= max && is_html == html).then(|| bytes.to_vec())
+}
+
+async fn fetch_web_preview(u: &Rc<Ui>, url: &str) -> Option<crate::mac::LinkPreview> {
+    let body = web_get(&u.web, url, 3_000_000, true).await?;
+    let page = crate::webpreview::parse(&String::from_utf8_lossy(&body), url);
+    if page.title.is_empty() && page.image.is_none() {
+        return None;
+    }
+    let (mut image, mut size) = (None, None);
+    if let Some(img) = page.image.filter(|i| crate::webpreview::public_url(i))
+        && let Some(bytes) = web_get(&u.web, &img, 8_000_000, false).await
+    {
+        let key = format!("web:{img}");
+        let path = cache_path(u, &key, false);
+        let _ = std::fs::create_dir_all(&u.store.image_cache);
+        size = crate::webpreview::image_size(&bytes);
+        if size.is_some() && std::fs::write(&path, bytes).is_ok() {
+            image = Some(key);
+        }
+    }
+    Some(crate::mac::LinkPreview { url: url.to_string(), alt_url: None, title: page.title, site: page.site, image, image_size: size, icon: None, icon_size: None })
+}
+
 fn plain_link_card(u: &Rc<Ui>, url: &str, look: bubble::Look) -> gtk::Widget {
     let b = bubble::Bubble::card(look, LINK_W, 0);
     let host = url.split('/').nth(2).unwrap_or(url).trim_start_matches("www.").to_string();
@@ -4440,11 +4605,16 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
                 u3.win.clipboard().set_texture(&t);
             }
         });
-        let (u3, path3, p3) = (u2.clone(), path2.clone(), pop.clone());
+        let (u3, path3, p3, photo) = (u2.clone(), path2.clone(), pop.clone(), p2.clone());
         save.connect_clicked(move |_| {
             p3.popdown();
             let name = path3.rsplit('/').next().unwrap_or("photo").to_string();
-            save_items(&u3, vec![Save::new(&path3, &name, 0, true)], true, Rc::new(|_| {}));
+            let near = save_button_near(photo.upcast_ref());
+            save_items(&u3, vec![Save::new(&path3, &name, 0, true)], true, Rc::new(move |ok| {
+                if let (true, Some(b)) = (ok, &near) {
+                    show_saved(b);
+                }
+            }));
         });
         pop.connect_closed(|p| {
             let p = p.clone();
@@ -5824,9 +5994,19 @@ fn settings(u: &Rc<Ui>) {
     why.set_wrap(true);
     why.set_xalign(0.0);
     why.add_css_class("dim");
+    let links = gtk::CheckButton::with_label("Make previews for links Messages didn't");
+    links.set_active(cfg.link_previews);
+    let links_why = gtk::Label::new(Some(
+        "A link with no preview shows its title and picture, read from the page itself. This computer fetches the page, so the linked site sees your internet address. Off: such links stay a plain card with the site's name.",
+    ));
+    links_why.set_wrap(true);
+    links_why.set_xalign(0.0);
+    links_why.add_css_class("dim");
     let pbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
     pbox.append(&previews);
     pbox.append(&why);
+    pbox.append(&links);
+    pbox.append(&links_why);
     grid.attach(&privacy_title, 0, 6, 1, 1);
     grid.attach(&pbox, 1, 6, 1, 1);
 
@@ -5909,7 +6089,7 @@ fn settings(u: &Rc<Ui>) {
         if imsg_path.is_empty() {
             imsg_path = crate::DEFAULT_IMSG.into();
         }
-        let cfg = Config { host: host.text().trim().to_string(), user: user.text().trim().to_string(), imsg: imsg_path, map_previews: previews.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone() };
+        let cfg = Config { host: host.text().trim().to_string(), user: user.text().trim().to_string(), imsg: imsg_path, map_previews: previews.is_active(), link_previews: links.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone() };
         crate::save_config(&u2.store.config_file, &cfg);
         u2.st.borrow_mut().cfg = cfg.clone();
         u2.send(Cmd::Configure(cfg));
@@ -6413,11 +6593,13 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
     n.add_css_class("card-name");
     n.set_xalign(0.0);
     n.set_wrap(true);
+    n.set_selectable(true);
     names.append(&n);
     if !org.is_empty() {
         let o = gtk::Label::new(Some(&org));
         o.add_css_class("dim");
         o.set_xalign(0.0);
+        o.set_selectable(true);
         names.append(&o);
     }
     head.append(&names);
@@ -6439,6 +6621,7 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
         v.set_xalign(0.0);
         v.set_wrap(true);
         v.set_wrap_mode(gtk::pango::WrapMode::Char);
+        v.set_selectable(true);
         col.append(&v);
         if !label.is_empty() || imsg {
             let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -6451,6 +6634,15 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
             col.append(&chips);
         }
         row.append(&col);
+        let copy = card_button("edit-copy-symbolic", "Copy");
+        let (win, text) = (u.win.clone(), pretty_handle(&addr));
+        copy.connect_clicked(move |b| {
+            win.clipboard().set_text(&text);
+            b.set_icon_name("object-select-symbolic"); // a moment of "done"
+            let b = b.clone();
+            glib::timeout_add_local_once(Duration::from_millis(1500), move || b.set_icon_name("edit-copy-symbolic"));
+        });
+        row.append(&copy);
         let msg = card_button("bf-message-symbolic", "Send a message");
         let (u2, pop2, a2) = (u.clone(), pop.downgrade(), addr.clone());
         msg.connect_clicked(move |_| {
@@ -6483,6 +6675,7 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
         let l = gtk::Label::new(Some(&lines.join("\n")));
         l.set_xalign(0.0);
         l.set_wrap(true);
+        l.set_selectable(true);
         col.append(&l);
         if !label.is_empty() {
             let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -6506,7 +6699,9 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
     }
     if let Some(b) = birthday {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        row.append(&gtk::Label::new(Some(&b)));
+        let bl = gtk::Label::new(Some(&b));
+        bl.set_selectable(true);
+        row.append(&bl);
         row.append(&chip("birthday", ""));
         root.append(&row);
     }
