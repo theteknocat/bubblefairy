@@ -23,6 +23,8 @@ fn load_config(path: &Path) -> mac::Config {
             Some(("user", v)) => c.user = v.trim().into(),
             Some(("imsg", v)) if !v.trim().is_empty() => c.imsg = v.trim().into(),
             Some(("map_previews", v)) => c.map_previews = v.trim() == "1",
+            Some(("dir_images", v)) => c.dir_images = v.trim().into(),
+            Some(("dir_files", v)) => c.dir_files = v.trim().into(),
             _ => {}
         }
     }
@@ -31,7 +33,7 @@ fn load_config(path: &Path) -> mac::Config {
 
 pub fn save_config(path: &Path, c: &mac::Config) {
     let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\nmap_previews={}\n", c.host, c.user, c.imsg, u8::from(c.map_previews)));
+    let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\nmap_previews={}\ndir_images={}\ndir_files={}\n", c.host, c.user, c.imsg, u8::from(c.map_previews), c.dir_images, c.dir_files));
 }
 
 /// Image cache size cap. Everything in it can be fetched again from the Mac.

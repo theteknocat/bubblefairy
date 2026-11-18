@@ -114,6 +114,8 @@ struct State {
     preview_asked: HashSet<i64>,
     sel: Option<i64>,
     textures: HashMap<String, gdk::Texture>,
+    /// Mac path -> where to put the copy once it has arrived (a download button was pressed)
+    save_to: HashMap<String, Vec<(PathBuf, SaveDone)>>,
     waiting: HashMap<String, Vec<bubble::Bubble>>,
     /// pictures to ask the Mac for, oldest first; sent newest-first once the chat has been built
     fetch_q: Vec<(String, bool)>,
@@ -1479,7 +1481,22 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 c.set_opacity(1.0);
                 c.set_tooltip_text(Some("Copy from the Mac and open"));
             }
-            if u.st.borrow_mut().video_wait.remove(&path) {
+            let targets = u.st.borrow_mut().save_to.remove(&path);
+            if let Some(targets) = targets {
+                match err {
+                    Some(e) => {
+                        show_banner(u, &format!("Couldn't copy the file from the Mac: {e}"), false);
+                        for (_, done) in targets {
+                            done(false);
+                        }
+                    }
+                    None => {
+                        for (t, done) in targets {
+                            copy_to(u, dest.clone(), t, done);
+                        }
+                    }
+                }
+            } else if u.st.borrow_mut().video_wait.remove(&path) {
                 match err {
                     Some(e) => u.viewer.video_failed(&path, &e),
                     None => u.viewer.video_ready(&path, dest),
@@ -1975,6 +1992,166 @@ fn retry_failed(u: &Rc<Ui>, m: &Value) {
     }
     u.send(Cmd::Resend { chat_id, to: direct_to(u, chat_id), text, mac_files, token });
     render_conv(u);
+}
+
+/// Called when a save has finished (true) or failed (false).
+type SaveDone = Rc<dyn Fn(bool)>;
+
+/// Something the download button can save: a file on the Mac (`pics`: it goes to the pictures folder).
+#[derive(Clone)]
+struct Save {
+    path: String,
+    name: String,
+    size: i64,
+    pics: bool,
+}
+
+impl Save {
+    fn new(path: &str, name: &str, size: i64, pics: bool) -> Save {
+        Save { path: path.into(), name: name.into(), size, pics }
+    }
+}
+
+/// The name a photo is saved under: its attachment's own name, else the file name on the Mac.
+fn save_name(m: &Value, path: &str) -> String {
+    let from_att = m["attachments"].as_array().into_iter().flatten().find(|a| a["original_path"].as_str() == Some(path)).and_then(|a| a["transfer_name"].as_str().filter(|n| !n.is_empty()));
+    from_att.unwrap_or_else(|| path.rsplit('/').next().unwrap_or("photo")).to_string()
+}
+
+/// The small download button beside a photo, video or file.
+fn save_button(u: &Rc<Ui>, items: Vec<Save>) -> gtk::Button {
+    let b = gtk::Button::from_icon_name("document-save-symbolic");
+    b.add_css_class("save-btn");
+    b.set_valign(gtk::Align::Center);
+    b.set_tooltip_text(Some(if items.len() > 1 { "Save these photos" } else { "Save" }));
+    let u = u.clone();
+    b.connect_clicked(move |b| {
+        // finished: a green check for 3 s (and no clicking) before it turns back into the save icon
+        let b = b.clone();
+        save_items(&u, items.clone(), false, Rc::new(move |ok| {
+            if !ok {
+                return;
+            }
+            b.set_icon_name("object-select-symbolic");
+            b.add_css_class("done");
+            b.set_sensitive(false);
+            let b = b.clone();
+            glib::timeout_add_local_once(Duration::from_secs(3), move || {
+                b.set_icon_name("document-save-symbolic");
+                b.remove_css_class("done");
+                b.set_sensitive(true);
+            });
+        }));
+    });
+    b
+}
+
+/// A name that isn't taken in `dir`: "photo.jpg", "photo (2).jpg", ...
+fn unique(dir: &std::path::Path, name: &str) -> PathBuf {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
+    };
+    let mut p = dir.join(name);
+    let mut n = 2;
+    while p.exists() {
+        p = dir.join(format!("{stem} ({n}){ext}"));
+        n += 1;
+    }
+    p
+}
+
+/// Save to the default folder set in Settings, or ask where (a save dialog; for several photos, a folder).
+fn save_items(u: &Rc<Ui>, items: Vec<Save>, ask: bool, done: SaveDone) {
+    let Some(first) = items.first() else { return };
+    // with several items, `done` fires once all of them have been saved
+    let left = Rc::new(Cell::new(items.len()));
+    let all_ok = Rc::new(Cell::new(true));
+    let done: SaveDone = if items.len() == 1 {
+        done
+    } else {
+        Rc::new(move |ok| {
+            all_ok.set(all_ok.get() && ok);
+            left.set(left.get() - 1);
+            if left.get() == 0 {
+                done(all_ok.get());
+            }
+        })
+    };
+    let dir = {
+        let st = u.st.borrow();
+        if ask { String::new() } else if first.pics { st.cfg.dir_images.clone() } else { st.cfg.dir_files.clone() }
+    };
+    // a default folder that has gone (deleted, access revoked): say so and ask where instead
+    let usable = |d: &str| {
+        gio::File::for_path(d).query_info("standard::type,access::can-write", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE).is_ok_and(|i| i.file_type() == gio::FileType::Directory && i.boolean("access::can-write"))
+    };
+    let dir = if !dir.is_empty() && !usable(&dir) {
+        let msg = "The default download folder isn't available any more. Choose where to save, or set it again in Settings.";
+        show_banner(u, msg, false);
+        let u2 = u.clone();
+        glib::timeout_add_local_once(Duration::from_secs(8), move || {
+            if u2.banner_text.text() == msg && !u2.banner_offline.get() {
+                u2.banner.set_reveal_child(false);
+            }
+        });
+        String::new()
+    } else {
+        dir
+    };
+    if !dir.is_empty() {
+        for it in &items {
+            queue_save(u, it, unique(std::path::Path::new(&dir), &it.name), done.clone());
+        }
+        return;
+    }
+    let d = gtk::FileDialog::builder().modal(true).build();
+    let u2 = u.clone();
+    if let [one] = items.as_slice() {
+        d.set_title("Save");
+        d.set_initial_name(Some(&one.name));
+        let one = one.clone();
+        d.save(Some(&u.win), gio::Cancellable::NONE, move |r| {
+            if let Some(p) = r.ok().and_then(|f| f.path()) {
+                queue_save(&u2, &one, p, done);
+            }
+        });
+    } else {
+        d.set_title("Save photos to");
+        d.select_folder(Some(&u.win), gio::Cancellable::NONE, move |r| {
+            if let Some(dir) = r.ok().and_then(|f| f.path()) {
+                for it in &items {
+                    queue_save(&u2, it, unique(&dir, &it.name), done.clone());
+                }
+            }
+        });
+    }
+}
+
+/// Put the Mac's file at `target`: from our copy if there is one, else fetch it first.
+fn queue_save(u: &Rc<Ui>, it: &Save, target: PathBuf, done: SaveDone) {
+    let src = file_dest(u, &it.path, &it.name);
+    if src.exists() {
+        copy_to(u, src, target, done);
+    } else {
+        u.st.borrow_mut().save_to.entry(it.path.clone()).or_default().push((target, done));
+        u.send(Cmd::Download { path: it.path.clone(), dest: src, size: it.size });
+    }
+}
+
+fn copy_to(u: &Rc<Ui>, src: PathBuf, target: PathBuf, done: SaveDone) {
+    let u = u.clone();
+    glib::spawn_future_local(async move {
+        let (copy, _) = gio::File::for_path(&src).copy_future(&gio::File::for_path(&target), gio::FileCopyFlags::OVERWRITE, glib::Priority::DEFAULT);
+        match copy.await {
+            Ok(()) => done(true),
+            Err(e) => {
+                let name = target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                show_banner(&u, &format!("Couldn't save {name}: {}", e.message()), false);
+                done(false);
+            }
+        }
+    });
 }
 
 /// Reactions (tapbacks) on a message: a small pill of the distinct emoji, with a count when there are more
@@ -2948,7 +3125,7 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     let when = dt.and_then(|d| d.format("%A, %B %-d, %Y at %H:%M").ok()).map(|g| g.to_string());
     let failed_msg = me && m["error"].as_i64().unwrap_or(0) != 0;
     let resending = failed_msg && m["id"].as_i64().is_some_and(|id| u.st.borrow().resending.contains(&id));
-    let parts = message_parts(u, m, me, svc != "iMessage", !run_next);
+    let (parts, saves) = message_parts(u, m, me, svc != "iMessage", !run_next);
     let n = parts.len();
     for (k, part) in parts.into_iter().enumerate() {
         let last = k + 1 == n;
@@ -2969,6 +3146,10 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
                 spacer.add_css_class("avatar-spacer");
                 line.append(&spacer);
             }
+        }
+        let save = saves.iter().find(|(i, _)| *i == k).map(|(_, s)| save_button(u, s.clone()));
+        if me && let Some(b) = &save {
+            line.append(b); // beside the bubble, on the side away from the edge
         }
         if resending {
             // being sent again: a ghost with a spinner, in place
@@ -2993,6 +3174,9 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
                 line.append(&ov);
             }
             None => line.append(&part),
+        }
+        if !me && let Some(b) = &save {
+            line.append(b);
         }
         // a failed message moves in from the edge for a red "!" that offers to send it again
         if last && failed_msg && !resending {
@@ -3248,14 +3432,14 @@ fn photo_paths(m: &Value) -> Vec<String> {
 /// text and any other attachments. Only the bubble of the last message in a run gets a tail.
 /// `end_of_run`: this message is the sender's last in the run, so its last item (bubble or photo)
 /// carries the tail. Nothing else does.
-fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -> Vec<gtk::Widget> {
+fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -> (Vec<gtk::Widget>, Vec<(usize, Vec<Save>)>) {
     let look = bubble::Look { me, sms, tail: end_of_run };
     if m["unsent_at"].as_str().is_some() || m["type"].as_str() == Some("unsent") {
         let b = bubble::Bubble::new(look);
         let l = gtk::Label::new(Some("Message unsent"));
         l.add_css_class("unsent");
         b.add(&l);
-        return vec![b.upcast()];
+        return (vec![b.upcast()], Vec::new());
     }
     let atts: Vec<&Value> = m["attachments"].as_array().into_iter().flatten().collect();
     // RCS/SMS photos often come as a converted copy plus a missing original; show only what's there
@@ -3287,6 +3471,7 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
         }
     }
     let mut out: Vec<gtk::Widget> = Vec::new();
+    let mut saves: Vec<(usize, Vec<Save>)> = Vec::new();
     let link = preview_row(m).and_then(|r| link_for(u, r));
     let mut text = clean_text(m);
     // a link Messages made no preview of: like Messages, one that ends the message becomes a small
@@ -3304,11 +3489,15 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
     let look = bubble::Look { tail: end_of_run && plain.is_none(), ..look };
     if !photos.is_empty() {
         let tail = end_of_run && !has_bubble && link.is_none() && plain.is_none() && files.is_empty();
+        saves.push((out.len(), photos.iter().map(|p| Save::new(p, &save_name(m, p), 0, true)).collect()));
         out.push(photo_stack(u, &photos, bubble::Look { me, sms, tail }));
     }
     for (i, f) in files.iter().enumerate() {
         let look = bubble::Look { me, sms, tail: end_of_run && !has_bubble && link.is_none() && plain.is_none() && i + 1 == files.len() };
         // a video on the Mac is a big first-frame picture like a photo; anything else (or no frame) is a card
+        if !f.missing && !f.path.is_empty() {
+            saves.push((out.len(), vec![Save::new(&f.path, &f.name, f.size, false)]));
+        }
         let framed = f.kind == FileKind::Video && !f.missing && !f.path.is_empty() && !u.st.borrow().bad_images.contains(&f.path);
         out.push(if framed { video_preview(u, f, look) } else { file_card(u, f, look) });
     }
@@ -3346,7 +3535,7 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
     if let Some(url) = plain {
         out.push(plain_link_card(u, &url, bubble::Look { me, sms, tail: end_of_run }));
     }
-    out
+    (out, saves)
 }
 
 /// Our own stand-in for a link's missing picture: a white chain on a solid slate circle, which reads
@@ -3669,6 +3858,44 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
         open_media(&u2, &path2, &p2);
     });
     p.add_controller(click);
+    // right-click: copy the picture or save it
+    let menu = gtk::GestureClick::builder().button(3).build();
+    let (u2, path2, p2) = (u.clone(), path.to_string(), p.clone());
+    menu.connect_pressed(move |g, _, x, y| {
+        g.set_state(gtk::EventSequenceState::Claimed);
+        let copy = gtk::Button::with_label("Copy image");
+        let save = gtk::Button::with_label("Save as…");
+        for b in [&copy, &save] {
+            b.add_css_class("flat");
+        }
+        let col = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        col.append(&copy);
+        col.append(&save);
+        let pop = gtk::Popover::new();
+        pop.set_child(Some(&col));
+        pop.set_parent(&p2);
+        pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        let (u3, path3, p3) = (u2.clone(), path2.clone(), pop.clone());
+        copy.connect_clicked(move |_| {
+            p3.popdown();
+            let tex = u3.st.borrow().textures.get(&path3).cloned();
+            if let Some(t) = tex {
+                u3.win.clipboard().set_texture(&t);
+            }
+        });
+        let (u3, path3, p3) = (u2.clone(), path2.clone(), pop.clone());
+        save.connect_clicked(move |_| {
+            p3.popdown();
+            let name = path3.rsplit('/').next().unwrap_or("photo").to_string();
+            save_items(&u3, vec![Save::new(&path3, &name, 0, true)], true, Rc::new(|_| {}));
+        });
+        pop.connect_closed(|p| {
+            let p = p.clone();
+            glib::idle_add_local_once(move || p.unparent());
+        });
+        pop.popup();
+    });
+    p.add_controller(menu);
     u.st.borrow_mut().photos.push((path.to_string(), p.clone().upcast()));
     load_texture(u, &p, path);
     p
@@ -5046,6 +5273,67 @@ fn settings(u: &Rc<Ui>) {
     grid.attach(&privacy_title, 0, 6, 1, 1);
     grid.attach(&pbox, 1, 6, 1, 1);
 
+    // default download folders: empty = the download buttons ask every time
+    let dl = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
+        dl.set_property(m, 10);
+    }
+    // The file chooser hands a Flatpak app a portal path (/run/user/1000/doc/<id>/Pictures); that is what
+    // saving needs, but the field shows the real folder, which the portal keeps in an attribute.
+    let shown = |path: &str| {
+        let info = gio::File::for_path(path).query_info("xattr::document-portal.host-path", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE).ok();
+        info.and_then(|i| i.attribute_string("xattr::document-portal.host-path")).map(|s| s.to_string()).unwrap_or_else(|| path.to_string())
+    };
+    let folder_row = |label: &str, value: &str| {
+        let l = gtk::Label::new(Some(label));
+        l.set_xalign(0.0);
+        l.set_width_chars(8);
+        let path = Rc::new(RefCell::new(value.to_string()));
+        let e = gtk::Entry::builder().text(if value.is_empty() { String::new() } else { shown(value) }).editable(false).can_focus(false).hexpand(true).placeholder_text("Ask every time").build();
+        let choose = gtk::Button::with_label("Choose…");
+        let clear = gtk::Button::with_label("Clear");
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        for w in [l.upcast_ref::<gtk::Widget>(), e.upcast_ref(), choose.upcast_ref(), clear.upcast_ref()] {
+            row.append(w);
+        }
+        let (e2, p2, win, label) = (e.clone(), path.clone(), u.win.clone(), label.to_lowercase());
+        choose.connect_clicked(move |_| {
+            let d = gtk::FileDialog::builder().title(format!("Default folder for {label}")).modal(true).build();
+            if !p2.borrow().is_empty() {
+                d.set_initial_folder(Some(&gio::File::for_path(p2.borrow().as_str())));
+            }
+            let (e3, p3) = (e2.clone(), p2.clone());
+            d.select_folder(Some(&win), gio::Cancellable::NONE, move |r| {
+                if let Some(p) = r.ok().and_then(|f| f.path()) {
+                    let p = p.to_string_lossy().to_string();
+                    e3.set_text(&shown(&p));
+                    *p3.borrow_mut() = p;
+                }
+            });
+        });
+        let e2 = e.clone();
+        let p2 = path.clone();
+        clear.connect_clicked(move |_| {
+            e2.set_text("");
+            p2.borrow_mut().clear();
+        });
+        (row, path)
+    };
+    let (images_row, dir_images) = folder_row("Pictures", &cfg.dir_images);
+    let (files_row, dir_files) = folder_row("Files", &cfg.dir_files);
+    let dl_help = gtk::Label::new(Some(
+        "The download button next to a picture or file saves it to the folder set here. With no folder set, it opens a save dialog every time so you choose where it goes.",
+    ));
+    dl_help.set_wrap(true);
+    dl_help.set_xalign(0.0);
+    dl_help.add_css_class("dim");
+    dl.append(&images_row);
+    dl.append(&files_row);
+    dl.append(&dl_help);
+    let dl_frame = gtk::Frame::new(Some("Default download folders"));
+    dl_frame.set_child(Some(&dl));
+    grid.attach(&dl_frame, 0, 7, 2, 1);
+
     let save = gtk::Button::with_label("Save and connect");
     save.add_css_class("suggested-action");
     let cancel = gtk::Button::with_label("Cancel");
@@ -5053,7 +5341,7 @@ fn settings(u: &Rc<Ui>) {
     buttons.set_halign(gtk::Align::End);
     buttons.append(&cancel);
     buttons.append(&save);
-    grid.attach(&buttons, 0, 7, 2, 1);
+    grid.attach(&buttons, 0, 8, 2, 1);
     w.set_child(Some(&grid));
 
     let w2 = w.clone();
@@ -5064,7 +5352,7 @@ fn settings(u: &Rc<Ui>) {
         if imsg_path.is_empty() {
             imsg_path = crate::DEFAULT_IMSG.into();
         }
-        let cfg = Config { host: host.text().trim().to_string(), user: user.text().trim().to_string(), imsg: imsg_path, map_previews: previews.is_active() };
+        let cfg = Config { host: host.text().trim().to_string(), user: user.text().trim().to_string(), imsg: imsg_path, map_previews: previews.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone() };
         crate::save_config(&u2.store.config_file, &cfg);
         u2.st.borrow_mut().cfg = cfg.clone();
         u2.send(Cmd::Configure(cfg));

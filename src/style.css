@@ -477,3 +477,8 @@ text, textview > text { caret-color: var(--ink); }
 .reactions { background: var(--them-a); color: var(--them-ink); border: 1px solid var(--them-edge); box-shadow: 0 1px 3px var(--shadow); border-radius: 999px; min-height: 28px; padding: 0 8px; font-size: 1.15em; margin: 0 6px; }
 .reactions.one { min-width: 28px; padding: 0; }
 .reactions label { padding: 0; }
+
+button.save-btn { min-width: 26px; min-height: 26px; padding: 0; margin: 0 8px; border-radius: 999px; background: var(--them-a); color: var(--ink-soft); border: 1px solid var(--them-edge); box-shadow: 0 1px 3px var(--shadow); }
+button.save-btn:hover { color: var(--ink); }
+button.save-btn.done { background: #1e7d3a; color: #fff; border-color: #1e7d3a; }
+button.save-btn.done:disabled { opacity: 1; }
