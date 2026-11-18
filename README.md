@@ -38,6 +38,14 @@ You do only these things on the Mac:
 
 BubbleFairy's setup wizard finds your Mac, asks for your Mac username and password once, and handles everything else.
 
+## Known limitations
+
+BubbleFairy works without turning off any of macOS's security protections, so a few Messages features aren't
+possible: you can't send tapback reactions or inline (threaded) replies, there are no typing indicators, and
+reading a chat in BubbleFairy doesn't send a read receipt or mark it read on your other devices. Pins and muted
+chats are BubbleFairy's own and don't sync with Apple devices. The full list is in
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+
 ## Not affiliated with Apple
 
 BubbleFairy is an independent project. It is not made, endorsed or supported by Apple. iMessage and macOS are trademarks of Apple Inc.
