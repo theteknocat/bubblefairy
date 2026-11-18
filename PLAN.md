@@ -84,6 +84,10 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 - Pinned chats show as avatar tiles above the list (name under the avatar, unread dot, group avatars as in the list), three per line. In the avatars-only sidebar they become a column of circles spaced like the list rows. A pinned chat's list row stays in the list, hidden, so row indexes keep matching the chat list.
 - Dropped on purpose: hover pin button (tried; GTK's negative margins and sibling draw order made it fiddly), drag to reorder (tiles stay in pin order).
 
+### Times (built)
+
+- One scheme everywhere (`rel_time`, `TimeKind`): the chat list and "Read" lines show `17:38` today, `Yesterday`, a weekday for 2-6 days ago, `Nov 8` this year, `Nov 8, 2025` before; the separators in a chat show `Today 17:38`, `Yesterday 17:38`, `Mon 17:38`, `Nov 8, 17:38`, `Nov 8, 2025, 17:38`; tooltips keep the full date and time. Every such label is tracked (`track_time`) and rewritten in place at midnight (`schedule_midnight`) or when the window becomes active after a day change, with no rebuild.
+
 ### Small features (built)
 
 - Hovering a message shows its full date and time; the window title carries the number of unread conversations (`(3) BubbleFairy`); each chat keeps its own unsent text and waiting files while you look at another (in memory only, lost on quit); the chat names its service ("iMessage", "RCS", "Text Message") at the start and wherever it changes.
@@ -93,6 +97,7 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 
 - Under my newest sent message in the open chat: "Read 10:32" (date when not today; only when the recipient sends read receipts) or "Delivered". Data is chat.db's `is_delivered`, `date_delivered`, `date_read`, read over SSH by `Cmd::Receipts` (`mac::parse_receipt`), asked when a chat's history arrives and every 10 s while the window is active; `Event::Receipt` redraws just that message. `is_delivered` counts as delivered even where `date_delivered` was never filled in (it is sparse). RCS and SMS rows rarely carry a delivered flag, so those show nothing until read.
 - Under ANY message of mine that failed: a red "Not delivered" (chat.db `message.error` non-zero, added to every message by `add_services`; imsg's JSON has no such field). Checked against Peter's phone (a photo with error 35 shows "Not Delivered" there).
+- A failed message also moves in from the edge for a red "!" button; its popup says "This message (photo, video, file) was not delivered." with Try Again, which sends the text and the attachments that are already on the Mac (`Cmd::Resend`, paths from imsg's `original_path`) and hides the failed one afterwards (`State.resent`, file `data/bubblefairy/resent`; the failed row stays in the Mac's database). Not done: "Send to email address / as text message". Untested against a real Mac (it would send a real message).
 - "Notifications silenced" was tried as the line for `was_delivered_quietly` and was wrong: the phone said "Delivered" for such a message. The quiet flag is now only a tooltip ("Delivered quietly…"), since the recipient's Focus at the time can't be known.
 
 ### Candidate features (investigated, not built)

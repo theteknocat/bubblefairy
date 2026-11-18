@@ -277,7 +277,13 @@ flowbox.tiles flowboxchild { padding: 0; }
 .msgs { padding: 8px 18px 14px; }
 .msg-line { margin-top: 6px; }
 .msg-line.tight { margin-bottom: -4px; }
-.receipt { color: var(--ink-soft); font-size: 0.72em; font-weight: 600; margin: 0 10px 4px 0; }
+.receipt { color: var(--ink-soft); font-size: 0.72em; font-weight: 600; margin: 5px 10px 4px 0; }
+button.failed-btn {
+  min-width: 22px; min-height: 22px; padding: 0; margin-left: 8px; border-radius: 99px;
+  background-image: none; background-color: #ff453a; color: #ffffff; font-weight: 800; border: none;
+  box-shadow: 0 1px 5px rgba(255, 69, 58, 0.5);
+}
+button.failed-btn:hover { background-color: #ff6a60; }
 .receipt.failed { color: #ff5a73; }
 .time-sep {
   color: var(--ink-soft);

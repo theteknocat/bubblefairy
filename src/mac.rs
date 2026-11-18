@@ -40,6 +40,8 @@ pub enum Cmd {
     /// `files` go first, one message each, then `text` (if any) as its own message
     /// `token` names this send, so the answer (`Event::Sent`) can be matched to its waiting bubbles
     Send { chat_id: i64, to: Option<String>, text: String, files: Vec<PathBuf>, token: u64 },
+    /// Send a failed message again: its text and the attachments that are already on the Mac (their paths there)
+    Resend { chat_id: i64, to: Option<String>, text: String, mac_files: Vec<String>, token: u64 },
     /// Copy a file of a chat from the Mac to `dest` (to open it on this computer)
     /// `size` (from chat.db, 0 if unknown) is for the progress and for spotting a copy that was cut short
     Download { path: String, dest: PathBuf, size: i64 },
@@ -1326,6 +1328,28 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let files_left = if err.is_some() { files[sent..].to_vec() } else { Vec::new() };
             let _ = ev.send(Event::Sent { text: if err.is_some() { text_left } else { String::new() }, files: files_left, err, token });
         }
+        Cmd::Resend { chat_id, to, text, mac_files, token } => {
+            let target = match &to {
+                Some(to) => json!({"to": to, "service": "auto"}),
+                None => json!({"chat_id": chat_id}),
+            };
+            let home = String::from_utf8_lossy(&exec(&session, "printf %s \"$HOME\"".into()).await.unwrap_or_default()).into_owned();
+            let mut err = None;
+            for f in &mac_files {
+                let path = match f.strip_prefix("~/") {
+                    Some(rest) if !home.is_empty() => format!("{home}/{rest}"),
+                    _ => f.clone(),
+                };
+                if let Err(e) = send_one(&rpc, &ev, &target, "file", &path).await {
+                    err = Some(e);
+                    break;
+                }
+            }
+            if err.is_none() && !text.is_empty() {
+                err = send_one(&rpc, &ev, &target, "text", &text).await.err();
+            }
+            let _ = ev.send(Event::Sent { text: String::new(), files: Vec::new(), err, token });
+        }
         Cmd::Contacts => {
             let _ = ev.send(Event::Contacts(fetch_contacts(&session).await.unwrap_or_default()));
         }
@@ -1439,6 +1463,9 @@ async fn wait_offline(cmds: &mut mpsc::UnboundedReceiver<Cmd>, ev: &mpsc::Unboun
                 Cmd::Configure(c) => return Some(c),
                 Cmd::Send { text, files, token, .. } => {
                     let _ = ev.send(Event::Sent { text, files, err: Some("not connected to the Mac".into()), token });
+                }
+                Cmd::Resend { token, .. } => {
+                    let _ = ev.send(Event::Sent { text: String::new(), files: Vec::new(), err: Some("not connected to the Mac".into()), token });
                 }
                 _ => {}
             },

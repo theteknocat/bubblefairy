@@ -66,6 +66,10 @@ fn history(id: i64) -> Vec<Value> {
         v.insert(6, file(23, false, 183, "Maya Thompson.vcf", "text/vcard", 4_000, false));
         v.insert(7, file(24, true, 182, "Packing list with a really quite long name.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 12_000, true));
     }
+    // BF_DEMO_FAIL=1: my newest message in chat 4 failed to send
+    if id == 4 && std::env::var_os("BF_DEMO_FAIL").is_some() && let Some(m) = v.iter_mut().rev().find(|m| m["is_from_me"] == true) {
+        m["error"] = json!(35);
+    }
     v
 }
 
@@ -83,6 +87,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
                 let r = last.map(|msg| crate::mac::Receipt { msg, delivered: true, read_at: (id == 1).then(|| now_unix() - 600), silenced: id == 4 });
                 ev.send(Event::Receipt(id, r))
             }
+            Cmd::Resend { token, .. } => ev.send(Event::Sent { text: String::new(), files: Vec::new(), err: None, token }),
             Cmd::Preview(id) => ev.send(Event::Preview(id, history(id).pop().unwrap())),
             Cmd::Send { chat_id, text, token, .. } => {
                 next += 1;

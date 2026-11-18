@@ -33,6 +33,8 @@ pub struct Store {
     pub image_cache: PathBuf,
     /// newest message seen in BubbleFairy per chat (`chat_id=message_id` lines)
     pub seen_file: PathBuf,
+    /// failed messages that were sent again (they are hidden), one message id per line
+    pub resent_file: PathBuf,
     /// pinned chats, one chat identifier per line, in pin order (our own: Messages' pins aren't readable)
     pub pins_file: PathBuf,
     pub public_key: String,
@@ -119,6 +121,10 @@ struct State {
     host_key: String,
     connected: bool,
     chats_loaded: bool,
+    /// failed messages that were sent again: hidden, since the new one takes their place
+    resent: HashSet<i64>,
+    /// resend token -> the failed message it replaces
+    resend_of: HashMap<u64, i64>,
     /// the delivery / read receipt of each chat's newest sent message
     receipts: HashMap<i64, crate::mac::Receipt>,
     /// unsent text and files of the chats not on show, by chat id
@@ -199,6 +205,10 @@ pub struct Ui {
     selecting: Cell<bool>,
     /// a `render_chats_soon` is waiting
     list_queued: Cell<bool>,
+    /// every time shown in a label, to be rewritten when the day changes (`track_time`)
+    time_labels: RefCell<Vec<TimeLabel>>,
+    /// the day the tracked times were last written for
+    time_day: Cell<Option<(i32, i32, i32)>>,
     /// the open chat as `render_conv` last drew it: what it was drawn from, and each message's widgets (`redraw_message`)
     conv_ctx: RefCell<Option<Rc<ConvCtx>>>,
     msg_widgets: RefCell<Vec<Vec<gtk::Widget>>>,
@@ -679,6 +689,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     win.set_child(Some(&root));
 
     let seen = load_seen(&store.seen_file);
+    let resent: HashSet<i64> = std::fs::read_to_string(&store.resent_file).unwrap_or_default().lines().filter_map(|l| l.parse().ok()).collect();
     let pins: Vec<String> = std::fs::read_to_string(&store.pins_file).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(String::from).collect();
     // dev: BF_PINS=<key>,<key> pins those chats (demo chats' keys are their participants)
     let pins = std::env::var("BF_PINS").map(|v| v.split(';').map(String::from).collect()).unwrap_or(pins);
@@ -688,7 +699,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         store,
         cmd,
         viewer,
-        st: RefCell::new(State { cfg, seen, pins, chat_limit: CHATS_PAGE, ..Default::default() }),
+        st: RefCell::new(State { cfg, seen, pins, chat_limit: CHATS_PAGE, resent, ..Default::default() }),
         chat_list,
         side_more,
         search,
@@ -720,6 +731,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         stick_bottom: stick.clone(),
         selecting: Cell::new(false),
         list_queued: Cell::new(false),
+        time_labels: RefCell::default(),
+        time_day: Cell::new(glib::DateTime::now_local().map(|n| n.ymd()).ok()),
         conv_ctx: RefCell::default(),
         msg_widgets: RefCell::default(),
         sel_gen: Cell::new(0),
@@ -940,7 +953,14 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
 
     // coming back to the window counts as seeing the open chat
     let u = ui.clone();
-    ui.win.connect_is_active_notify(move |_| mark_seen(&u));
+    ui.win.connect_is_active_notify(move |_| {
+        // back from a suspend that spanned midnight: the timer is late
+        if u.time_day.get() != glib::DateTime::now_local().map(|n| n.ymd()).ok() {
+            refresh_times(&u);
+        }
+        mark_seen(&u);
+    });
+    schedule_midnight(&ui);
     // receipts (delivered, read) don't come through the live stream either: look again while a chat is open
     let w = Rc::downgrade(&ui);
     glib::timeout_add_seconds_local(10, move || {
@@ -1369,6 +1389,30 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             "Still sending… If this is your first message from BubbleFairy, check your Mac: it may be asking whether to allow control of Messages.",
             false,
         ),
+        Event::Sent { text, files, err, token } if u.st.borrow().resend_of.contains_key(&token) => {
+            let mid = u.st.borrow_mut().resend_of.remove(&token);
+            let _ = (text, files);
+            match (err, mid) {
+                (Some(err), _) => {
+                    drop_pending(u, token);
+                    show_banner(u, &format!("Message not sent: {err}"), false);
+                }
+                (None, Some(mid)) => {
+                    // sent again: the failed one goes (it is still in the Mac's database, with its error)
+                    let all: String = {
+                        let mut st = u.st.borrow_mut();
+                        st.resent.insert(mid);
+                        st.resent.iter().map(|i| format!("{i}\n")).collect()
+                    };
+                    let _ = std::fs::create_dir_all(u.store.resent_file.parent().unwrap());
+                    let _ = std::fs::write(&u.store.resent_file, all);
+                    render_conv(u);
+                    let u2 = u.clone();
+                    glib::timeout_add_local_once(Duration::from_secs(20), move || drop_pending(&u2, token));
+                }
+                (None, None) => {}
+            }
+        }
         Event::Sent { text, files, err, token } => {
             if let Some(err) = err {
                 u.st.borrow_mut().new_pending = None;
@@ -1558,12 +1602,10 @@ fn on_receipt(u: &Rc<Ui>, chat: i64, r: Option<crate::mac::Receipt>) {
     }
 }
 
-/// "Read 10:32" or "Delivered": the line under my newest message. A message delivered while the recipient's Focus
-/// silenced notifications says "Delivered" too (what Messages on the phone shows); the tooltip tells.
+/// "Delivered": the line under my newest message that isn't read yet ("Read ..." is a `TimeKind::Read` label). A
+/// message delivered while the recipient's Focus silenced notifications says "Delivered" too (what Messages on the
+/// phone shows); the tooltip tells.
 fn receipt_text(r: &crate::mac::Receipt) -> Option<(String, Option<&'static str>)> {
-    if let Some(d) = r.read_at.and_then(|t| glib::DateTime::from_unix_local(t).ok()) {
-        return Some((format!("Read {}", short_time(&d)), None));
-    }
     let tip = r.silenced.then_some("Delivered quietly: their Focus silenced notifications when it arrived");
     r.delivered.then(|| ("Delivered".to_string(), tip))
 }
@@ -1871,6 +1913,87 @@ fn load_older(u: &Rc<Ui>) {
     glib::idle_add_local_once(move || render_conv(&u2)); // shows the "Loading more" row; not inside a scroll signal
 }
 
+/// Whom a message to this chat is sent to directly: the other person of a 1:1 chat (None for a group).
+fn direct_to(u: &Ui, chat_id: i64) -> Option<String> {
+    let st = u.st.borrow();
+    st.chats
+        .iter()
+        .find(|c| c["id"].as_i64() == Some(chat_id))
+        .filter(|c| c["is_group"].as_bool() != Some(true))
+        .and_then(|c| direct_addr(c).map(String::from))
+}
+
+/// "Try Again" on a failed message: send its text and its attachments (already on the Mac) once more. The failed
+/// one is hidden once that has gone through, as Messages replaces it.
+fn retry_failed(u: &Rc<Ui>, m: &Value) {
+    let (Some(chat_id), Some(mid)) = (m["chat_id"].as_i64(), m["id"].as_i64()) else { return };
+    let text = clean_text(m);
+    let mac_files: Vec<String> =
+        m["attachments"].as_array().into_iter().flatten().filter_map(|a| a["original_path"].as_str()).filter(|p| !p.is_empty()).map(String::from).collect();
+    if text.is_empty() && mac_files.is_empty() {
+        return;
+    }
+    u.stick_bottom.set(true);
+    let token = u.send_token.get() + 1;
+    u.send_token.set(token);
+    {
+        let mut st = u.st.borrow_mut();
+        st.resend_of.insert(token, mid);
+        if !text.is_empty() {
+            st.pending.push(Pending { token, chat_id, item: PendingItem::Text(text.clone()) });
+        }
+    }
+    u.send(Cmd::Resend { chat_id, to: direct_to(u, chat_id), text, mac_files, token });
+    render_conv(u);
+}
+
+/// The red "!" beside a failed message: a popup says so and offers to try again.
+fn failed_button(u: &Rc<Ui>, m: &Value) -> gtk::Button {
+    let kind = {
+        let atts: Vec<&str> = m["attachments"].as_array().into_iter().flatten().filter_map(|a| a["mime_type"].as_str()).collect();
+        if atts.iter().any(|t| t.starts_with("image/")) {
+            "photo"
+        } else if atts.iter().any(|t| t.starts_with("video/")) {
+            "video"
+        } else if !atts.is_empty() {
+            "file"
+        } else {
+            "message"
+        }
+    };
+    let b = gtk::Button::with_label("!");
+    b.add_css_class("failed-btn");
+    b.set_valign(gtk::Align::Center);
+    b.set_tooltip_text(Some("Not delivered"));
+    let (u, m, b2) = (u.clone(), m.clone(), b.clone());
+    b.connect_clicked(move |_| {
+        let note = gtk::Label::new(Some(&format!("This {kind} was not delivered.")));
+        let again = gtk::Button::with_label("Try Again");
+        again.add_css_class("suggested-action");
+        let col = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        col.set_margin_top(6);
+        col.set_margin_bottom(6);
+        col.set_margin_start(8);
+        col.set_margin_end(8);
+        col.append(&note);
+        col.append(&again);
+        let pop = gtk::Popover::new();
+        pop.set_child(Some(&col));
+        pop.set_parent(&b2);
+        let (u2, m2, p2) = (u.clone(), m.clone(), pop.clone());
+        again.connect_clicked(move |_| {
+            p2.popdown();
+            retry_failed(&u2, &m2);
+        });
+        pop.connect_closed(|p| {
+            let p = p.clone();
+            glib::idle_add_local_once(move || p.unparent());
+        });
+        pop.popup();
+    });
+    b
+}
+
 fn send_now(u: &Rc<Ui>) {
     let buf = u.compose.buffer();
     let text = buf.text(&buf.start_iter(), &buf.end_iter(), false).trim().to_string();
@@ -1882,14 +2005,7 @@ fn send_now(u: &Rc<Ui>) {
         return;
     }
     let Some(chat_id) = u.st.borrow().sel else { return };
-    let to = {
-        let st = u.st.borrow();
-        st.chats
-            .iter()
-            .find(|c| c["id"].as_i64() == Some(chat_id))
-            .filter(|c| c["is_group"].as_bool() != Some(true))
-            .and_then(|c| direct_addr(c).map(String::from))
-    };
+    let to = direct_to(u, chat_id);
     let files = take_files(u);
     buf.set_text(""); // also disables the send button (buffer changed)
     u.stick_bottom.set(true);
@@ -2327,10 +2443,10 @@ fn render_chats_soon(u: &Rc<Ui>) {
 }
 
 /// What a chat's row shows: title, last message, time, unread.
-fn row_info(st: &State, c: &Value) -> (String, String, String, bool) {
+fn row_info(st: &State, c: &Value) -> (String, String, Option<i64>, bool) {
     let id = c["id"].as_i64().unwrap_or(0);
     let p = st.preview.get(&id);
-    let when = p.and_then(|m| m["created_at"].as_str()).or(c["last_message_at"].as_str()).and_then(local).map(|d| short_time(&d));
+    let when = p.and_then(|m| m["created_at"].as_str()).or(c["last_message_at"].as_str()).and_then(local).map(|d| d.to_unix());
     let text = p.map(|m| {
         let s = summary(m);
         if m["is_from_me"].as_bool() == Some(true) { format!("You: {s}") } else { s }
@@ -2338,7 +2454,7 @@ fn row_info(st: &State, c: &Value) -> (String, String, String, bool) {
     // read here but not on the Mac (imsg can't mark read): trust what we've shown
     let seen_here = p.and_then(|m| m["id"].as_i64()).is_some_and(|last| st.seen.get(&id).is_some_and(|s| *s >= last));
     let unread = c["unread_count"].as_i64().unwrap_or(0) > 0 && !seen_here;
-    (chat_title(c, &st.names), text.unwrap_or_default(), when.unwrap_or_default(), unread)
+    (chat_title(c, &st.names), text.unwrap_or_default(), when, unread)
 }
 
 /// The window's title (what a taskbar or window list shows) carries the number of unread conversations.
@@ -2368,7 +2484,8 @@ fn update_row(u: &Rc<Ui>, id: i64) {
         return render_chats_soon(u); // its tile shows the unread dot
     }
     parts.prev.set_text(&text);
-    parts.time.set_text(&when);
+    parts.time_unix.set(when);
+    refresh_times(u); // (also rewrites its label; cheap)
     for (c, on) in [("unread-dot", unread), ("read-dot", !unread)] {
         if on { parts.dot.add_css_class(c) } else { parts.dot.remove_css_class(c) }
     }
@@ -2380,13 +2497,13 @@ fn update_row(u: &Rc<Ui>, id: i64) {
 #[derive(Clone)]
 struct RowParts {
     row: gtk::ListBoxRow,
-    time: gtk::Label,
+    time_unix: Rc<Cell<Option<i64>>>,
     prev: gtk::Label,
     dot: gtk::Box,
 }
 
 fn render_chats(u: &Rc<Ui>) {
-    let rows: Vec<(String, String, String, bool, i64, Value)> = {
+    let rows: Vec<(String, String, Option<i64>, bool, i64, Value)> = {
         let st = u.st.borrow();
         st.chats
             .iter()
@@ -2414,8 +2531,9 @@ fn render_chats(u: &Rc<Ui>) {
         name.set_xalign(0.0);
         name.set_hexpand(true);
         name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        let time = gtk::Label::new(Some(&when));
+        let time = gtk::Label::new(None);
         time.add_css_class("chat-time");
+        let time_unix = track_time(u, &time, when, TimeKind::Row, None);
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         top.append(&name);
         top.append(&time);
@@ -2455,7 +2573,7 @@ fn render_chats(u: &Rc<Ui>) {
             row.set_tooltip_text(Some(&title));
         }
         new_rows.push((row.clone(), slot, title.clone()));
-        u.row_parts.borrow_mut().insert(id, RowParts { row: row.clone(), time: time.clone(), prev: prev.clone(), dot: dot.clone() });
+        u.row_parts.borrow_mut().insert(id, RowParts { row: row.clone(), time_unix, prev: prev.clone(), dot: dot.clone() });
         row.add_css_class("chat-row");
         if unread {
             row.add_css_class("unread");
@@ -2704,6 +2822,9 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     if m["is_reaction"].as_bool() == Some(true) {
         return out;
     }
+    if m["id"].as_i64().is_some_and(|id| u.st.borrow().resent.contains(&id)) {
+        return out; // failed, then sent again
+    }
     let who = |m: &Value| (m["is_from_me"].as_bool() == Some(true), m["sender"].as_str().unwrap_or("").to_string());
     let me = m["is_from_me"].as_bool() == Some(true);
     let gap = |a: usize, b: usize| match (times[a], times[b]) {
@@ -2722,18 +2843,13 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         other => other,
     };
     let dt = m["created_at"].as_str().and_then(local);
-    let when = match (&dt, sep) {
-        (Some(d), true) => Some(sep_time(d)),
-        _ => None,
-    };
-    if svc_changed || when.is_some() {
+    let show_time = sep && dt.is_some();
+    if svc_changed || show_time {
         let l = gtk::Label::new(None);
-        let esc = glib::markup_escape_text(svc_name);
-        match (svc_changed, &when) {
-            (true, Some(t)) => l.set_markup(&format!("<b>{esc}</b>\n{}", glib::markup_escape_text(t))),
-            (true, None) => l.set_markup(&format!("<b>{esc}</b>")),
-            (false, Some(t)) => l.set_text(t),
-            (false, None) => {}
+        if show_time {
+            track_time(u, &l, dt.as_ref().map(|d| d.to_unix()), TimeKind::Sep, svc_changed.then(|| svc_name.to_string()));
+        } else {
+            l.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(svc_name)));
         }
         l.set_justify(gtk::Justification::Center);
         l.add_css_class("time-sep");
@@ -2775,25 +2891,35 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
             }
         }
         line.append(&part);
+        // a failed message moves in from the edge for a red "!" that offers to send it again
+        if last && me && m["error"].as_i64().unwrap_or(0) != 0 {
+            line.append(&failed_button(u, m));
+        }
         out.push(line.upcast());
     }
     // under a message that failed (any of mine), or my newest one: not delivered / delivered / read
     let failed = me && m["error"].as_i64().unwrap_or(0) != 0;
-    let line = if failed {
-        Some(("Not delivered".to_string(), None))
-    } else if me {
-        m["chat_id"].as_i64().and_then(|chat| {
-            let st = u.st.borrow();
-            st.receipts.get(&chat).filter(|r| Some(r.msg) == m["id"].as_i64()).and_then(receipt_text)
-        })
+    let receipt = if me && !failed {
+        m["chat_id"].as_i64().and_then(|chat| u.st.borrow().receipts.get(&chat).filter(|r| Some(r.msg) == m["id"].as_i64()).cloned())
     } else {
         None
+    };
+    let read_at = receipt.as_ref().and_then(|r| r.read_at);
+    let line = if failed {
+        Some(("Not delivered".to_string(), None))
+    } else if read_at.is_some() {
+        Some((String::new(), None)) // written by `track_time` below
+    } else {
+        receipt.as_ref().and_then(receipt_text)
     };
     if let Some((text, tip)) = line {
         let l = gtk::Label::new(Some(&text));
         l.add_css_class("receipt");
         if failed {
             l.add_css_class("failed");
+        }
+        if read_at.is_some() {
+            track_time(u, &l, read_at, TimeKind::Read, None);
         }
         l.set_tooltip_text(tip);
         l.set_halign(gtk::Align::End);
@@ -5656,21 +5782,116 @@ fn day(unix: Option<i64>) -> Option<(i32, i32, i32)> {
     glib::DateTime::from_unix_local(unix?).ok().map(|d| d.ymd())
 }
 
-fn short_time(d: &glib::DateTime) -> String {
-    let today = glib::DateTime::now_local().map(|n| n.ymd()).ok();
-    let fmt = if today == Some(d.ymd()) { "%H:%M" } else { "%b %-d, %Y" };
-    d.format(fmt).map(|s| s.to_string()).unwrap_or_default()
+/// Whole calendar days from `d` to today (0 = today, 1 = yesterday).
+fn days_ago(d: &glib::DateTime) -> i64 {
+    let midnight = |t: &glib::DateTime| glib::DateTime::new(&glib::TimeZone::local(), t.year(), t.month(), t.day_of_month(), 0, 0, 0.0).map(|m| m.to_unix()).unwrap_or(0);
+    let Ok(now) = glib::DateTime::now_local() else { return 0 };
+    ((midnight(&now) - midnight(d) + 43_200).div_euclid(86_400)).max(0)
 }
 
-fn sep_time(d: &glib::DateTime) -> String {
-    let today = glib::DateTime::now_local().map(|n| n.ymd()).ok();
-    let fmt = if today == Some(d.ymd()) { "Today  %H:%M" } else { "%b %-d, %Y  %H:%M" };
-    d.format(fmt).map(|s| s.to_string()).unwrap_or_default()
+/// Where a time is shown, which decides how it is written (see `rel_time`).
+#[derive(Clone, Copy, PartialEq)]
+enum TimeKind {
+    /// the chat list: `17:38`, `Yesterday`, `Mon`, `Nov 8`, `Nov 8, 2025`
+    Row,
+    /// after "Read ": the same
+    Read,
+    /// between groups of messages: `Today 17:38`, `Yesterday 17:38`, `Mon 17:38`, `Nov 8, 17:38`, `Nov 8, 2025, 17:38`
+    Sep,
+}
+
+fn rel_time(unix: i64, kind: TimeKind) -> String {
+    let Ok(d) = glib::DateTime::from_unix_local(unix) else { return String::new() };
+    let fmt = |f: &str| d.format(f).map(|s| s.to_string()).unwrap_or_default();
+    let (days, clock) = (days_ago(&d), fmt("%H:%M"));
+    let this_year = glib::DateTime::now_local().is_ok_and(|n| n.year() == d.year());
+    match (kind, days) {
+        (TimeKind::Sep, 0) => format!("Today {clock}"),
+        (TimeKind::Sep, 1) => format!("Yesterday {clock}"),
+        (TimeKind::Sep, 2..=6) => format!("{} {clock}", fmt("%a")),
+        (TimeKind::Sep, _) if this_year => format!("{}, {clock}", fmt("%b %-d")),
+        (TimeKind::Sep, _) => format!("{}, {clock}", fmt("%b %-d, %Y")),
+        (_, 0) => clock,
+        (_, 1) => "Yesterday".into(),
+        (_, 2..=6) => fmt("%a"),
+        (_, _) if this_year => fmt("%b %-d"),
+        _ => fmt("%b %-d, %Y"),
+    }
+}
+
+/// A label that shows a time written relative to today. They are kept so they can be rewritten in place when the
+/// day changes (`refresh_times`), without rebuilding the list or the chat they sit in.
+struct TimeLabel {
+    label: glib::WeakRef<gtk::Label>,
+    unix: Rc<Cell<Option<i64>>>,
+    kind: TimeKind,
+    /// a service name shown in bold above a `Sep` time
+    svc: Option<String>,
+}
+
+impl TimeLabel {
+    fn apply(&self) {
+        let (Some(l), Some(t)) = (self.label.upgrade(), self.unix.get()) else { return };
+        let text = rel_time(t, self.kind);
+        match (self.kind, &self.svc) {
+            (TimeKind::Read, _) => l.set_text(&format!("Read {text}")),
+            (_, Some(svc)) => l.set_markup(&format!("<b>{}</b>\n{}", glib::markup_escape_text(svc), glib::markup_escape_text(&text))),
+            _ => l.set_text(&text),
+        }
+    }
+}
+
+/// Show `unix` in `label` and keep it right as days pass. The returned cell changes the time later.
+fn track_time(u: &Ui, label: &gtk::Label, unix: Option<i64>, kind: TimeKind, svc: Option<String>) -> Rc<Cell<Option<i64>>> {
+    let unix = Rc::new(Cell::new(unix));
+    let t = TimeLabel { label: label.downgrade(), unix: unix.clone(), kind, svc };
+    t.apply();
+    let mut all = u.time_labels.borrow_mut();
+    if all.len() > 3000 {
+        all.retain(|t| t.label.upgrade().is_some()); // the ones of chats drawn since are gone
+    }
+    all.push(t);
+    unix
+}
+
+/// The day changed: write every tracked time again.
+fn refresh_times(u: &Rc<Ui>) {
+    u.time_day.set(glib::DateTime::now_local().map(|n| n.ymd()).ok());
+    let mut all = u.time_labels.borrow_mut();
+    all.retain(|t| t.label.upgrade().is_some());
+    for t in all.iter() {
+        t.apply();
+    }
+}
+
+/// Run `refresh_times` just after each midnight. (A suspended computer wakes late: see also the window becoming
+/// active again.)
+fn schedule_midnight(u: &Rc<Ui>) {
+    let Ok(now) = glib::DateTime::now_local() else { return };
+    let next = glib::DateTime::new(&glib::TimeZone::local(), now.year(), now.month(), now.day_of_month(), 0, 0, 0.0).and_then(|m| m.add_days(1)).map(|m| m.to_unix()).unwrap_or(0);
+    let secs = (next - now.to_unix() + 3).clamp(5, 90_000) as u32;
+    let u = u.clone();
+    glib::timeout_add_seconds_local_once(secs, move || {
+        refresh_times(&u);
+        schedule_midnight(&u);
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn times_are_written_relative_to_today() {
+        let now = glib::DateTime::now_local().unwrap().to_unix();
+        assert_eq!(rel_time(now, TimeKind::Row).len(), 5); // 17:38
+        assert_eq!(rel_time(now - 86_400, TimeKind::Row), "Yesterday");
+        assert_eq!(rel_time(now - 86_400, TimeKind::Read), "Yesterday");
+        assert!(rel_time(now, TimeKind::Sep).starts_with("Today "));
+        assert!(rel_time(now - 86_400, TimeKind::Sep).starts_with("Yesterday "));
+        assert_eq!(rel_time(now - 3 * 86_400, TimeKind::Row).len(), 3); // Mon
+        assert!(rel_time(now - 800 * 86_400, TimeKind::Row).contains(", 20")); // Nov 8, 2024
+    }
 
     #[test]
     fn phone_numbers_read_nicely() {

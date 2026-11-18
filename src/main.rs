@@ -82,6 +82,7 @@ fn main() -> glib::ExitCode {
         known_host: paths.known_host.clone(),
         image_cache: glib::user_cache_dir().join("bubblefairy/images"),
         seen_file: data.join("seen"),
+        resent_file: data.join("resent"),
         pins_file: data.join("pins"),
         public_key,
     };
