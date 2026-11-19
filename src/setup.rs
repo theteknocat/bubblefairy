@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
-use gtk::glib;
+use gtk::{gdk, glib};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
 use russh::keys::PrivateKeyWithHashAlg;
 use russh::ChannelMsg;
@@ -307,7 +307,7 @@ struct W {
     host: gtk::Entry,
     host_status: gtk::Stack,
     host_msg: gtk::Label,
-    pick: gtk::ListBox,
+    pick: gtk::Box,
     pick_pop: gtk::Popover,
     scan: gtk::Spinner,
     scan_row: gtk::Box,
@@ -418,8 +418,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     host_msg.set_halign(gtk::Align::Center);
     host_msg.set_justify(gtk::Justification::Center);
     p1.append(&host_msg);
-    let pick = gtk::ListBox::new();
-    pick.set_selection_mode(gtk::SelectionMode::None);
+    let pick = gtk::Box::new(gtk::Orientation::Vertical, 2); // plain buttons: a ListBox's rows add their own square background and focus box
     let scan = gtk::Spinner::new();
     let scan_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let scan_text = label("Looking for Macs…", "dim");
@@ -565,6 +564,25 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     // dev aids: BF_SETUP_PAGE=<n> starts on that page; BF_SETUP_SHOT=<file.png> saves the wizard after BF_SETUP_MS (default 3 s)
     if let Some(n) = std::env::var("BF_SETUP_PAGE").ok().and_then(|v| v.parse::<usize>().ok()) {
         show_page(&w, n.min(PAGES.len() - 1));
+    }
+    // dev aid BF_SETUP_POP=<png>: open the Mac list, hover its first entry, and save the list's own picture
+    if let (Some(out), Some(ms)) = (std::env::var_os("BF_SETUP_POP"), std::env::var("BF_SETUP_MS").ok().and_then(|v| v.parse::<u64>().ok())) {
+        let w2 = w.clone();
+        glib::timeout_add_local_once(Duration::from_millis(ms.saturating_sub(1500)), move || {
+            open_list(&w2);
+            if let Some(b) = w2.pick.first_child() {
+                b.set_state_flags(gtk::StateFlags::PRELIGHT, false);
+            }
+            let w3 = w2.clone();
+            glib::timeout_add_local_once(Duration::from_millis(600), move || {
+                let p = gtk::WidgetPaintable::new(Some(&w3.pick_pop));
+                let snap = gtk::Snapshot::new();
+                p.snapshot(&snap, w3.pick_pop.width() as f64, w3.pick_pop.height() as f64);
+                if let (Some(node), Some(r)) = (snap.to_node(), w3.win.renderer()) {
+                    let _ = r.render_texture(&node, None).save_to_png(&out);
+                }
+            });
+        });
     }
     if let Some(out) = std::env::var_os("BF_SETUP_SHOT") {
         let ms = std::env::var("BF_SETUP_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
@@ -712,6 +730,14 @@ fn add_found(w: &Rc<W>, f: Found) {
     w.scan_row.set_visible(false); // "Looking for Macs…" is only for an empty list; more may still be added below
 }
 
+/// Drop the list of found Macs down from the field.
+fn open_list(w: &Rc<W>) {
+    if let Some(b) = w.pick_pop.child() {
+        b.set_size_request(w.host.width() - 16, -1); // the field's width less the popover's own padding and edge
+    }
+    w.pick_pop.popup();
+}
+
 fn wire_host(w: &Rc<W>) {
     // the scan
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -740,10 +766,7 @@ fn wire_host(w: &Rc<W>) {
         if w2.locked.get() {
             unlock_host(&w2);
         } else {
-            if let Some(b) = w2.pick_pop.child() {
-                b.set_size_request(w2.host.width() - 16, -1); // the field's width less the popover's own padding and edge
-            }
-            w2.pick_pop.popup();
+            open_list(&w2);
         }
     });
     // typing completes the name of a Mac that was found, and clears the old verdict
@@ -767,6 +790,22 @@ fn wire_host(w: &Rc<W>) {
             w2.editing.set(false);
         }
     });
+    // keyboard: Down opens the list (Enter on an entry picks it); on a locked field Backspace, Delete or Escape clears it
+    let keys = gtk::EventControllerKey::new();
+    let w2 = w.clone();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if w2.locked.get() {
+            if matches!(key, gdk::Key::BackSpace | gdk::Key::Delete | gdk::Key::Escape) {
+                unlock_host(&w2);
+                return glib::Propagation::Stop;
+            }
+        } else if key == gdk::Key::Down {
+            open_list(&w2);
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    w.host.add_controller(keys);
     // leaving the field checks what was typed; Enter does too
     let focus = gtk::EventControllerFocus::new();
     let w2 = w.clone();
