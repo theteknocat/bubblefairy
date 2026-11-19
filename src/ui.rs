@@ -185,6 +185,12 @@ struct State {
     seen: HashMap<i64, i64>,
     /// identifiers (`pin_key`) of the pinned chats, in pin order
     pins: Vec<String>,
+    /// the chat list as imsg gave it, before one person's chats were merged into one entry (`merged_chats`)
+    raw_chats: Vec<Value>,
+    /// chat id -> the id of the merged conversation it belongs to (only for merged ones)
+    alias: HashMap<i64, i64>,
+    /// the merge last sent to the backend (`Cmd::Merge`)
+    merge_sig: Vec<(i64, Vec<i64>)>,
     /// identifiers (`pin_key`) of the muted chats
     muted: Vec<String>,
     /// address a new conversation's first message went to; its chat opens once it shows up
@@ -1405,6 +1411,13 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 st.avatar_asked.clear();
                 fill_names(&mut st);
             }
+            // now that people are known, one person's chats can be merged
+            let raw = u.st.borrow().raw_chats.clone();
+            if !raw.is_empty() {
+                let groups = set_chats(&mut u.st.borrow_mut(), raw);
+                after_merge(u, groups);
+                render_chats(u);
+            }
             prefetch_avatars(u);
             refresh_identities(u);
             if u.st.borrow().sel.is_some() {
@@ -1434,6 +1447,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
         Event::Warn(w) => show_banner(u, &cap(&w), false),
         Event::HostKey(k) => u.st.borrow_mut().host_key = k,
         Event::Chats(chats) => {
+            let groups;
             let ask: Vec<i64> = {
                 let mut st = u.st.borrow_mut();
                 for c in &chats {
@@ -1444,14 +1458,10 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                         st.names.insert(h.into(), n.into());
                     }
                 }
-                // the chat on show may be older than the list's 100 (found by address): keep it
-                let keep = st.sel.filter(|id| !chats.iter().any(|c| c["id"].as_i64() == Some(*id))).and_then(|id| st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).cloned());
-                st.chats = chats;
-                if let Some(c) = keep {
-                    insert_chat(&mut st.chats, c);
-                }
+                let asked = chats.len();
+                groups = set_chats(&mut st, chats);
                 st.chats_loaded = true;
-                st.more_chats = st.chats.len() >= st.chat_limit;
+                st.more_chats = asked >= st.chat_limit;
                 st.more_loading = false;
                 fill_names(&mut st);
                 let st = &mut *st;
@@ -1464,6 +1474,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             for id in ask {
                 u.send(Cmd::Preview(id));
             }
+            after_merge(u, groups);
             prefetch_avatars(u);
             u.side_more.set_visible(false);
             let prof = std::time::Instant::now();
@@ -1504,6 +1515,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
         Event::FoundChat(addr, chat) => {
             let Some(chat) = chat else { return };
             let Some(id) = chat["id"].as_i64() else { return };
+            let id = u.st.borrow().alias.get(&id).copied().unwrap_or(id); // one of a merged person's chats
             if !u.st.borrow().chats.iter().any(|c| c["id"].as_i64() == Some(id)) {
                 insert_chat(&mut u.st.borrow_mut().chats, chat);
                 render_chats(u);
@@ -2873,6 +2885,122 @@ fn render_suggest(u: &Ui) {
 
 /// Send the first message of a new conversation (or to an existing one, if the To field names it).
 /// Put `chat` into the list where its last message belongs (newest first).
+/// One person's chats (a phone number and an email, iMessage and SMS ones) are one conversation, as in Messages:
+/// the list shows a single entry standing for all of them. It is the newest chat's entry with the id of the oldest
+/// (an id that doesn't change), the unread counts added up, and `merged` naming every chat. Group chats stay as they
+/// are. Needs the contacts (to know which numbers and emails are one person). Returns the list and the merges as
+/// (id, all ids newest first).
+fn merged_chats(raw: &[Value], contacts: Option<&crate::mac::Contacts>) -> (Vec<Value>, Vec<(i64, Vec<i64>)>) {
+    let Some(k) = contacts else { return (raw.to_vec(), Vec::new()) };
+    let mut slot_of: HashMap<usize, usize> = HashMap::new(); // person -> position in `out`
+    let mut out: Vec<Value> = Vec::new();
+    let mut members: Vec<Vec<usize>> = Vec::new(); // raw positions behind each entry of `out`
+    for (i, c) in raw.iter().enumerate() {
+        let person = if c["is_group"].as_bool() == Some(true) { None } else { c["participants"][0].as_str().and_then(|h| k.person_id(h)) };
+        match person.and_then(|p| slot_of.get(&p).copied()) {
+            Some(slot) => members[slot].push(i),
+            None => {
+                if let Some(p) = person {
+                    slot_of.insert(p, out.len());
+                }
+                out.push(c.clone());
+                members.push(vec![i]);
+            }
+        }
+    }
+    let mut groups = Vec::new();
+    for (slot, ms) in members.iter().enumerate().filter(|(_, m)| m.len() > 1) {
+        let ids: Vec<i64> = ms.iter().filter_map(|&i| raw[i]["id"].as_i64()).collect();
+        let Some(&canon) = ids.iter().min() else { continue };
+        let oldest = ms.iter().map(|&i| &raw[i]).find(|c| c["id"].as_i64() == Some(canon));
+        let unread: i64 = ms.iter().map(|&i| raw[i]["unread_count"].as_i64().unwrap_or(0)).sum();
+        let c = &mut out[slot];
+        c["id"] = Value::from(canon);
+        c["unread_count"] = Value::from(unread);
+        c["merged"] = Value::from(ids.clone());
+        if let Some(o) = oldest {
+            c["pin_key"] = Value::from(pin_key(o));
+        }
+        groups.push((canon, ids));
+    }
+    (out, groups)
+}
+
+/// Replace the chat list with `raw` (as imsg gave it), merged by person. Returns the merges.
+fn set_chats(st: &mut State, raw: Vec<Value>) -> Vec<(i64, Vec<i64>)> {
+    let (merged, groups) = merged_chats(&raw, st.contacts.as_ref());
+    let alias: HashMap<i64, i64> = groups.iter().flat_map(|(c, ids)| ids.iter().map(move |i| (*i, *c))).collect();
+    if let Some(c) = st.sel.and_then(|s| alias.get(&s)) {
+        st.sel = Some(*c); // the chat on show is now part of a merged one
+    }
+    // the chat on show may be older than the list's 100 (found by address): keep it
+    let keep = st.sel.filter(|id| !merged.iter().any(|c| c["id"].as_i64() == Some(*id))).and_then(|id| st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).cloned());
+    st.raw_chats = raw;
+    st.chats = merged;
+    if let Some(c) = keep {
+        insert_chat(&mut st.chats, c);
+    }
+    st.alias = alias;
+    groups
+}
+
+/// In a list of chat keys, `from` becomes `to` (or just goes, when `to` is there already). True when it changed.
+fn move_key(list: &mut Vec<String>, from: &str, to: &str) -> bool {
+    let Some(at) = list.iter().position(|p| p == from) else { return false };
+    if list.iter().any(|p| p == to) {
+        list.remove(at);
+    } else {
+        list[at] = to.to_string();
+    }
+    true
+}
+
+/// A new merge: pins and mutes of the chats that were merged go to the merged one, the backend is told, and what
+/// was loaded for a conversation whose chats changed is read again.
+fn after_merge(u: &Rc<Ui>, groups: Vec<(i64, Vec<i64>)>) {
+    let (changed, pins_changed, muted_changed) = {
+        let mut st = u.st.borrow_mut();
+        if st.merge_sig == groups {
+            return;
+        }
+        let ident = |st: &State, id: i64| st.raw_chats.iter().find(|c| c["id"].as_i64() == Some(id)).map(pin_key);
+        let (mut pins_changed, mut muted_changed) = (false, false);
+        for (canon, ids) in &groups {
+            let Some(key) = ident(&st, *canon) else { continue };
+            for id in ids.iter().filter(|i| *i != canon) {
+                let Some(other) = ident(&st, *id) else { continue };
+                let st = &mut *st;
+                pins_changed |= move_key(&mut st.pins, &other, &key);
+                muted_changed |= move_key(&mut st.muted, &other, &key);
+            }
+        }
+        let old = std::mem::replace(&mut st.merge_sig, groups.clone());
+        let changed: Vec<i64> = groups.iter().filter(|g| !old.contains(g)).map(|g| g.0).collect();
+        for c in &changed {
+            st.hist.remove(c);
+            st.preview.remove(c);
+            st.preview_asked.remove(c);
+        }
+        (changed, pins_changed, muted_changed)
+    };
+    let write = |file: &PathBuf, list: &[String]| {
+        let _ = std::fs::write(file, list.iter().map(|p| format!("{p}\n")).collect::<String>());
+    };
+    if pins_changed {
+        write(&u.store.pins_file, &u.st.borrow().pins);
+    }
+    if muted_changed {
+        write(&u.store.muted_file, &u.st.borrow().muted);
+    }
+    u.send(Cmd::Merge(groups));
+    for c in &changed {
+        u.send(Cmd::Preview(*c));
+    }
+    if u.st.borrow().sel.is_some_and(|s| changed.contains(&s)) {
+        refresh_chat(u);
+    }
+}
+
 fn insert_chat(chats: &mut Vec<Value>, chat: Value) {
     let at = chats.iter().position(|c| c["last_message_at"].as_str() < chat["last_message_at"].as_str()).unwrap_or(chats.len());
     chats.insert(at, chat);
@@ -3623,6 +3751,9 @@ fn load_more_chats(u: &Rc<Ui>) {
 
 /// A chat's stable identity for pinning (its row id changes between runs of the Mac's database).
 fn pin_key(c: &Value) -> String {
+    if let Some(k) = c["pin_key"].as_str() {
+        return k.to_string(); // a merged conversation: the key of its oldest chat, which doesn't change
+    }
     c["identifier"].as_str().or(c["guid"].as_str()).map(String::from).unwrap_or_else(|| {
         c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).collect::<Vec<_>>().join(",")
     })

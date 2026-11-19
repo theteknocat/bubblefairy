@@ -176,7 +176,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
                 };
                 ev.send(Event::Media { chat_id, kind, offset, items, next: offset, more: false })
             }
-            Cmd::Configure(_) => Ok(()),
+            Cmd::Configure(_) | Cmd::Merge(_) => Ok(()),
         };
     }
 }

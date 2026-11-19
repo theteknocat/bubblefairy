@@ -42,6 +42,8 @@ pub struct Config {
 
 pub enum Cmd {
     Configure(Config),
+    /// One person's chats shown as one: (the id the app knows it by, all its chat ids, newest first)
+    Merge(Vec<(i64, Vec<i64>)>),
     /// the newest `n` chats (imsg has no offset: loading more means asking for more)
     Chats(usize),
     /// the receipt of the chat's newest sent message (answer: `Event::Receipt`)
@@ -429,6 +431,7 @@ async fn connect(cfg: &Config, paths: &Paths, ev: &mpsc::UnboundedSender<Event>)
     tokio::spawn(async move {
         while let Some(mut m) = live_rx.recv().await {
             add_services(&s2, std::slice::from_mut(&mut m)).await;
+            canon_msgs(std::slice::from_mut(&mut m));
             let _ = ev3.send(Event::Message(m));
         }
     });
@@ -549,9 +552,12 @@ async fn search_counts(session: &client::Handle<Handler>, q: &str) -> HashMap<i6
         .lines()
         .filter_map(|l| {
             let (c, n) = l.split_once('⁂')?;
-            Some((c.parse().ok()?, n.parse().ok()?))
+            Some((canon_of(c.parse().ok()?), n.parse::<usize>().ok()?))
         })
-        .collect()
+        .fold(HashMap::new(), |mut m, (c, n)| {
+            *m.entry(c).or_insert(0) += n;
+            m
+        })
 }
 
 /// Messages containing `q`, newest first, straight from chat.db (all chats, or one). imsg's own search looks up a
@@ -561,7 +567,7 @@ async fn search_counts(session: &client::Handle<Handler>, q: &str) -> HashMap<i6
 async fn search_hits(session: &client::Handle<Handler>, q: &str, chat: Option<i64>, candidates: usize, keep: usize) -> Vec<Value> {
     let needle = q.to_lowercase();
     let lit = needle.replace('\'', "''");
-    let only = chat.map(|c| format!("and j.chat_id={c}")).unwrap_or_default();
+    let only = chat.map(|c| format!("and j.chat_id in ({})", id_list(c))).unwrap_or_default();
     let sql = format!(
         "select m.ROWID||'⁂'||m.guid||'⁂'||j.chat_id||'⁂'||m.is_from_me||'⁂'||\
          case when coalesce(m.text,'')='' then 'B'||hex(m.attributedBody) \
@@ -581,7 +587,7 @@ async fn search_hits(session: &client::Handle<Handler>, q: &str, chat: Option<i6
                 ("T", t) => t.to_string(),
                 (_, b) => text_from_blob(&hex(b)?)?.replace(['\n', '\r'], " "),
             };
-            text.to_lowercase().contains(&needle).then(|| json!({"id": id, "guid": guid, "chat_id": chat, "is_from_me": mine, "text": text}))
+            text.to_lowercase().contains(&needle).then(|| json!({"id": id, "guid": guid, "chat_id": canon_of(chat), "is_from_me": mine, "text": text}))
         })
         .take(keep)
         .collect()
@@ -593,19 +599,71 @@ async fn chat_db(session: &client::Handle<Handler>, sql: &str) -> Option<String>
     Some(String::from_utf8_lossy(&out).trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// A person's several chats (a phone number and an email, iMessage and SMS ones) shown as one conversation. The app
+/// knows the whole by one id; reads cover every member, and a send goes to the newest.
+#[derive(Default)]
+struct Merged {
+    members: HashMap<i64, Vec<i64>>,
+    alias: HashMap<i64, i64>,
+}
+static MERGED: std::sync::Mutex<Option<Merged>> = std::sync::Mutex::new(None);
+
+/// The chat ids behind `id`, newest first (just `id` when it isn't merged).
+fn members_of(id: i64) -> Vec<i64> {
+    MERGED.lock().ok().and_then(|g| g.as_ref()?.members.get(&id).cloned()).unwrap_or_else(|| vec![id])
+}
+
+/// The id the app knows a chat by.
+fn canon_of(id: i64) -> i64 {
+    MERGED.lock().ok().and_then(|g| g.as_ref()?.alias.get(&id).copied()).unwrap_or(id)
+}
+
+/// Make messages say they belong to the whole, not to one of its chats.
+fn canon_msgs(msgs: &mut [Value]) {
+    for m in msgs {
+        if let Some(c) = m["chat_id"].as_i64() {
+            m["chat_id"] = Value::from(canon_of(c));
+        }
+    }
+}
+
+/// SQL list of the chat ids behind `id`: `1,2,3`.
+fn id_list(id: i64) -> String {
+    members_of(id).iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// `imsg history` for every chat behind `id` (`tail` is the rest of the arguments), newest first, at most `limit`.
+async fn history_of(session: &client::Handle<Handler>, rpc: &Rpc, id: i64, tail: &str, limit: usize) -> Option<Vec<Value>> {
+    let ids = members_of(id);
+    let mut all: Option<Vec<Value>> = None;
+    for m in &ids {
+        if let Some(mut part) = cli(session, rpc, &format!("history --chat-id {m} {tail}")).await {
+            all.get_or_insert_with(Vec::new).append(&mut part);
+        }
+    }
+    let mut all = all?;
+    if ids.len() > 1 {
+        all.sort_by(|a, b| b["created_at"].as_str().cmp(&a["created_at"].as_str()));
+        all.truncate(limit);
+        canon_msgs(&mut all);
+    }
+    Some(all)
+}
+
 /// The messages of chat `id` from time `iso` on, about `n` of them, oldest first, and whether
 /// newer ones follow. imsg's history gives the newest messages of a range, so the range is bounded by the time
 /// of the n-th later message; that way the page has no gap before it.
 async fn page_after(session: &client::Handle<Handler>, rpc: &Rpc, id: i64, iso: &str, n: usize) -> (Vec<Value>, bool) {
     // by date, not by row id: messages that arrived later (iCloud syncs) can have a higher row id and an old date
     let sql = format!(
-        "select strftime('%Y-%m-%dT%H:%M:%SZ', m.date/1000000000+978307200+1,'unixepoch') from message m join chat_message_join j on j.message_id=m.ROWID where j.chat_id={id} and m.date >= (strftime('%s','{}')-978307200)*1000000000 order by m.date limit 1 offset {}",
+        "select strftime('%Y-%m-%dT%H:%M:%SZ', m.date/1000000000+978307200+1,'unixepoch') from message m join chat_message_join j on j.message_id=m.ROWID where j.chat_id in ({}) and m.date >= (strftime('%s','{}')-978307200)*1000000000 order by m.date limit 1 offset {}",
+        id_list(id),
         iso.replace('\'', ""),
         n - 1
     );
     let end = chat_db(session, &sql).await;
     let end_arg = end.as_ref().map(|e| format!(" --end {}", sh_quote(e))).unwrap_or_default();
-    let mut msgs = cli(session, rpc, &format!("history --chat-id {id} --limit 500 --start {}{end_arg} --attachments", sh_quote(iso))).await.unwrap_or_default();
+    let mut msgs = history_of(session, rpc, id, &format!("--limit 500 --start {}{end_arg} --attachments", sh_quote(iso)), 500).await.unwrap_or_default();
     msgs.reverse();
     (msgs, end.is_some())
 }
@@ -702,6 +760,11 @@ impl Contacts {
     /// The photo (JPEG/PNG bytes) for a phone number or email address, if the contact has one.
     pub fn photo(&self, handle: &str) -> Option<&[u8]> {
         self.index.get(&addr_key(handle)?).map(|i| &self.photos[*i][..])
+    }
+
+    /// Which address-book entry has this number or email (its position; equal for the same person).
+    pub fn person_id(&self, handle: &str) -> Option<usize> {
+        self.by_addr.get(&addr_key(handle)?).copied()
     }
 
     /// The address-book entry that has this number or email.
@@ -1022,12 +1085,13 @@ fn hex_text(s: &str) -> String {
 // ponytail: links come from `message.text` only; newer macOS keeps some text only in `attributedBody`
 async fn chat_media(session: &client::Handle<Handler>, chat_id: i64, kind: Kind, offset: usize) -> Option<(Vec<MediaItem>, usize, bool)> {
     let join = "join chat_message_join c on c.message_id=m.ROWID";
+    let chat_ids = id_list(chat_id);
     let page = if kind == Kind::Photos { PHOTO_PAGE } else { MEDIA_PAGE };
     let sql = match kind {
         Kind::Links => format!(
             "select m.ROWID, m.date/1000000000+978307200, hex(coalesce(m.text,'')), coalesce(m.balloon_bundle_id,''), \
              case when coalesce(m.text,'')='' then hex(coalesce(m.attributedBody,'')) else '' end \
-             from message m {join} where c.chat_id={chat_id} and (m.text like '%http%' or hex(coalesce(m.attributedBody,'')) like '%68747470%') \
+             from message m {join} where c.chat_id in ({chat_ids}) and (m.text like '%http%' or hex(coalesce(m.attributedBody,'')) like '%68747470%') \
              order by m.date desc limit {} offset {offset}",
             page + 1
         ),
@@ -1040,7 +1104,7 @@ async fn chat_media(session: &client::Handle<Handler>, chat_id: i64, kind: Kind,
             format!(
                 "select m.date/1000000000+978307200, coalesce(a.total_bytes,0), hex(a.filename), hex(coalesce(a.transfer_name,'')) \
                  from attachment a join message_attachment_join j on j.attachment_id=a.ROWID join message m on m.ROWID=j.message_id {join} \
-                 where c.chat_id={chat_id} and a.filename is not null and {cond} order by m.date desc, a.ROWID desc limit {} offset {offset}",
+                 where c.chat_id in ({chat_ids}) and a.filename is not null and {cond} order by m.date desc, a.ROWID desc limit {} offset {offset}",
                 page + 1
             )
         }
@@ -1379,14 +1443,14 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let _ = ev.send(Event::FoundChat(addr.first().cloned().unwrap_or_default(), found));
         }
         Cmd::History(id, limit) => {
-            if let Some(mut msgs) = cli(&session, &rpc, &format!("history --chat-id {id} --limit {limit} --attachments")).await {
+            if let Some(mut msgs) = history_of(&session, &rpc, id, &format!("--limit {limit} --attachments"), limit).await {
                 msgs.reverse(); // imsg returns newest first
                 add_services(&session, &mut msgs).await;
                 let _ = ev.send(Event::History(id, msgs));
             }
         }
         Cmd::Older { id, before } => {
-            let mut msgs = cli(&session, &rpc, &format!("history --chat-id {id} --limit 100 --end {} --attachments", sh_quote(&before))).await.unwrap_or_default();
+            let mut msgs = history_of(&session, &rpc, id, &format!("--limit 100 --end {} --attachments", sh_quote(&before)), 100).await.unwrap_or_default();
             msgs.reverse();
             add_services(&session, &mut msgs).await;
             let _ = ev.send(Event::Older(id, msgs));
@@ -1402,9 +1466,9 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
         Cmd::Window { id, row } => {
             let iso = chat_db(&session, &format!("select strftime('%Y-%m-%dT%H:%M:%SZ', date/1000000000+978307200+1,'unixepoch') from message where ROWID={row}")).await.unwrap_or_default();
             // before and after the hit at the same time (each is a round trip to the Mac)
-            let before_args = format!("history --chat-id {id} --limit 30 --end {} --attachments", sh_quote(&iso));
+            let before_args = format!("--limit 30 --end {} --attachments", sh_quote(&iso));
             let (before, (after, more)) = tokio::join!(
-                cli(&session, &rpc, &before_args),
+                history_of(&session, &rpc, id, &before_args, 30),
                 page_after(&session, &rpc, id, &iso, 30)
             );
             let mut msgs: Vec<Value> = before.unwrap_or_default();
@@ -1420,7 +1484,7 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let _ = ev.send(Event::Newer { id, msgs, more });
         }
         Cmd::Recent(id) => {
-            if let Some(mut msgs) = cli(&session, &rpc, &format!("history --chat-id {id} --limit 10 --attachments")).await {
+            if let Some(mut msgs) = history_of(&session, &rpc, id, "--limit 10 --attachments", 10).await {
                 msgs.reverse();
                 add_services(&session, &mut msgs).await;
                 let _ = ev.send(Event::Recent(id, msgs));
@@ -1430,15 +1494,18 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let sql = format!(
                 "select m.ROWID, m.is_delivered, m.date_delivered, m.date_read, m.was_delivered_quietly, m.did_notify_recipient \
                  from message m join chat_message_join j on j.message_id=m.ROWID \
-                 where j.chat_id={id} and m.is_from_me=1 order by m.date desc limit 1"
+                 where j.chat_id in ({}) and m.is_from_me=1 order by m.date desc limit 1",
+                id_list(id)
             );
             let out = exec(&session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await;
             let receipt = out.and_then(|o| parse_receipt(&String::from_utf8_lossy(&o)));
             let _ = ev.send(Event::Receipt(id, receipt));
         }
         Cmd::Preview(id) => {
-            if let Some(mut m) = cli(&session, &rpc, &format!("history --chat-id {id} --limit 1 --attachments")).await.and_then(|v| v.into_iter().next()) {
-                add_services(&session, std::slice::from_mut(&mut m)).await;
+            // (a few, so that a group event on top doesn't hide the last real message)
+            if let Some(mut v) = history_of(&session, &rpc, id, "--limit 6 --attachments", 6).await {
+                add_services(&session, &mut v).await;
+                let Some(m) = v.iter().find(|m| m["item_type"].as_i64().unwrap_or(0) == 0).or(v.first()).cloned() else { return };
                 let _ = ev.send(Event::Preview(id, m));
             }
         }
@@ -1448,7 +1515,7 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             // Messages choose, as it does on the Mac.
             let target = match &to {
                 Some(to) => json!({"to": to, "service": "auto"}),
-                None => json!({"chat_id": chat_id}),
+                None => json!({"chat_id": members_of(chat_id)[0]}),
             };
             let mut sent = 0; // files that went out
             let mut err = None;
@@ -1478,7 +1545,7 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
         Cmd::Resend { chat_id, to, text, mac_files, token } => {
             let target = match &to {
                 Some(to) => json!({"to": to, "service": "auto"}),
-                None => json!({"chat_id": chat_id}),
+                None => json!({"chat_id": members_of(chat_id)[0]}),
             };
             let home = String::from_utf8_lossy(&exec(&session, "printf %s \"$HOME\"".into()).await.unwrap_or_default()).into_owned();
             let mut err = None;
@@ -1535,6 +1602,18 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
         Cmd::Map(query) => {
             let data = map_for(&session, &query).await;
             let _ = ev.send(Event::Map(query, data));
+        }
+        Cmd::Merge(groups) => {
+            let mut m = Merged::default();
+            for (canon, ids) in groups {
+                for id in &ids {
+                    m.alias.insert(*id, canon);
+                }
+                m.members.insert(canon, ids);
+            }
+            if let Ok(mut g) = MERGED.lock() {
+                *g = Some(m);
+            }
         }
         Cmd::Configure(_) => {}
     }
