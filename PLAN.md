@@ -12,7 +12,6 @@ Status (2026-11-17): Phases 1, 1.1 and 1.2 are built and running from source aga
 ### Not yet checked on a real run
 
 - Clicking a desktop notification opens its chat.
-- Local read state: opening an unread chat clears its dot (the headless test window never counts as focused).
 - A real group chat with more than four people (the "+N" circle).
 - The viewer's YouTube player and video playback inside the real Flatpak (WebKit's own sandbox warns it "is not usable" under `flatpak run`; audio needs the PulseAudio socket, which `scripts/dev.sh` now grants).
 
