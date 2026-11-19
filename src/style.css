@@ -509,3 +509,6 @@ button.save-btn.done:disabled { opacity: 1; }
 label { caret-color: transparent; }
 label:focus, label:focus-visible { outline: none; }
 .reactions.rise { transform: translate(0, -22px); } /* REACT_UP in ui.rs */
+
+/* the number or address a conversation uses, on the contact card */
+.used-star { color: #f5b82e; font-size: 1.1em; }

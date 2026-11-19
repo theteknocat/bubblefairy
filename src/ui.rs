@@ -7393,6 +7393,14 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
     n.set_wrap(true);
     n.set_selectable(true);
     names.append(&n);
+    // a popover hands its focus to the first selectable text, which then shows itself selected: clear that
+    {
+        let n = n.clone();
+        root.connect_map(move |_| {
+            let n = n.clone();
+            glib::idle_add_local_once(move || n.select_region(0, 0));
+        });
+    }
     if !org.is_empty() {
         let o = gtk::Label::new(Some(&org));
         o.add_css_class("dim");
@@ -7420,7 +7428,20 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
         v.set_wrap(true);
         v.set_wrap_mode(gtk::pango::WrapMode::Char);
         v.set_selectable(true);
-        col.append(&v);
+        // a star on the number or address this chat uses (the one the latest messages went to or came from)
+        let used = crate::mac::addr_key(&addr).is_some_and(|k| crate::mac::addr_key(handle) == Some(k)) || addr.eq_ignore_ascii_case(handle);
+        if used {
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            line.set_halign(gtk::Align::Start);
+            let star = gtk::Label::new(Some(" ★")); // one space after the number, inline
+            star.add_css_class("used-star");
+            star.set_tooltip_text(Some("The one used in this conversation"));
+            line.append(&v);
+            line.append(&star);
+            col.append(&line);
+        } else {
+            col.append(&v);
+        }
         if !label.is_empty() || imsg {
             let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             if !label.is_empty() {
