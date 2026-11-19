@@ -576,7 +576,14 @@ popover.wiz-drop button.flat:hover { background-color: var(--sel-a); }
 .wiz-badge.bad { background-color: #b3262e; }
 .wiz-err { color: #ff6b6b; }
 popover.wiz-drop button.flat { background: transparent; box-shadow: none; outline: none; }
-popover.wiz-drop button.flat:hover, popover.wiz-drop button.flat:focus { background-color: var(--sel-a); }
-popover.wiz-drop > contents button.flat:hover, popover.wiz-drop > contents button.flat:focus-visible { background-color: alpha(#7b5cff, 0.32); background-image: none; }
+popover.wiz-drop > contents button.flat:hover { background-color: alpha(#7b5cff, 0.32); background-image: none; }
+popover.wiz-drop > contents button.flat:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
 popover.wiz-drop > contents button.flat { background-color: transparent; background-image: none; box-shadow: none; border: none; }
-popover.wiz-drop > contents button.flat:hover, popover.wiz-drop > contents button.flat:focus-visible { background-color: alpha(#7b5cff, 0.32); background-image: none; }
+popover.wiz-drop > contents button.flat:hover { background-color: alpha(#7b5cff, 0.32); background-image: none; }
+popover.wiz-drop > contents button.flat:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
+
+/* the button at the right end of the Mac field */
+.wiz-drop-btn { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; background: transparent; box-shadow: none; border: none; color: var(--ink-soft); }
+.wiz-drop-btn:hover { background-color: alpha(currentColor, 0.1); color: var(--ink); }
+.wizard entry.with-status { padding-right: 40px; }
+.wizard entry.wiz-field:disabled { opacity: 1; color: var(--ink); } /* a locked (disabled) field still reads normally */

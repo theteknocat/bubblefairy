@@ -306,6 +306,7 @@ struct W {
     // page 1: the Mac
     host: gtk::Entry,
     host_status: gtk::Stack,
+    drop_btn: gtk::Button,
     host_msg: gtk::Label,
     pick: gtk::Box,
     pick_pop: gtk::Popover,
@@ -383,8 +384,13 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     let p1 = page("Find your Mac");
     p1.append(&label("On the Mac, open System Settings → General → Sharing and turn on Remote Login. Then pick the Mac here, or type its name or address.", "dim"));
     let host = gtk::Entry::builder().placeholder_text("my-mac.local").hexpand(true).css_classes(["wiz-field"]).build();
-    host.set_icon_from_icon_name(gtk::EntryIconPosition::Secondary, Some("pan-down-symbolic"));
-    host.set_icon_tooltip_text(gtk::EntryIconPosition::Secondary, Some("Macs found on the network"));
+    // the button at the right end is a real, focusable button: the list's arrow, or "clear" once a Mac is chosen
+    let drop_btn = gtk::Button::from_icon_name("pan-down-symbolic");
+    drop_btn.add_css_class("wiz-drop-btn");
+    drop_btn.set_halign(gtk::Align::End);
+    drop_btn.set_valign(gtk::Align::Center);
+    drop_btn.set_margin_end(6);
+    drop_btn.set_tooltip_text(Some("Macs found on the network"));
     // the verdict sits inside the left end of the field (the arrow / clear button is at the right end): a computer
     // before anything is entered, a spinner while it is checked, a green circle with a check, a red one with a cross
     let host_status = gtk::Stack::new();
@@ -411,6 +417,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     let field = gtk::Overlay::new();
     field.set_child(Some(&host));
     field.add_overlay(&host_status);
+    field.add_overlay(&drop_btn);
     field.set_halign(gtk::Align::Center);
     field.set_size_request(420, -1);
     p1.append(&field);
@@ -528,6 +535,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         next,
         host,
         host_status,
+        drop_btn,
         host_msg,
         pick,
         pick_pop,
@@ -656,21 +664,23 @@ fn lock_host(w: &Rc<W>, host: &str) {
     w.host.set_text(host);
     w.editing.set(false);
     w.host.set_editable(false);
+    w.host.set_sensitive(false); // like a disabled input: it can't take focus, so Tab lands on the clear button
     w.locked.set(true);
-    w.host.set_icon_from_icon_name(gtk::EntryIconPosition::Secondary, Some("edit-clear-symbolic"));
-    w.host.set_icon_tooltip_text(gtk::EntryIconPosition::Secondary, Some("Choose a different Mac"));
+    w.drop_btn.set_icon_name("edit-clear-symbolic");
+    w.drop_btn.set_tooltip_text(Some("Choose a different Mac"));
     set_host_status(w, "ok", "");
     w.next.grab_focus(); // the next thing is the button; the field is locked, so no cursor in it
 }
 
 fn unlock_host(w: &Rc<W>) {
     w.locked.set(false);
+    w.host.set_sensitive(true);
     w.host.set_editable(true);
     w.editing.set(true);
     w.host.set_text("");
     w.editing.set(false);
-    w.host.set_icon_from_icon_name(gtk::EntryIconPosition::Secondary, Some("pan-down-symbolic"));
-    w.host.set_icon_tooltip_text(gtk::EntryIconPosition::Secondary, Some("Macs found on the network"));
+    w.drop_btn.set_icon_name("pan-down-symbolic");
+    w.drop_btn.set_tooltip_text(Some("Macs found on the network"));
     set_host_status(w, "none", "");
     w.host.grab_focus();
 }
@@ -759,10 +769,7 @@ fn wire_host(w: &Rc<W>) {
     });
     // the list opens from the arrow in the field
     let w2 = w.clone();
-    w.host.connect_icon_press(move |_, pos| {
-        if pos != gtk::EntryIconPosition::Secondary {
-            return;
-        }
+    w.drop_btn.connect_clicked(move |_| {
         if w2.locked.get() {
             unlock_host(&w2);
         } else {
