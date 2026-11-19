@@ -232,7 +232,7 @@ pub struct Ui {
     find_older: gtk::Button,
     find_newer: gtk::Button,
     /// the pinned chats above the list
-    tiles: gtk::FlowBox,
+    tiles: crate::tilegrid::TileGrid,
     msgs: gtk::Box,
     scroller: gtk::ScrolledWindow,
     stack: gtk::Stack,
@@ -363,12 +363,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // sidebar
     let chat_list = gtk::ListBox::new();
     chat_list.add_css_class("chat-list");
-    let tiles = gtk::FlowBox::new();
+    let tiles = crate::tilegrid::TileGrid::new();
     tiles.add_css_class("tiles");
-    tiles.set_selection_mode(gtk::SelectionMode::None);
-    tiles.set_homogeneous(true);
-    tiles.set_max_children_per_line(3);
-    tiles.set_min_children_per_line(1);
     tiles.set_visible(false);
     let side_inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
     side_inner.append(&tiles);
@@ -941,6 +937,14 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             }
         });
     }
+    // dev aid BF_TILE_DRAG=<ms>: drag the first tile two slots to the right at that time, hold, let go 3 s later
+    if let Some(ms) = std::env::var("BF_TILE_DRAG").ok().and_then(|v| v.parse::<u64>().ok()) {
+        let u = ui.clone();
+        glib::timeout_add_local_once(Duration::from_millis(ms), move || u.tiles.dev_drag(0, 2.0));
+    }
+    // pinned tiles dragged into a new order are saved that way
+    let u = ui.clone();
+    ui.tiles.connect_reordered(move |order| reorder_pins(&u, order));
     // scrolled to the end of the list: ask for older chats
     if let Some(adj) = side_adjustment(&ui) {
         let u = ui.clone();
@@ -2140,12 +2144,8 @@ fn select_in_list(u: &Ui, id: i64) {
 
 /// Highlight the pinned tile of this chat (if it has one), clear the others.
 fn mark_tile(u: &Ui, id: i64) {
-    let mut c = u.tiles.first_child();
-    while let Some(w) = c {
-        if let Some(t) = w.downcast_ref::<gtk::FlowBoxChild>().and_then(|f| f.child()) {
-            if t.widget_name() == id.to_string() { t.add_css_class("selected") } else { t.remove_css_class("selected") }
-        }
-        c = w.next_sibling();
+    for t in u.tiles.tiles() {
+        if t.widget_name() == id.to_string() { t.add_css_class("selected") } else { t.remove_css_class("selected") }
     }
 }
 
@@ -2968,6 +2968,33 @@ fn after_merge(u: &Rc<Ui>, groups: Vec<(i64, Vec<i64>)>) {
     if u.st.borrow().sel.is_some_and(|s| changed.contains(&s)) {
         refresh_chat(u);
     }
+}
+
+/// The tiles were dragged into a new order: keep it as the pin order (one entry per tile; pins of chats that aren't
+/// loaded stay after them).
+fn reorder_pins(u: &Rc<Ui>, order: Vec<gtk::Widget>) {
+    {
+        let mut st = u.st.borrow_mut();
+        let mut mine: Vec<String> = Vec::new();
+        let mut used: Vec<String> = Vec::new();
+        for t in &order {
+            let Ok(id) = t.widget_name().parse::<i64>() else { continue };
+            let Some(c) = st.chats.iter().find(|c| c["id"].as_i64() == Some(id)) else { continue };
+            let keys = keys_of(c);
+            // the key it is saved under now (or its first)
+            let pick = keys.iter().filter_map(|k| st.pins.iter().position(|p| p == k).map(|i| (i, k))).min().map(|(_, k)| k.clone()).or_else(|| keys.first().cloned());
+            used.extend(keys);
+            mine.extend(pick);
+        }
+        let rest: Vec<String> = st.pins.iter().filter(|p| !used.contains(p)).cloned().collect();
+        mine.extend(rest);
+        st.pins = mine;
+        if std::env::var_os("BF_PINS").is_none() {
+            // (dev runs with invented pins must not overwrite the real file)
+            let _ = std::fs::write(&u.store.pins_file, st.pins.iter().map(|p| format!("{p}\n")).collect::<String>());
+        }
+    }
+    // the list's hidden rows follow the order of `chats`, not the pins: nothing else to redraw
 }
 
 fn insert_chat(chats: &mut Vec<Value>, chat: Value) {
@@ -3827,7 +3854,10 @@ fn render_tiles(u: &Rc<Ui>, pinned: Vec<(usize, i64, String, bool, Value)>, sel:
             dot.set_valign(gtk::Align::Start);
             holder.add_overlay(&dot);
         }
-        let name = gtk::Label::new(Some(&title));
+        // under a pinned avatar a person is just their first name (the list has room for the whole name); a group, a
+        // number or an email stays whole
+        let shown = if chat["is_group"].as_bool() == Some(true) || title.chars().any(|c| c.is_ascii_digit() || c == '@') { title.clone() } else { first_name(&title) };
+        let name = gtk::Label::new(Some(&shown));
         name.add_css_class("tile-name");
         name.set_ellipsize(gtk::pango::EllipsizeMode::End);
         name.set_width_chars(1);
@@ -5437,12 +5467,10 @@ fn show_collapsed(u: &Rc<Ui>, collapsed: bool) {
         row.set_tooltip_text(collapsed.then_some(title.as_str()));
     }
     // a pinned tile's name goes away with the rest of the text (hidden, it also takes no room under the avatar)
-    let mut c = u.tiles.first_child();
-    while let Some(w) = c {
-        if let Some(name) = w.downcast_ref::<gtk::FlowBoxChild>().and_then(|f| f.child()).and_then(|t| t.last_child()) {
+    for t in u.tiles.tiles() {
+        if let Some(name) = t.last_child() {
             name.set_visible(!collapsed);
         }
-        c = w.next_sibling();
     }
 }
 

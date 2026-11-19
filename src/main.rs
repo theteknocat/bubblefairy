@@ -4,6 +4,7 @@ mod demo;
 mod mac;
 mod player;
 mod sound;
+mod tilegrid;
 mod ui;
 mod viewer;
 mod webpreview;
