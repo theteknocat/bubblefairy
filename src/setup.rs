@@ -336,6 +336,8 @@ struct W {
     online: RefCell<Option<Arc<Link>>>,
     imsg: RefCell<String>,
     page: Cell<usize>,
+    /// the last thing to act on the arrow button was the keyboard (so the list's entries take focus), not the pointer
+    btn_key: Cell<bool>,
     dots: Vec<gtk::Box>,
 }
 
@@ -560,6 +562,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         online: RefCell::new(None),
         imsg: RefCell::new(String::new()),
         page: Cell::new(0),
+        btn_key: Cell::new(false),
         dots,
     });
     for i in 0..STEPS.len() {
@@ -577,7 +580,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     if let (Some(out), Some(ms)) = (std::env::var_os("BF_SETUP_POP"), std::env::var("BF_SETUP_MS").ok().and_then(|v| v.parse::<u64>().ok())) {
         let w2 = w.clone();
         glib::timeout_add_local_once(Duration::from_millis(ms.saturating_sub(1500)), move || {
-            open_list(&w2);
+            open_list(&w2, false);
             if let Some(b) = w2.pick.first_child() {
                 b.set_state_flags(gtk::StateFlags::PRELIGHT, false);
             }
@@ -669,7 +672,10 @@ fn lock_host(w: &Rc<W>, host: &str) {
     w.drop_btn.set_icon_name("edit-clear-symbolic");
     w.drop_btn.set_tooltip_text(Some("Choose a different Mac"));
     set_host_status(w, "ok", "");
-    w.next.grab_focus(); // the next thing is the button; the field is locked, so no cursor in it
+    // the next thing is the button; the field is locked, so no cursor in it. After a mouse pick GTK wouldn't draw the
+    // focus ring on its own, so ask for it
+    w.win.set_focus_visible(true);
+    w.next.grab_focus();
 }
 
 fn unlock_host(w: &Rc<W>) {
@@ -741,7 +747,13 @@ fn add_found(w: &Rc<W>, f: Found) {
 }
 
 /// Drop the list of found Macs down from the field.
-fn open_list(w: &Rc<W>) {
+fn open_list(w: &Rc<W>, by_key: bool) {
+    // opened with the pointer, nothing in the list takes focus (so no entry looks selected); with the keyboard, they do
+    let mut child = w.pick.first_child();
+    while let Some(c) = child {
+        c.set_focusable(by_key);
+        child = c.next_sibling();
+    }
     if let Some(b) = w.pick_pop.child() {
         b.set_size_request(w.host.width() - 16, -1); // the field's width less the popover's own padding and edge
     }
@@ -773,9 +785,25 @@ fn wire_host(w: &Rc<W>) {
         if w2.locked.get() {
             unlock_host(&w2);
         } else {
-            open_list(&w2);
+            open_list(&w2, w2.btn_key.get());
         }
     });
+    let press = gtk::GestureClick::new();
+    press.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let w2 = w.clone();
+    press.connect_pressed(move |_, _, _, _| w2.btn_key.set(false));
+    w.drop_btn.add_controller(press);
+    let btn_keys = gtk::EventControllerKey::new();
+    let w2 = w.clone();
+    btn_keys.connect_key_pressed(move |_, key, _, _| {
+        w2.btn_key.set(true);
+        if w2.locked.get() && matches!(key, gdk::Key::BackSpace | gdk::Key::Delete | gdk::Key::Escape) {
+            unlock_host(&w2);
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    w.drop_btn.add_controller(btn_keys);
     // typing completes the name of a Mac that was found, and clears the old verdict
     let w2 = w.clone();
     w.host.connect_changed(move |e| {
@@ -807,7 +835,7 @@ fn wire_host(w: &Rc<W>) {
                 return glib::Propagation::Stop;
             }
         } else if key == gdk::Key::Down {
-            open_list(&w2);
+            open_list(&w2, true);
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed

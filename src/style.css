@@ -578,7 +578,7 @@ popover.wiz-drop button.flat:hover { background-color: var(--sel-a); }
 popover.wiz-drop button.flat { background: transparent; box-shadow: none; outline: none; }
 popover.wiz-drop > contents button.flat:hover { background-color: alpha(#7b5cff, 0.32); background-image: none; }
 popover.wiz-drop > contents button.flat:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
-popover.wiz-drop > contents button.flat { background-color: transparent; background-image: none; box-shadow: none; border: none; }
+popover.wiz-drop > contents button.flat { background-color: transparent; background-image: none; box-shadow: none; border: none; transition: background-color 160ms ease; } /* fades out as well as in */
 popover.wiz-drop > contents button.flat:hover { background-color: alpha(#7b5cff, 0.32); background-image: none; }
 popover.wiz-drop > contents button.flat:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
 
@@ -587,3 +587,8 @@ popover.wiz-drop > contents button.flat:focus-visible { outline: 2px solid alpha
 .wiz-drop-btn:hover { background-color: alpha(currentColor, 0.1); color: var(--ink); }
 .wizard entry.with-status { padding-right: 40px; }
 .wizard entry.wiz-field:disabled { opacity: 1; color: var(--ink); } /* a locked (disabled) field still reads normally */
+
+
+/* keyboard focus, everywhere: a clear light-purple ring (the default outline vanishes against the panels) */
+button:focus-visible, checkbutton:focus-visible, switch:focus-visible, dropdown:focus-visible > button, scale:focus-visible, spinbutton:focus-visible { outline: 2px solid #b9a6ff; outline-offset: 2px; }
+row:focus-visible { outline: 2px solid #b9a6ff; outline-offset: -2px; }
