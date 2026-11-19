@@ -322,7 +322,11 @@ mod imp {
             let cols = self.cols_for(width);
             let cw = width as f64 / cols as f64;
             let ch = self.items.borrow().iter().map(|i| i.w.measure(gtk::Orientation::Vertical, cw as i32).1).max().unwrap_or(0) as f64;
-            self.cols.set(cols);
+            // a height asked for without a width is cached by GTK: when the column count changes, ask again
+            if self.cols.replace(cols) != cols {
+                let obj = self.obj().clone();
+                glib::idle_add_local_once(move || obj.queue_resize());
+            }
             self.cell.set((cw, ch));
             let animating = self.tick.borrow().is_some();
             let drag = self.drag.borrow().as_ref().map(|d| (d.at, d.grab, d.pointer));

@@ -3436,8 +3436,9 @@ fn render_chats(u: &Rc<Ui>) {
         slot.set_margin_start(AV_PAD + AVATAR + 11);
         slot.set_size_request(u.text_w.get() + 21, -1);
         let stack = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        stack.set_size_request(AV_PAD * 2 + AVATAR, -1); // the width the avatars-only sidebar has inside a row
+        stack.set_size_request(stack_w(u.collapsed.get()), -1);
         stack.set_valign(gtk::Align::Center);
+        stack.set_halign(gtk::Align::Start); // not centred in a wide row: the texts sit beside it
         put_avatar(&stack, &chat_avatar(u, &chat, &title));
         let short = gtk::Label::new(Some(&short_title(&chat, &title)));
         short.add_css_class("tile-name");
@@ -3891,14 +3892,19 @@ fn toggle_pin(u: &Rc<Ui>, keys: &[String]) {
 /// Room on each side of a list avatar, so it sits centred in the avatars-only sidebar (and the texts start after it).
 const AV_PAD: i32 = 8;
 
+/// Width of a row's avatar column: just the avatar and its room, or (avatars-only sidebar, margins 4 + padding 4) the
+/// whole row, so the names under the avatars get all the width there is. The avatar's x is 24 either way.
+fn stack_w(collapsed: bool) -> i32 {
+    if collapsed { COLLAPSED_W - 20 - 16 } else { AV_PAD * 2 + AVATAR }
+}
+
 /// The avatar goes first in a row's stack (replacing the one there).
 fn put_avatar(stack: &gtk::Box, av: &gtk::Widget) {
     if let Some(old) = stack.first_child().filter(|c| !c.has_css_class("tile-name")) {
         stack.remove(&old);
     }
-    av.set_halign(gtk::Align::Start);
+    av.set_halign(gtk::Align::Center); // centred in the stack, whose width is `stack_w`
     av.set_valign(gtk::Align::Center);
-    av.set_margin_start(AV_PAD);
     stack.prepend(av);
 }
 
@@ -5549,6 +5555,7 @@ fn show_collapsed(u: &Rc<Ui>, collapsed: bool) {
     }
     for p in u.row_parts.borrow().values() {
         p.short.set_visible(collapsed);
+        p.stack.set_size_request(stack_w(collapsed), -1);
     }
 }
 
