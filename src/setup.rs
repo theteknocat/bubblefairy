@@ -360,6 +360,8 @@ struct W {
     // page 5: the test message
     to: gtk::Entry,
     test_msg: gtk::Label,
+    test_title: gtk::Label,
+    skip_note: gtk::Label,
     test_btn: gtk::Button,
     test_stack: gtk::Stack,
     stop_btn: gtk::Button,
@@ -375,7 +377,7 @@ struct W {
     dots: Vec<gtk::Box>,
 }
 
-const PAGES: [&str; 4] = ["mac", "work", "test", "done"];
+const PAGES: [&str; 3] = ["mac", "work", "test"];
 const STEPS: [&str; 6] = ["Signing in", "Checking the Mac", "Adding BubbleFairy's key", "Checking that the key works", "Installing imsg", "Checking that Messages can be read"];
 
 /// Open the wizard over `parent`.
@@ -528,7 +530,8 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
 
     // 5: the test message
     let p5 = page("Send a test message");
-    p5.append(&label("This sends a short message through Messages on your Mac, so you know it works. Have your Mac in view: the first time, macOS asks whether to allow control of Messages. Click Allow. You can send it to yourself: use your own phone number or Apple ID email.", "dim"));
+    let test_title = p5.first_child().and_downcast::<gtk::Label>().expect("page title");
+    p5.append(&label("This sends a short message through Messages on your Mac, so you know sending works. Have your Mac in view: the first time, macOS asks whether to allow control of Messages. Click Allow. You can send it to yourself: use your own phone number or Apple ID email.", "dim"));
     let to = gtk::Entry::builder().placeholder_text("your phone number or email").css_classes(["wiz-field", "with-action"]).build();
     // the send button sits inside the right end of the field; it becomes a spinner while sending, then a check
     let test_btn = gtk::Button::from_icon_name("bf-send-symbolic");
@@ -563,6 +566,9 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     test_msg.set_halign(gtk::Align::Center);
     test_msg.set_justify(gtk::Justification::Center);
     p5.append(&test_msg);
+    let skip_note = label("You can skip this. Reading your messages works without it. But the first time you send a message from BubbleFairy, macOS will ask you to allow control of Messages on the Mac, so have it handy then.", "dim");
+    skip_note.set_margin_top(14);
+    p5.append(&skip_note);
     let stop_btn = gtk::Button::with_label("Stop waiting");
     stop_btn.add_css_class("flat");
     stop_btn.add_css_class("wiz-link");
@@ -570,12 +576,8 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     stop_btn.set_visible(false);
     p5.append(&stop_btn);
 
-    // 6: done
-    let p6 = page("All set");
-    p6.append(&label("BubbleFairy is connected to your Mac.", "dim"));
-
     let pages = gtk::Stack::new();
-    for (name, p) in PAGES.iter().zip([&p1, &p4, &p5, &p6]) {
+    for (name, p) in PAGES.iter().zip([&p1, &p4, &p5]) {
         pages.add_named(p, Some(name));
     }
     let back = gtk::Button::with_label("Back");
@@ -634,6 +636,8 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         work_btn,
         to,
         test_msg,
+        test_title,
+        skip_note,
         test_btn,
         test_stack,
         stop_btn,
@@ -724,7 +728,6 @@ fn show_page(w: &Rc<W>, i: usize) {
     w.next.set_label(match i {
         0 => "Connect",
         2 => "Skip",
-        3 => "Finish",
         _ => "Next",
     });
     w.next.set_sensitive(match i {
@@ -961,7 +964,6 @@ fn wire_nav(w: &Rc<W>) {
     let w2 = w.clone();
     w.next.connect_clicked(move |_| match w2.page.get() {
         0 => connect(&w2),
-        2 => show_page(&w2, 3),
         _ => finish(&w2),
     });
     let w2 = w.clone();
@@ -1229,8 +1231,10 @@ fn test_send(w: &Rc<W>) {
             Ok(()) => {
                 w2.to.set_sensitive(false);
                 w2.test_stack.set_visible_child_name("done");
-                w2.test_msg.set_text(&format!("Sent. Messages on your Mac sent it to {}. It should show up there in a moment.", w2.to.text().trim()));
-                w2.next.set_label("Continue");
+                w2.test_title.set_text("You're all set");
+                w2.skip_note.set_visible(false);
+                w2.test_msg.set_text(&format!("Messages on your Mac sent your test message to {}. Sending from BubbleFairy works.", w2.to.text().trim()));
+                w2.next.set_label("Finish");
                 crate::sound::play(crate::sound::DEFAULT);
             }
             Err(e) => w2.test_msg.set_text(&explain(&e)),
