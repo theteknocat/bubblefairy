@@ -698,7 +698,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     // dev aid: BF_SETUP_HOST=<host> fills the Mac field, as if picked
     if let Ok(h) = std::env::var("BF_SETUP_HOST") {
         w.host.set_text(&h);
-        check_host(&w);
+        check_host(&w, false);
     }
     // dev aid: BF_SETUP_AUTO=<mac user> clicks Next through the first three pages (with BF_SETUP_KEYLOGIN, no password)
     if let Ok(user) = std::env::var("BF_SETUP_AUTO") {
@@ -761,7 +761,9 @@ fn set_host_status(w: &Rc<W>, state: &str, msg: &str) {
 }
 
 /// The name of a Mac in the list is final: it can't be edited until it is cleared.
-fn lock_host(w: &Rc<W>, host: &str) {
+/// `move_focus`: go on to the password (a pick or Enter). Not when the field was left with Tab: focus is already moving
+/// on by itself, and moving it here too would leave two fields looking focused.
+fn lock_host(w: &Rc<W>, host: &str, move_focus: bool) {
     w.editing.set(true);
     w.host.set_text(host);
     w.editing.set(false);
@@ -773,8 +775,10 @@ fn lock_host(w: &Rc<W>, host: &str) {
     w.drop_btn.set_tooltip_text(Some("Choose a different Mac"));
     set_host_status(w, "ok", "");
     // the next thing is the password; the Mac field is locked, so no cursor in it
-    w.win.set_focus_visible(true);
-    w.pass.grab_focus();
+    if move_focus {
+        w.win.set_focus_visible(true);
+        w.pass.grab_focus();
+    }
 }
 
 fn unlock_host(w: &Rc<W>) {
@@ -792,13 +796,13 @@ fn unlock_host(w: &Rc<W>) {
 }
 
 /// A typed name: look for it on the network (unless it is one the scan already found).
-fn check_host(w: &Rc<W>) {
+fn check_host(w: &Rc<W>, move_focus: bool) {
     let host = w.host.text().trim().to_string();
     if host.is_empty() || w.locked.get() {
         return;
     }
     if w.found.borrow().iter().any(|f| f.host.eq_ignore_ascii_case(&host)) {
-        lock_host(w, &host);
+        lock_host(w, &host, move_focus);
         return;
     }
     set_host_status(w, "checking", "");
@@ -839,7 +843,7 @@ fn add_found(w: &Rc<W>, f: Found) {
     let (w2, host) = (w.clone(), f.host.clone());
     row.connect_clicked(move |_| {
         w2.pick_pop.popdown();
-        lock_host(&w2, &host);
+        lock_host(&w2, &host, true);
     });
     w.pick.append(&row);
     w.found.borrow_mut().push(f);
@@ -946,12 +950,12 @@ fn wire_host(w: &Rc<W>) {
     let w2 = w.clone();
     focus.connect_leave(move |_| {
         if !w2.pick_pop.is_visible() {
-            check_host(&w2);
+            check_host(&w2, false);
         }
     });
     w.host.add_controller(focus);
     let w2 = w.clone();
-    w.host.connect_activate(move |_| check_host(&w2));
+    w.host.connect_activate(move |_| check_host(&w2, true));
 }
 
 // ----- navigation -----

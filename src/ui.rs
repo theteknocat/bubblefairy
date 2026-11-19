@@ -270,6 +270,8 @@ pub struct Ui {
     msg_widgets: RefCell<Vec<Vec<gtk::Widget>>>,
     sel_gen: Cell<u32>,
     banner_offline: Cell<bool>,
+    /// has this run connected to the Mac at least once (tells a lost connection from one that never came up)
+    ever_connected: Cell<bool>,
     chats_queued: Cell<bool>,
     title_queued: Cell<bool>,
     /// open chat is a group (them-side rows carry an avatar column)
@@ -841,6 +843,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         msg_widgets: RefCell::default(),
         sel_gen: Cell::new(0),
         banner_offline: Cell::new(false),
+        ever_connected: Cell::new(false),
         chats_queued: Cell::new(false),
         title_queued: Cell::new(false),
         group: Cell::new(false),
@@ -1427,6 +1430,9 @@ fn start_setup(u: &Rc<Ui>, over_main: bool) {
         }
         crate::save_config(&u2.store.config_file, &cfg);
         u2.st.borrow_mut().cfg = cfg.clone();
+        // the connection is about to start: orange, and no banner left over from before the setup
+        set_status(&u2, "connecting", "Connecting", None);
+        u2.banner.set_reveal_child(false);
         u2.send(Cmd::Configure(cfg));
     });
     let u3 = u.clone();
@@ -1471,6 +1477,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 u.send(Cmd::Contacts);
             }
             u.st.borrow_mut().connected = true;
+            u.ever_connected.set(true);
             set_status(u, "online", "Connected", None);
             if u.banner_offline.get() {
                 u.banner.set_reveal_child(false);
@@ -1483,8 +1490,18 @@ fn on_event(u: &Rc<Ui>, e: Event) {
         }
         Event::Offline(why) => {
             u.st.borrow_mut().connected = false;
+            // not set up yet: nothing has failed, so no alarm (the setup wizard is on its way, or Settings)
+            if u.st.borrow().cfg.host.is_empty() {
+                set_status(u, "offline", "Not set up", Some("Set up your Mac from Settings."));
+                return;
+            }
             set_status(u, "offline", "Offline", Some(&why));
-            show_banner(u, &format!("Can't reach your Mac: {why}"), true);
+            let text = if u.ever_connected.get() {
+                format!("Lost the connection to your Mac ({why}). BubbleFairy will reconnect on its own.")
+            } else {
+                format!("Couldn't connect to your Mac yet ({why}). BubbleFairy will keep trying.")
+            };
+            show_banner(u, &text, true);
         }
         Event::Warn(w) => show_banner(u, &cap(&w), false),
         Event::HostKey(k) => u.st.borrow_mut().host_key = k,
