@@ -277,6 +277,7 @@ row.unread .chat-preview { color: var(--ink); }
 .msgs { padding: 8px 18px 14px; }
 .msg-line { margin-top: 6px; }
 .msg-line.tight { margin-bottom: -4px; }
+.msg-line.turn { margin-top: 16px; } /* the other person's turn to talk */
 .receipt { color: var(--ink-soft); font-size: 0.72em; font-weight: 600; margin: 5px 10px 4px 0; }
 button.failed-btn {
   min-width: 22px; min-height: 22px; padding: 0; margin-left: 8px; border-radius: 99px;
@@ -294,7 +295,7 @@ button.failed-btn.retried:hover { background-color: alpha(#ff453a, 0.18); }
   letter-spacing: 0.03em;
   margin: 16px 0 4px;
 }
-.sender-name { color: var(--ink-soft); font-size: 0.8em; margin: 8px 0 0 48px; }
+.sender-name { color: var(--ink-soft); font-size: 0.8em; margin: 18px 0 0 48px; } /* room above a new person's name */
 
 /* bubbles: the shape, gradient, shadow and tail are drawn in bubble.rs; CSS gives padding and text */
 .bubble.me { color: #ffffff; }
@@ -507,3 +508,4 @@ button.save-btn.done:disabled { opacity: 1; }
 /* selectable text: a click must not leave a caret or a focus ring behind (selecting still works) */
 label { caret-color: transparent; }
 label:focus, label:focus-visible { outline: none; }
+.reactions.rise { transform: translate(0, -22px); } /* REACT_UP in ui.rs */

@@ -4009,6 +4009,9 @@ fn redraw_message(u: &Rc<Ui>, i: usize) -> bool {
 }
 
 /// The widgets of message `i` (time separator, sender name, one line per part), top to bottom.
+/// How far a reaction pill rises above its bubble's top edge.
+const REACT_UP: i32 = 22; // the pill is 28 px tall: a little of it lies over the bubble's corner
+
 fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     let (msgs, times, names, group) = (&c.msgs, &c.times, &c.names, c.group);
     let mut out: Vec<gtk::Widget> = Vec::new();
@@ -4065,10 +4068,12 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     let run_next = i + 1 < msgs.len() && who(&msgs[i + 1]) == who(m) && gap(i, i + 1) < 300 && day(times[i]) == day(times[i + 1]);
     // my messages still on their way continue my last run: no tail on the one above them
     let run_next = run_next || (i + 1 == msgs.len() && me && c.pending_tail);
+    let mut name_w = 0; // width of the name above the message (0: none), which a reaction pill must clear
     if group && !me && !run_prev {
         let n = gtk::Label::new(Some(&sender_name(m, names)));
         n.add_css_class("sender-name");
         n.set_xalign(0.0);
+        name_w = n.preferred_size().1.width();
         out.push(n.upcast());
     }
     // hovering a message shows its full date and time (the separators only show them for a group of messages)
@@ -4143,6 +4148,11 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         if !last || run_next {
             line.add_css_class("tight"); // same sender close together: a smaller gap
         }
+        // the other side speaks (no name label to space it): more room than within a run
+        let turn = k == 0 && !run_prev && !sep && i > 0 && name_w == 0;
+        if turn {
+            line.add_css_class("turn");
+        }
         line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
         line.set_tooltip_text(when.as_deref());
         if group && !me {
@@ -4172,11 +4182,19 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         }
         match reactions_pill(m).filter(|_| k == 0) {
             Some(pill) => {
-                // the pill sits over the bubble's top corner (the side away from its tail); room above it
+                // the pill sits over the bubble's top corner (the side away from its tail), half of it above the
+                // bubble. Under a name it rises beside the name (the bubble is made wide enough for both, so
+                // the name stays as close as ever); otherwise the message gets that much room above it.
                 let ov = gtk::Overlay::new();
                 ov.set_halign(part.halign());
-                part.set_margin_top(20);
+                if name_w > 0 && !me {
+                    part.set_size_request(name_w + pill.preferred_size().1.width() + 24, -1);
+                } else {
+                    // room for the pill above the bubble: the line's own gap and the one above (tight: only 2 px) are already there
+                    line.set_margin_top(if turn { REACT_UP - 8 } else { REACT_UP - 2 });
+                }
                 ov.set_child(Some(&part));
+                pill.add_css_class("rise"); // moved up by REACT_UP in CSS (a negative margin stretched it)
                 pill.set_valign(gtk::Align::Start);
                 pill.set_halign(if me { gtk::Align::Start } else { gtk::Align::End });
                 ov.add_overlay(&pill);
