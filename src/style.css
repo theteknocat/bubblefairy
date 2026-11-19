@@ -204,7 +204,7 @@ row.unread .chat-preview { color: var(--ink); }
 /* pinned chats: avatar tiles above the list */
 .tiles { margin: 6px 8px 12px 8px; } /* room before the list; the avatars-only sidebar keeps it tight */
 .sidebar.collapsed .tiles { margin-top: 0; margin-bottom: 0; }
-.sidebar.collapsed .tile { margin: 4px 0; } /* the same 8 px between circles as the list rows (margin 4 each) */
+.sidebar.collapsed .tile { margin: 4px 8px; padding: 8px; } /* the same size and gaps as the list rows */
 .tile { margin: 3px; padding: 8px 4px 6px 4px; border-radius: 16px; transition: background-color 160ms ease; }
 .tile:hover { background-color: alpha(currentColor, 0.05); }
 .tile.dragging { background-color: alpha(currentColor, 0.10); box-shadow: 0 8px 22px var(--shadow-strong); }
@@ -214,7 +214,6 @@ row.unread .chat-preview { color: var(--ink); }
 }
 .tile-name { font-weight: 700; font-size: 0.9em; color: var(--ink); }
 .tile .unread-dot { margin: 0 0 0 -2px; }
-.sidebar.collapsed .tile { border-radius: 30px; padding: 8px; }
 
 /* avatars: glossy gradient discs */
 .avatar {
@@ -323,7 +322,6 @@ button.failed-btn.retried:hover { background-color: alpha(#ff453a, 0.18); }
 
 /* new message: To field and people suggestions */
 .side-toggle { margin: 4px 0 8px 4px; min-width: 32px; min-height: 32px; padding: 0; }
-.sidebar.collapsed row.chat-row { border-radius: 30px; } /* a circle round the avatar (row = avatar 44 + padding 8 + 8) */
 .sidebar.collapsed row.chat-row.unread:not(:selected) { background-color: rgba(47, 123, 255, 0.16); }
 .sidebar .new-btn { margin: 4px 4px 8px 0; min-width: 32px; min-height: 32px; padding: 0; }
 .to-label { color: var(--ink-soft); font-weight: 700; }
@@ -498,3 +496,8 @@ button.save-btn.done:disabled { opacity: 1; }
 /* the people of a big group, in the popover under the header avatar */
 .people-list { padding: 4px 2px; }
 .person-row { padding: 4px 6px; border-radius: 12px; }
+.side-title { transition: opacity 160ms ease; }
+.sidebar.collapsed .side-title { opacity: 0; } /* the wider avatars-only sidebar would show its first letters */
+/* the row's own texts must never show in the avatars-only sidebar (the short name under the avatar does) */
+.row-slot { transition: opacity 160ms ease; }
+.sidebar.collapsed .row-slot { opacity: 0; }

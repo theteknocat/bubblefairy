@@ -308,7 +308,8 @@ mod imp {
                 return (min, nat * MAX_COLS as i32, -1, -1);
             }
             drop(items);
-            let width = if for_size < 0 { 300 } else { for_size };
+            // asked without a width (the scroller does): the width it has now, else a single column's worth
+            let width = if for_size >= 0 { for_size } else { self.obj().width().max(self.cols_for(0) as i32 * self.items.borrow().iter().map(|i| i.w.measure(gtk::Orientation::Horizontal, -1).0).max().unwrap_or(1)) };
             let cols = self.cols_for(width);
             let cw = width / cols as i32;
             let items = self.items.borrow();

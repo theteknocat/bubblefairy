@@ -21,7 +21,7 @@ const CHAT_MIN: i32 = 440;
 const CHATS_PAGE: usize = 100;
 /// how many older messages one request brings (`Cmd::Older`)
 const HISTORY_OLDER: usize = 100;
-const COLLAPSED_W: i32 = 96;
+const COLLAPSED_W: i32 = 112;
 const NO_SLIDE: i32 = i32::MIN;
 const AVATAR: i32 = 44; // the chat list's avatar size // the sidebar showing avatars only (side margins included)
 const COMPOSE_PAD_X: i32 = 4;
@@ -3316,10 +3316,10 @@ fn refresh_identities(u: &Rc<Ui>) {
         if p.name.text() != *title {
             p.name.set_text(title);
         }
-        let av = chat_avatar(u, chat, title);
-        av.set_halign(gtk::Align::Start);
-        av.set_valign(gtk::Align::Center);
-        p.row_box.set_child(Some(&av));
+        if p.short.text() != short_title(chat, title) {
+            p.short.set_text(&short_title(chat, title));
+        }
+        put_avatar(&p.stack, &chat_avatar(u, chat, title));
     }
     // the collapsed sidebar's tooltips read the titles kept in `rows`
     for (row, _, t) in u.rows.borrow_mut().iter_mut() {
@@ -3361,8 +3361,9 @@ struct RowParts {
     time_unix: Rc<Cell<Option<i64>>>,
     time: gtk::Label,
     name: gtk::Label,
-    /// the row's avatar is its child: swapped in place when a name or photo arrives
-    row_box: gtk::Overlay,
+    /// avatar on top, the short name under it (shown only in the avatars-and-names sidebar)
+    stack: gtk::Box,
+    short: gtk::Label,
     prev: gtk::Label,
     dot: gtk::Box,
 }
@@ -3429,15 +3430,24 @@ fn render_chats(u: &Rc<Ui>) {
         let slot = gtk::Box::new(gtk::Orientation::Horizontal, 11);
         slot.append(&texts);
         slot.append(&dot);
+        slot.add_css_class("row-slot");
         slot.set_halign(gtk::Align::Start);
         slot.set_valign(gtk::Align::Center);
-        slot.set_margin_start(AVATAR + 11);
+        slot.set_margin_start(AV_PAD + AVATAR + 11);
         slot.set_size_request(u.text_w.get() + 21, -1);
-        let avatar = chat_avatar(u, &chat, &title);
-        avatar.set_halign(gtk::Align::Start);
-        avatar.set_valign(gtk::Align::Center);
+        let stack = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        stack.set_size_request(AV_PAD * 2 + AVATAR, -1); // the width the avatars-only sidebar has inside a row
+        stack.set_valign(gtk::Align::Center);
+        put_avatar(&stack, &chat_avatar(u, &chat, &title));
+        let short = gtk::Label::new(Some(&short_title(&chat, &title)));
+        short.add_css_class("tile-name");
+        short.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        short.set_width_chars(1);
+        short.set_max_width_chars(9);
+        short.set_visible(u.collapsed.get());
+        stack.append(&short);
         let row_box = gtk::Overlay::new();
-        row_box.set_child(Some(&avatar));
+        row_box.set_child(Some(&stack));
         row_box.add_overlay(&slot);
         row_box.set_clip_overlay(&slot, true);
         let row = gtk::ListBoxRow::new();
@@ -3445,7 +3455,7 @@ fn render_chats(u: &Rc<Ui>) {
             row.set_tooltip_text(Some(&title));
         }
         new_rows.push((row.clone(), slot, title.clone()));
-        u.row_parts.borrow_mut().insert(id, RowParts { row: row.clone(), time_unix, time: time.clone(), name: name.clone(), row_box: row_box.clone(), prev: prev.clone(), dot: dot.clone() });
+        u.row_parts.borrow_mut().insert(id, RowParts { row: row.clone(), time_unix, time: time.clone(), name: name.clone(), stack: stack.clone(), short: short.clone(), prev: prev.clone(), dot: dot.clone() });
         row.add_css_class("chat-row");
         if unread {
             row.add_css_class("unread");
@@ -3878,6 +3888,26 @@ fn toggle_pin(u: &Rc<Ui>, keys: &[String]) {
     render_chats(u);
 }
 
+/// Room on each side of a list avatar, so it sits centred in the avatars-only sidebar (and the texts start after it).
+const AV_PAD: i32 = 8;
+
+/// The avatar goes first in a row's stack (replacing the one there).
+fn put_avatar(stack: &gtk::Box, av: &gtk::Widget) {
+    if let Some(old) = stack.first_child().filter(|c| !c.has_css_class("tile-name")) {
+        stack.remove(&old);
+    }
+    av.set_halign(gtk::Align::Start);
+    av.set_valign(gtk::Align::Center);
+    av.set_margin_start(AV_PAD);
+    stack.prepend(av);
+}
+
+/// What shows under an avatar: a person is just their first name (the list has room for the whole name); a group, a
+/// number or an email stays whole.
+fn short_title(chat: &Value, title: &str) -> String {
+    if chat["is_group"].as_bool() == Some(true) || title.chars().any(|c| c.is_ascii_digit() || c == '@') { title.to_string() } else { first_name(title) }
+}
+
 /// The pinned chats as avatar tiles above the list (names hide when the sidebar is avatars-only).
 fn render_tiles(u: &Rc<Ui>, pinned: Vec<(usize, i64, String, bool, Value)>, sel: Option<i64>) {
     u.tiles.remove_all();
@@ -3897,13 +3927,12 @@ fn render_tiles(u: &Rc<Ui>, pinned: Vec<(usize, i64, String, bool, Value)>, sel:
         }
         // under a pinned avatar a person is just their first name (the list has room for the whole name); a group, a
         // number or an email stays whole
-        let shown = if chat["is_group"].as_bool() == Some(true) || title.chars().any(|c| c.is_ascii_digit() || c == '@') { title.clone() } else { first_name(&title) };
+        let shown = short_title(&chat, &title);
         let name = gtk::Label::new(Some(&shown));
         name.add_css_class("tile-name");
         name.set_ellipsize(gtk::pango::EllipsizeMode::End);
         name.set_width_chars(1);
         name.set_max_width_chars(9);
-        name.set_visible(!u.collapsed.get());
         let tile = gtk::Box::new(gtk::Orientation::Vertical, 4);
         tile.add_css_class("tile");
         tile.set_widget_name(&id.to_string());
@@ -5491,7 +5520,7 @@ fn relayout(u: &Rc<Ui>, total: i32) {
     if !collapsed {
         // room the names will have once the sidebar is settled (row width minus avatar, gaps and dot)
         let inner = side - 20;
-        u.text_target.set((inner - 32 - AVATAR - 11 - 11 - 10).max(40));
+        u.text_target.set((inner - 32 - AV_PAD - AVATAR - 11 - 11 - 10).max(40));
     }
     if u.slide_to.get() == NO_SLIDE {
         settle(u);
@@ -5518,11 +5547,8 @@ fn show_collapsed(u: &Rc<Ui>, collapsed: bool) {
     for (row, _, title) in u.rows.borrow().iter() {
         row.set_tooltip_text(collapsed.then_some(title.as_str()));
     }
-    // a pinned tile's name goes away with the rest of the text (hidden, it also takes no room under the avatar)
-    for t in u.tiles.tiles() {
-        if let Some(name) = t.last_child() {
-            name.set_visible(!collapsed);
-        }
+    for p in u.row_parts.borrow().values() {
+        p.short.set_visible(collapsed);
     }
 }
 
