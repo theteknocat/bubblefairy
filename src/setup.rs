@@ -341,7 +341,7 @@ struct W {
     dots: Vec<gtk::Box>,
 }
 
-const PAGES: [&str; 5] = ["mac", "account", "work", "test", "done"];
+const PAGES: [&str; 4] = ["mac", "work", "test", "done"];
 const STEPS: [&str; 6] = ["Signing in", "Checking the Mac", "Adding BubbleFairy's key", "Checking that the key works", "Installing imsg", "Checking that Messages can be read"];
 
 /// Open the wizard over `parent`.
@@ -383,8 +383,8 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     };
 
     // 1: the Mac
-    let p1 = page("Find your Mac");
-    p1.append(&label("On the Mac, open System Settings → General → Sharing and turn on Remote Login. Then pick the Mac here, or type its name or address.", "dim"));
+    let p1 = page("Connect to your Mac");
+    p1.append(&label("On the Mac, open System Settings → General → Sharing and turn on Remote Login. Then pick the Mac here (or type its name or address) and sign in with its user name and password. The password is used once, for the setup, and then forgotten.", "dim"));
     let host = gtk::Entry::builder().placeholder_text("my-mac.local").hexpand(true).css_classes(["wiz-field"]).build();
     // the button at the right end is a real, focusable button: the list's arrow, or "clear" once a Mac is chosen
     let drop_btn = gtk::Button::from_icon_name("pan-down-symbolic");
@@ -424,9 +424,24 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     field.set_size_request(420, -1);
     p1.append(&field);
     let host_msg = label("", "wiz-err");
+    host_msg.set_visible(false);
     host_msg.set_halign(gtk::Align::Center);
     host_msg.set_justify(gtk::Justification::Center);
     p1.append(&host_msg);
+    // the account: unavailable until a Mac is chosen and found; changing the Mac clears the password
+    let user = gtk::Entry::builder().text(&ctx.default_user).placeholder_text("Mac user name").css_classes(["wiz-field"]).sensitive(false).build();
+    let pass = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("Mac password").css_classes(["wiz-field"]).sensitive(false).build();
+    for f in [user.upcast_ref::<gtk::Widget>(), pass.upcast_ref::<gtk::Widget>()] {
+        f.set_halign(gtk::Align::Center);
+        f.set_size_request(420, -1);
+    }
+    p1.append(&user);
+    p1.append(&pass);
+    let acct_msg = label("", "wiz-err");
+    acct_msg.set_visible(false);
+    acct_msg.set_halign(gtk::Align::Center);
+    acct_msg.set_justify(gtk::Justification::Center);
+    p1.append(&acct_msg);
     let pick = gtk::Box::new(gtk::Orientation::Vertical, 2); // plain buttons: a ListBox's rows add their own square background and focus box
     let scan = gtk::Spinner::new();
     let scan_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -441,16 +456,6 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     pick_pop.set_parent(&host);
     pick_pop.set_position(gtk::PositionType::Bottom);
     pick_pop.set_offset(0, 2);
-
-    // 2: the account
-    let p2 = page("Your Mac account");
-    p2.append(&label("BubbleFairy signs in once with your Mac's user name and password to set things up. The password is used for that and then forgotten.", "dim"));
-    let user = gtk::Entry::builder().text(&ctx.default_user).placeholder_text("Mac user name").css_classes(["wiz-field"]).build();
-    let pass = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("Mac password").css_classes(["wiz-field"]).build();
-    p2.append(&user);
-    p2.append(&pass);
-    let acct_msg = label("", "step-bad");
-    p2.append(&acct_msg);
 
     // 3: the work
     let p4 = page("Setting up");
@@ -493,7 +498,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     p6.append(&label("BubbleFairy is connected to your Mac.", "dim"));
 
     let pages = gtk::Stack::new();
-    for (name, p) in PAGES.iter().zip([&p1, &p2, &p4, &p5, &p6]) {
+    for (name, p) in PAGES.iter().zip([&p1, &p4, &p5, &p6]) {
         pages.add_named(p, Some(name));
     }
     let back = gtk::Button::with_label("Back");
@@ -615,10 +620,10 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         w.pass.set_text("x");
         let w2 = w.clone();
         glib::timeout_add_local(Duration::from_millis(1500), move || {
-            if w2.page.get() <= 1 && w2.next.is_sensitive() {
+            if w2.page.get() == 0 && w2.next.is_sensitive() {
                 w2.next.emit_clicked();
             }
-            if w2.page.get() >= 2 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+            if w2.page.get() >= 1 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
         });
     }
 }
@@ -629,19 +634,24 @@ fn show_page(w: &Rc<W>, i: usize) {
         if n == i { d.add_css_class("on") } else { d.remove_css_class("on") }
     }
     w.pages.set_visible_child_name(PAGES[i]);
-    w.back.set_visible(i == 1);
+    w.back.set_visible(false);
     w.next.set_visible(true);
     w.next.set_label(match i {
-        1 => "Connect",
-        3 => "Skip",
-        4 => "Finish",
+        0 => "Connect",
+        2 => "Skip",
+        3 => "Finish",
         _ => "Next",
     });
     w.next.set_sensitive(match i {
-        0 => w.host_ok.get(),
-        2 => false,
+        0 => ready(w),
+        1 => false,
         _ => true,
     });
+}
+
+/// Is the first page complete: a Mac found, and a user name and password entered?
+fn ready(w: &Rc<W>) -> bool {
+    w.host_ok.get() && !w.user.text().trim().is_empty() && !w.pass.text().is_empty()
 }
 
 // ----- page 1: the Mac picker -----
@@ -649,9 +659,16 @@ fn show_page(w: &Rc<W>, i: usize) {
 fn set_host_status(w: &Rc<W>, state: &str, msg: &str) {
     w.host_status.set_visible_child_name(state);
     w.host_msg.set_text(msg);
+    w.host_msg.set_visible(!msg.is_empty());
     w.host_ok.set(state == "ok");
+    // the account is for a Mac that was found; another Mac means the password is typed again
+    w.user.set_sensitive(state == "ok");
+    w.pass.set_sensitive(state == "ok");
+    if state != "ok" {
+        w.pass.set_text("");
+    }
     if w.page.get() == 0 {
-        w.next.set_sensitive(state == "ok");
+        w.next.set_sensitive(ready(w));
     }
 }
 
@@ -661,19 +678,20 @@ fn lock_host(w: &Rc<W>, host: &str) {
     w.host.set_text(host);
     w.editing.set(false);
     w.host.set_editable(false);
+    w.host.add_css_class("locked");
     w.host.set_sensitive(false); // like a disabled input: it can't take focus, so Tab lands on the clear button
     w.locked.set(true);
     w.drop_btn.set_icon_name("edit-clear-symbolic");
     w.drop_btn.set_tooltip_text(Some("Choose a different Mac"));
     set_host_status(w, "ok", "");
-    // the next thing is the button; the field is locked, so no cursor in it. After a mouse pick GTK wouldn't draw the
-    // focus ring on its own, so ask for it
+    // the next thing is the password; the Mac field is locked, so no cursor in it
     w.win.set_focus_visible(true);
-    w.next.grab_focus();
+    w.pass.grab_focus();
 }
 
 fn unlock_host(w: &Rc<W>) {
     w.locked.set(false);
+    w.host.remove_css_class("locked");
     w.host.set_sensitive(true);
     w.host.set_editable(true);
     w.editing.set(true);
@@ -857,38 +875,45 @@ fn wire_nav(w: &Rc<W>) {
     });
     let w2 = w.clone();
     w.next.connect_clicked(move |_| match w2.page.get() {
-        0 => {
-            check_host(&w2);
-            if w2.host_ok.get() {
-                show_page(&w2, 1);
-                w2.pass.grab_focus();
-            }
-        }
-        1 => connect(&w2),
-        3 => show_page(&w2, 4),
+        0 => connect(&w2),
+        2 => show_page(&w2, 3),
         _ => finish(&w2),
     });
     let w2 = w.clone();
     w.pass.connect_activate(move |_| {
-        if w2.page.get() == 1 {
+        if w2.page.get() == 0 && ready(&w2) {
             connect(&w2);
         }
     });
+    for e in [w.user.clone().upcast::<gtk::Editable>(), w.pass.clone().upcast::<gtk::Editable>()] {
+        let w2 = w.clone();
+        e.connect_changed(move |_| {
+            if w2.page.get() == 0 {
+                w2.next.set_sensitive(ready(&w2));
+            }
+        });
+    }
     let w2 = w.clone();
     w.work_btn.connect_clicked(move |_| provision(&w2));
     let w2 = w.clone();
     w.test_btn.connect_clicked(move |_| test_send(&w2));
 }
 
-/// Page 2 → 3: connect and sign in (a wrong password stays here, with the message), then set everything up.
+/// The sign-in message under the password (hidden when empty).
+fn set_acct(w: &Rc<W>, msg: &str) {
+    w.acct_msg.set_text(msg);
+    w.acct_msg.set_visible(!msg.is_empty());
+}
+
+/// Connect and sign in (a wrong password stays here, with the message), then set everything up.
 /// The Mac's host key is pinned as first seen, like `ssh` does on a first connection: the person picked this Mac by
 /// name on their own network, and "fingerprints" mean nothing to most people.
 fn connect(w: &Rc<W>) {
     if w.user.text().trim().is_empty() || w.pass.text().is_empty() {
-        w.acct_msg.set_text("Enter the Mac's user name and password.");
+        set_acct(w, "Enter the Mac's user name and password.");
         return;
     }
-    w.acct_msg.set_text("");
+    set_acct(w, "");
     w.next.set_sensitive(false);
     let (host, user, pass) = (w.host.text().trim().to_string(), w.user.text().trim().to_string(), w.pass.text().to_string());
     let dev_key = std::env::var_os("BF_SETUP_KEYLOGIN").map(|_| glib::user_data_dir().join("bubblefairy/id_ed25519"));
@@ -907,7 +932,7 @@ fn connect(w: &Rc<W>) {
         match r {
             Ok(link) => {
                 *w2.online.borrow_mut() = Some(Arc::new(link));
-                show_page(&w2, 2);
+                show_page(&w2, 1);
                 for i in 0..STEPS.len() {
                     set_step(&w2, i, Step::Wait);
                 }
@@ -916,7 +941,7 @@ fn connect(w: &Rc<W>) {
                 w2.work_btn.set_visible(false);
                 provision_from(&w2, 1).await;
             }
-            Err(e) => w2.acct_msg.set_text(&e),
+            Err(e) => set_acct(&w2, &e),
         }
     });
 }
@@ -954,7 +979,7 @@ fn fail(w: &Rc<W>, msg: &str, button: Option<&str>) {
 /// The button under a failed step: sign in again from the password page, or run the steps again.
 fn provision(w: &Rc<W>) {
     if w.online.borrow().is_none() {
-        show_page(w, 1);
+        show_page(w, 0);
         return;
     }
     w.work_btn.set_visible(false);
@@ -1039,7 +1064,7 @@ async fn provision_from(w: &Rc<W>, from: usize) {
             return;
         }
     }
-    show_page(w, 3);
+    show_page(w, 2);
 }
 
 fn test_send(w: &Rc<W>) {

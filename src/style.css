@@ -586,7 +586,8 @@ popover.wiz-drop > contents button.flat:focus-visible { outline: 2px solid alpha
 .wiz-drop-btn { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; background: transparent; box-shadow: none; border: none; color: var(--ink-soft); }
 .wiz-drop-btn:hover { background-color: alpha(currentColor, 0.1); color: var(--ink); }
 .wizard entry.with-status { padding-right: 40px; }
-.wizard entry.wiz-field:disabled { opacity: 1; color: var(--ink); } /* a locked (disabled) field still reads normally */
+.wizard .wiz-field:disabled { opacity: 0.5; }
+.wizard entry.wiz-field.locked:disabled { opacity: 1; color: var(--ink); } /* the locked Mac field still reads normally */
 
 
 /* keyboard focus, everywhere: a clear light-purple ring (the default outline vanishes against the panels) */
