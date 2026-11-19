@@ -51,6 +51,9 @@ pub enum Cmd {
     /// The newest 1:1 chat with any of these addresses (one person's numbers and emails: Messages keeps one conversation
     /// per contact), which can be older than the chats list's 100 (answer: `Event::FoundChat`)
     FindChat(Vec<String>),
+    /// Chats found by name, even ones older than the chats list: a group whose name contains `q`, and any chat with
+    /// one of `addrs` (the numbers and emails of the contacts whose name matches). Answer: `Event::FoundNamed`.
+    FindNamed { q: String, addrs: Vec<String>, seq: u64 },
     /// the chat's newest `limit` messages
     History(i64, usize),
     /// Just the newest message, for the chat list's preview line.
@@ -176,6 +179,7 @@ pub enum Event {
     Receipt(i64, Option<Receipt>),
     /// the address that was typed, and the chat found for it or its person's other addresses
     FoundChat(String, Option<Value>),
+    FoundNamed { seq: u64, chats: Vec<Value> },
     History(i64, Vec<Value>),
     Preview(i64, Value),
     Older(i64, Vec<Value>),
@@ -735,6 +739,46 @@ async fn find_chat(session: &client::Handle<Handler>, addrs: &[String]) -> Optio
     let ident = hex_text(r.get(1)?);
     Some(json!({"id": r.first()?.parse::<i64>().ok()?, "display_name": "", "identifier": ident, "participants": [ident],
         "service": r.get(2)?, "is_group": false, "unread_count": 0, "last_message_at": r.get(3)?}))
+}
+
+/// Chats whose group name contains `q`, or that have one of `addrs` as a member (1:1 chats and groups), newest
+/// first, shaped like imsg chats.list entries. ponytail: at most 15; a number with fewer than 10 digits isn't matched.
+async fn find_named(session: &client::Handle<Handler>, q: &str, addrs: &[String]) -> Vec<Value> {
+    let like = q.to_lowercase().replace('\'', "''").replace(['%', '_'], "");
+    let mut by_member = vec!["0".to_string()];
+    for addr in addrs.iter().take(60) {
+        if addr.contains('@') {
+            by_member.push(format!("lower(h.id)=lower({})", sh_sql(addr)));
+        } else {
+            let d: String = addr.chars().filter(char::is_ascii_digit).collect();
+            if let Some(ten) = d.get(d.len().saturating_sub(10)..).filter(|t| t.len() == 10) {
+                by_member.push(format!("(h.id not like '%@%' and replace(replace(replace(replace(replace(h.id,'+',''),'-',''),' ',''),'(',''),')','') like '%{ten}')"));
+            }
+        }
+    }
+    let sql = format!(
+        "select c.ROWID, hex(c.chat_identifier), hex(coalesce(c.display_name,'')), c.style, coalesce(c.service_name,'iMessage'), \
+         strftime('%Y-%m-%dT%H:%M:%SZ', coalesce((select max(m.date) from message m join chat_message_join j on j.message_id=m.ROWID where j.chat_id=c.ROWID and m.item_type=0),0)/1000000000+978307200, 'unixepoch'), \
+         coalesce((select group_concat(hex(h2.id),',') from chat_handle_join hj2 join handle h2 on h2.ROWID=hj2.handle_id where hj2.chat_id=c.ROWID),'') \
+         from chat c where c.style in (43,45) and (lower(c.display_name) like '%{like}%' or c.ROWID in \
+         (select hj.chat_id from chat_handle_join hj join handle h on h.ROWID=hj.handle_id where {})) \
+         and exists (select 1 from chat_message_join j join message m on m.ROWID=j.message_id where j.chat_id=c.ROWID and m.item_type=0) \
+         order by 6 desc limit 15",
+        by_member.join(" or ")
+    );
+    let Some(out) = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await else { return Vec::new() };
+    String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('|').collect();
+            let group = f.get(3)? == &"43";
+            let members: Vec<String> = f.get(6)?.split(',').filter(|h| !h.is_empty()).map(hex_text).collect();
+            let ident = hex_text(f.get(1)?);
+            Some(json!({"id": f.first()?.parse::<i64>().ok()?, "display_name": hex_text(f.get(2)?), "identifier": ident,
+                "participants": if members.is_empty() { vec![ident.clone()] } else { members }, "service": f.get(4)?,
+                "is_group": group, "unread_count": 0, "last_message_at": f.get(5)?}))
+        })
+        .collect()
 }
 
 /// A string as an SQL literal.
@@ -1485,6 +1529,10 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
                 let _ = ev.send(Event::Warn("couldn't read the chat list from the Mac".into()));
             }
         },
+        Cmd::FindNamed { q, addrs, seq } => {
+            let chats = find_named(&session, &q, &addrs).await;
+            let _ = ev.send(Event::FoundNamed { seq, chats });
+        }
         Cmd::FindChat(addr) => {
             let found = find_chat(&session, &addr).await;
             let _ = ev.send(Event::FoundChat(addr.first().cloned().unwrap_or_default(), found));

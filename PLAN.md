@@ -95,7 +95,7 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 ### Small features (built)
 
 - Hovering a message shows its full date and time; the window title carries the number of unread conversations (`(3) BubbleFairy`); each chat keeps its own unsent text and waiting files while you look at another (in memory only, lost on quit); the chat names its service ("iMessage", "RCS", "Text Message") at the start and wherever it changes.
-- Sidebar search (Ctrl+F): filters the list by name, a group member's name, or part of a number or address; pinned chats show as ordinary rows while searching; hidden in the avatars-only sidebar.
+- Sidebar search (Ctrl+F) also finds chats older than the loaded list, by group name or by a contact's name (`Cmd::FindNamed` → `mac::find_named`, 3+ characters, at most 15 chats, added to the list like a found chat; re-run when the Contacts arrive). Filters the list by name, a group member's name, or part of a number or address; pinned chats show as ordinary rows while searching; hidden in the avatars-only sidebar.
 
 ### Delivery line (built)
 

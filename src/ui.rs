@@ -1427,6 +1427,10 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             if u.st.borrow().sel.is_some() {
                 render_conv(u);
             }
+            // a search typed before the people were known can now look for their names too
+            if u.search.text().trim().chars().count() >= 3 {
+                search_changed(u);
+            }
         }
         Event::Connected => {
             if u.st.borrow().contacts.is_none() {
@@ -1528,6 +1532,28 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             // still in the new-message view with that address: show the conversation, like Messages does
             if u.new_mode.get() && same_addr(u.to_entry.text().trim(), &addr) {
                 open_chat(u, id);
+            }
+        }
+        Event::FoundNamed { seq, chats } => {
+            if seq != u.msearch_gen.get() {
+                return; // typed on since
+            }
+            let mut added = Vec::new();
+            for chat in chats {
+                let Some(id) = chat["id"].as_i64() else { continue };
+                let id = u.st.borrow().alias.get(&id).copied().unwrap_or(id); // one of a merged person's chats
+                if !u.st.borrow().chats.iter().any(|c| c["id"].as_i64() == Some(id)) {
+                    insert_chat(&mut u.st.borrow_mut().chats, chat);
+                    added.push(id);
+                }
+            }
+            if !added.is_empty() {
+                fill_names(&mut u.st.borrow_mut()); // the new chats' people
+                render_chats(u);
+                for id in added {
+                    u.send(Cmd::Preview(id));
+                }
+                apply_search(u);
             }
         }
         Event::Preview(id, m) => {
@@ -3626,7 +3652,13 @@ fn search_changed(u: &Rc<Ui>) {
         let u2 = u.clone();
         glib::timeout_add_local_once(Duration::from_millis(300), move || {
             if u2.msearch_gen.get() == gen_ && u2.st.borrow().connected {
-                u2.send(Cmd::Search { q: u2.search.text().trim().to_string(), seq: gen_ });
+                let q = u2.search.text().trim().to_string();
+                // chats older than the loaded ones, found by name: a group's name, or a contact whose name matches
+                if q.chars().count() >= 3 {
+                    let addrs = u2.st.borrow().contacts.as_ref().map(|k| k.search(&q).iter().map(|(_, a)| a.to_string()).collect()).unwrap_or_default();
+                    u2.send(Cmd::FindNamed { q: q.clone(), addrs, seq: gen_ });
+                }
+                u2.send(Cmd::Search { q, seq: gen_ });
             }
         });
     }

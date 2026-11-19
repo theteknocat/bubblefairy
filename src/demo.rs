@@ -110,6 +110,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
     while let Some(c) = cmds.recv().await {
         let _ = match c {
             Cmd::Chats(_) => ev.send(Event::Chats(chats())),
+            Cmd::FindNamed { .. } => Ok(()),
             Cmd::FindChat(a) => ev.send(Event::FoundChat(a.first().cloned().unwrap_or_default(), None)),
             Cmd::History(id, _) => ev.send(Event::History(id, history(id))),
             Cmd::Receipts(id) => {
