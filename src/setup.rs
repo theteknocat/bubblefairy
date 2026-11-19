@@ -213,13 +213,27 @@ impl Link {
         Ok(out.trim() == "OK")
     }
 
-    /// Send a short message to `to` through Messages. The first send makes macOS ask for permission, so this waits.
+    /// Send a short message to `to` through Messages, then check that Messages has it as sent. The first send makes
+    /// macOS ask for permission, so this waits for the person to answer on the Mac.
     async fn test_send(&self, imsg: &str, to: &str) -> Result<(), String> {
-        let cmd = format!("{} send --to {} --text 'BubbleFairy setup test' --service auto 2>&1", sh_quote(imsg), sh_quote(to));
+        const TEXT: &str = "BubbleFairy setup test";
+        let cmd = format!("{} send --to {} --text {} --service auto 2>&1", sh_quote(imsg), sh_quote(to), sh_quote(TEXT));
         match self.run(&cmd, None, Duration::from_secs(180)).await? {
-            (0, _) => Ok(()),
-            (_, out) => Err(if out.is_empty() { "the Mac didn't send it".into() } else { out }),
+            (0, _) => {}
+            (_, out) => return Err(if out.is_empty() { "the Mac didn't send it".into() } else { out }),
         }
+        // imsg is done once Messages took the message; the database says whether it went out
+        let q = format!(
+            "sqlite3 -readonly ~/Library/Messages/chat.db \"select error from message where is_from_me=1 and text='{TEXT}' and date/1000000000+978307200 > strftime('%s','now')-300 order by ROWID desc limit 1\""
+        );
+        for _ in 0..8 {
+            let (_, out) = self.run(&q, None, Duration::from_secs(15)).await?;
+            if let Ok(code) = out.trim().parse::<i64>() {
+                return if code == 0 { Ok(()) } else { Err(format!("Messages couldn't send it (error {code}).")) };
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        Err("Messages took the message, but it doesn't show as sent yet. Look at Messages on the Mac.".into())
     }
 
     /// Dev profile only: take the throwaway key out again.
@@ -332,6 +346,11 @@ struct W {
     to: gtk::Entry,
     test_msg: gtk::Label,
     test_btn: gtk::Button,
+    test_stack: gtk::Stack,
+    stop_btn: gtk::Button,
+    test_gen: Cell<u64>,
+    connecting: gtk::Box,
+    connecting_text: gtk::Label,
     // connection state
     online: RefCell<Option<Arc<Link>>>,
     imsg: RefCell<String>,
@@ -442,6 +461,15 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     acct_msg.set_halign(gtk::Align::Center);
     acct_msg.set_justify(gtk::Justification::Center);
     p1.append(&acct_msg);
+    let connecting = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    connecting.set_halign(gtk::Align::Center);
+    let cspin = gtk::Spinner::new();
+    cspin.start();
+    connecting.append(&cspin);
+    let connecting_text = label("", "dim");
+    connecting.append(&connecting_text);
+    connecting.set_visible(false);
+    p1.append(&connecting);
     let pick = gtk::Box::new(gtk::Orientation::Vertical, 2); // plain buttons: a ListBox's rows add their own square background and focus box
     let scan = gtk::Spinner::new();
     let scan_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -485,13 +513,42 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     // 5: the test message
     let p5 = page("Send a test message");
     p5.append(&label("This sends a short message through Messages on your Mac, so you know it works. Have your Mac in view: the first time, macOS asks whether to allow control of Messages. Click Allow. You can send it to yourself: use your own phone number or Apple ID email.", "dim"));
-    let to = gtk::Entry::builder().placeholder_text("your phone number or email").css_classes(["wiz-field"]).build();
-    p5.append(&to);
-    let test_btn = gtk::Button::with_label("Send test message");
-    test_btn.set_halign(gtk::Align::Start);
-    p5.append(&test_btn);
-    let test_msg = label("", "");
+    let to = gtk::Entry::builder().placeholder_text("your phone number or email").css_classes(["wiz-field", "with-action"]).build();
+    // the send button sits inside the right end of the field; it becomes a spinner while sending, then a check
+    let test_btn = gtk::Button::from_icon_name("go-up-symbolic");
+    test_btn.add_css_class("wiz-drop-btn");
+    test_btn.set_tooltip_text(Some("Send test message"));
+    let test_stack = gtk::Stack::new();
+    test_stack.set_halign(gtk::Align::End);
+    test_stack.set_valign(gtk::Align::Center);
+    test_stack.set_margin_end(6);
+    test_stack.add_named(&test_btn, Some("send"));
+    let sending = gtk::Spinner::new();
+    sending.start();
+    sending.set_margin_end(10);
+    test_stack.add_named(&sending, Some("spin"));
+    let sent = gtk::Image::from_icon_name("object-select-symbolic");
+    sent.set_pixel_size(10);
+    sent.add_css_class("wiz-badge");
+    sent.add_css_class("good");
+    sent.set_margin_end(10);
+    test_stack.add_named(&sent, Some("done"));
+    let to_field = gtk::Overlay::new();
+    to_field.set_child(Some(&to));
+    to_field.add_overlay(&test_stack);
+    to_field.set_halign(gtk::Align::Center);
+    to_field.set_size_request(420, -1);
+    p5.append(&to_field);
+    let test_msg = label("", "dim");
+    test_msg.set_halign(gtk::Align::Center);
+    test_msg.set_justify(gtk::Justification::Center);
     p5.append(&test_msg);
+    let stop_btn = gtk::Button::with_label("Stop waiting");
+    stop_btn.add_css_class("flat");
+    stop_btn.add_css_class("wiz-link");
+    stop_btn.set_halign(gtk::Align::Center);
+    stop_btn.set_visible(false);
+    p5.append(&stop_btn);
 
     // 6: done
     let p6 = page("All set");
@@ -558,6 +615,11 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         to,
         test_msg,
         test_btn,
+        test_stack,
+        stop_btn,
+        test_gen: Cell::new(0),
+        connecting,
+        connecting_text,
         online: RefCell::new(None),
         imsg: RefCell::new(String::new()),
         page: Cell::new(0),
@@ -897,6 +959,14 @@ fn wire_nav(w: &Rc<W>) {
     w.work_btn.connect_clicked(move |_| provision(&w2));
     let w2 = w.clone();
     w.test_btn.connect_clicked(move |_| test_send(&w2));
+    let w2 = w.clone();
+    w.to.connect_activate(move |_| test_send(&w2));
+    let w2 = w.clone();
+    w.stop_btn.connect_clicked(move |_| {
+        w2.test_gen.set(w2.test_gen.get() + 1); // the answer, if it still comes, is ignored
+        end_sending(&w2);
+        w2.test_msg.set_text("Stopped waiting. If you click Allow on the Mac later, the message will still be sent.");
+    });
 }
 
 /// The sign-in message under the password (hidden when empty).
@@ -915,6 +985,12 @@ fn connect(w: &Rc<W>) {
     }
     set_acct(w, "");
     w.next.set_sensitive(false);
+    let name = w.found.borrow().iter().find(|f| f.host.eq_ignore_ascii_case(w.host.text().trim())).map(|f| f.name.clone()).unwrap_or_else(|| w.host.text().trim().to_string());
+    w.connecting_text.set_text(&format!("Connecting to {name}…"));
+    w.connecting.set_visible(true);
+    for f in [w.user.upcast_ref::<gtk::Widget>(), w.pass.upcast_ref::<gtk::Widget>(), w.drop_btn.upcast_ref::<gtk::Widget>()] {
+        f.set_sensitive(false);
+    }
     let (host, user, pass) = (w.host.text().trim().to_string(), w.user.text().trim().to_string(), w.pass.text().to_string());
     let dev_key = std::env::var_os("BF_SETUP_KEYLOGIN").map(|_| glib::user_data_dir().join("bubblefairy/id_ed25519"));
     let w2 = w.clone();
@@ -928,7 +1004,6 @@ fn connect(w: &Rc<W>) {
             Ok::<Link, String>(link)
         })
         .await;
-        w2.next.set_sensitive(true);
         match r {
             Ok(link) => {
                 *w2.online.borrow_mut() = Some(Arc::new(link));
@@ -941,7 +1016,14 @@ fn connect(w: &Rc<W>) {
                 w2.work_btn.set_visible(false);
                 provision_from(&w2, 1).await;
             }
-            Err(e) => set_acct(&w2, &e),
+            Err(e) => {
+                w2.connecting.set_visible(false);
+                for f in [w2.user.upcast_ref::<gtk::Widget>(), w2.pass.upcast_ref::<gtk::Widget>(), w2.drop_btn.upcast_ref::<gtk::Widget>()] {
+                    f.set_sensitive(true);
+                }
+                w2.next.set_sensitive(ready(&w2));
+                set_acct(&w2, &e);
+            }
         }
     });
 }
@@ -1067,26 +1149,66 @@ async fn provision_from(w: &Rc<W>, from: usize) {
     show_page(w, 2);
 }
 
+/// Plain words for what went wrong with the test message.
+fn explain(e: &str) -> String {
+    let low = e.to_lowercase();
+    if low.contains("took too long") {
+        "The Mac didn't answer. If a permission question is waiting on its screen, click Allow, then try again.".into()
+    } else if low.contains("1743") || low.contains("not authorized") || low.contains("not allowed") {
+        "The Mac didn't allow it. On the Mac, open System Settings → Privacy & Security → Automation, allow the app that runs imsg to control Messages, then try again.".into()
+    } else {
+        format!("It didn't go: {e}")
+    }
+}
+
+/// Back to a field that can be used (after a send ends, one way or another).
+fn end_sending(w: &Rc<W>) {
+    w.to.set_sensitive(true);
+    w.next.set_sensitive(true);
+    w.stop_btn.set_visible(false);
+    w.test_stack.set_visible_child_name("send");
+}
+
 fn test_send(w: &Rc<W>) {
+    if w.test_stack.visible_child_name().as_deref() != Some("send") {
+        return;
+    }
     let to = w.to.text().trim().to_string();
     let (Some(link), false) = (w.online.borrow().clone(), to.is_empty()) else {
         w.test_msg.set_text("Enter a phone number or email to send it to.");
         return;
     };
-    w.test_btn.set_sensitive(false);
+    let gen_ = w.test_gen.get() + 1;
+    w.test_gen.set(gen_);
+    // everything on the page waits while it is sent
+    w.to.set_sensitive(false);
     w.next.set_sensitive(false);
-    w.test_msg.set_text("Sending… watch your Mac: if it asks for permission to control Messages, click Allow.");
+    w.test_stack.set_visible_child_name("spin");
+    w.test_msg.set_text("Sending…");
+    // after a while: say what to look for, and offer a way out
+    let w2 = w.clone();
+    glib::timeout_add_local_once(Duration::from_secs(12), move || {
+        if w2.test_gen.get() == gen_ && w2.test_stack.visible_child_name().as_deref() == Some("spin") {
+            w2.test_msg.set_text("Waiting for the Mac. Look at its screen: macOS may be asking you to allow control of Messages. Click Allow.");
+            w2.stop_btn.set_visible(true);
+        }
+    });
     let (w2, imsg) = (w.clone(), w.imsg.borrow().clone());
     glib::spawn_future_local(async move {
         let r = rt(async move { link.test_send(&imsg, &to).await }).await;
-        w2.test_btn.set_sensitive(true);
-        w2.next.set_sensitive(true);
+        if w2.test_gen.get() != gen_ {
+            return; // stopped waiting
+        }
+        end_sending(&w2);
         match r {
             Ok(()) => {
-                w2.test_msg.set_text("Sent. It should arrive in a moment.");
+                w2.to.set_sensitive(false);
+                w2.test_stack.set_visible_child_name("done");
+                w2.test_msg.set_text("Sent. It's on its way.");
                 w2.next.set_label("Continue");
+                crate::sound::play(crate::sound::DEFAULT);
             }
-            Err(e) => w2.test_msg.set_text(&format!("It didn't go: {e}\nIf macOS asked for permission and you missed it, try again.")),
+            Err(e) => w2.test_msg.set_text(&explain(&e)),
         }
     });
 }

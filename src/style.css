@@ -593,3 +593,6 @@ popover.wiz-drop > contents button.flat:focus-visible { outline: 2px solid alpha
 /* keyboard focus, everywhere: a clear light-purple ring (the default outline vanishes against the panels) */
 button:focus-visible, checkbutton:focus-visible, switch:focus-visible, dropdown:focus-visible > button, scale:focus-visible, spinbutton:focus-visible { outline: 2px solid #b9a6ff; outline-offset: 2px; }
 row:focus-visible { outline: 2px solid #b9a6ff; outline-offset: -2px; }
+
+.wizard entry.with-action { padding-right: 44px; }
+.wiz-link { background: transparent; border: none; box-shadow: none; color: var(--ink-soft); text-decoration: underline; }
