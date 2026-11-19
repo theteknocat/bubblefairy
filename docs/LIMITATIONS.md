@@ -23,6 +23,16 @@ BubbleFairy never asks you to do that.
 - **Edit a sent message.**
 - **"Notify Anyway", and seeing a contact's Focus status** before you send.
 
+## What stays in Messages
+
+BubbleFairy is a front end for Messages on your Mac, not a replacement for it. Some things are managed there (or on
+your Apple devices), and BubbleFairy simply respects the result:
+
+- **Blocking numbers and filtering unknown senders.** Set these up in Messages on your Mac, iPhone or iPad.
+  Blocked senders' messages never reach BubbleFairy, because Messages drops them first. BubbleFairy has no
+  block list or spam filter of its own.
+- **Your account, iMessage and SMS forwarding settings.**
+
 ## Where BubbleFairy keeps its own state
 
 Some things Messages keeps can't be read from the Mac, or can't be changed from outside. BubbleFairy keeps its own
