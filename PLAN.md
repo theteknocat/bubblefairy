@@ -6,13 +6,13 @@ Status (2026-11-17): Phases 1, 1.1 and 1.2 are built and running from source aga
 
 - Viewer: video files play in it (copied from the Mac with progress, GStreamer player), YouTube links play in an embedded WebKitGTK view, full screen, prev/next across photos, videos and YouTube (a slide transition for pictures), autoplay only for the item you clicked.
 - Info panel: Photos, Videos (video files plus YouTube links), Files and Links tabs, constant width (4 photo columns), contact cards and maps.
-- Chat: a scroll anchored to the bottom, a jump-to-newest button, file, video, link and photo-stack cards, a responsive sidebar (avatars only when narrow).
+- Chat: a scroll anchored to the bottom, a jump-to-newest button, file, video, link and photo-stack cards, a responsive sidebar (when narrow: avatars with their names under them, in rounded rectangles like the pins).
 - New message: picking or typing a contact opens the existing conversation with that person (any of their addresses, found on the Mac even when older than the chats list's 100), and the sidebar glides to it.
 
 ### Not yet checked on a real run
 
 - Clicking a desktop notification opens its chat.
-- A real group chat with more than four people (the "+N" circle).
+- A group with more than four people has now been seen in the real app: header avatar, "+N" pill, people popover with the contact card swap.
 - The viewer's YouTube player and video playback inside the real Flatpak (WebKit's own sandbox warns it "is not usable" under `flatpak run`; audio needs the PulseAudio socket, which `scripts/dev.sh` now grants).
 
 ## Decisions
@@ -80,8 +80,13 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 ### Pinned conversations (built)
 
 - Our own per-instance list (Messages' pins can't be read from the Mac and don't sync between devices): `data/bubblefairy/pins`, one chat `identifier` per line in pin order. Pin and unpin from the right-click menu on a list row or a tile.
-- Pinned chats show as avatar tiles above the list (name under the avatar, unread dot, group avatars as in the list), three per line. In the avatars-only sidebar they become a column of circles spaced like the list rows. A pinned chat's list row stays in the list, hidden, so row indexes keep matching the chat list.
-- Dropped on purpose: hover pin button (tried; GTK's negative margins and sibling draw order made it fiddly), drag to reorder (tiles stay in pin order).
+- Pinned chats show as avatar tiles above the list (name under the avatar, unread dot, group avatars as in the list), three per line; people show their first name only. In the narrow sidebar they become a column of the same rounded rectangles as the list rows, with the same side margins. Drag a tile to reorder: the others slide aside and the order is saved (`src/tilegrid.rs`). Pins and mutes match any of a merged conversation's chats. A pinned chat's list row stays in the list, hidden, so row indexes keep matching the chat list.
+- Dropped on purpose: hover pin button (tried; GTK's negative margins and sibling draw order made it fiddly). Drag to reorder was dropped at first and built later (2026-11-18).
+
+### Group chats (built 2026-11-18)
+
+- A group without a name is titled by first names, known contacts first (ranked by how recently you wrote to each person one to one), numbers and emails last: "Jo & Kari", "Jo, Rob & Drayven". Over four people the header reads "Name1, Name2, Name3 & N others" (or "Chat with N People") with the shared group avatar and a purple "+N" pill; clicking it opens a list of the people, and a person opens their contact card with a back button. One-person chats keep the full name in the list and header (first name only under a pin).
+- The header's second line is only the service ("Text Message · RCS", "iMessage"). Date headings: weekday for this year, `MMM d, YYYY` before.
 
 ### Times (built)
 
@@ -117,7 +122,7 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 
 ### Polish (later)
 
-- Done 2026-11-18: header title/subtitle and all contact card text are selectable; contact cards have a copy button on each number and email. Still not selectable: info panel tiles and sidebar rows (clicking them does something else).
+- Done 2026-11-18: header title/subtitle and all contact card text are selectable; contact cards have a copy button on each number and email. Still not selectable: info panel tiles and sidebar rows (clicking them does something else). Selectable labels show no caret or focus ring after a click (CSS).
 - Files: saving to a chosen place is covered by "Save attachments" under Candidate features.
 - The control-layout question for the viewer is settled: photos and video files use the shared control bar and fading buttons; YouTube keeps its own player controls with our buttons in a strip above it that shrinks away when they hide.
 

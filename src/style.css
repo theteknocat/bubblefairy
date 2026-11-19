@@ -503,3 +503,7 @@ button.save-btn.done:disabled { opacity: 1; }
 .sidebar.collapsed .row-slot { opacity: 0; }
 
 .sidebar.collapsed row.chat-row { margin: 4px; padding: 8px 4px; } /* names get the room: the avatar stays at the same x as when wide */
+
+/* selectable text: a click must not leave a caret or a focus ring behind (selecting still works) */
+label { caret-color: transparent; }
+label:focus, label:focus-visible { outline: none; }
