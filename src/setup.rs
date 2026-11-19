@@ -1208,7 +1208,7 @@ fn test_send(w: &Rc<W>) {
             Ok(()) => {
                 w2.to.set_sensitive(false);
                 w2.test_stack.set_visible_child_name("done");
-                w2.test_msg.set_text("Sent. It's on its way.");
+                w2.test_msg.set_text(&format!("Sent. Messages on your Mac sent it to {}. It should show up there in a moment.", w2.to.text().trim()));
                 w2.next.set_label("Continue");
                 crate::sound::play(crate::sound::DEFAULT);
             }
