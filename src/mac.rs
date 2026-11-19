@@ -673,19 +673,33 @@ async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
     if ids.is_empty() {
         return;
     }
-    let sql = format!("select ROWID||'|'||service||'|'||error from message where ROWID in ({})", ids.join(","));
+    // fields: service, error, sent by voice through Siri (in the message's summary data, for sent and received),
+    // item type (not 0: a group event), group action, who did it, whom it is about, the group's new name (hex)
+    let sql = format!(
+        "select m.ROWID||'|'||coalesce(m.service,'')||'|'||coalesce(m.error,0)||'|'||coalesce(instr(m.message_summary_info, cast('com.apple.siri' as blob))>0,0)\
+         ||'|'||coalesce(m.item_type,0)||'|'||coalesce(m.group_action_type,0)||'|'||coalesce((select id from handle where ROWID=m.handle_id),'')\
+         ||'|'||coalesce((select id from handle where ROWID=m.other_handle),'')||'|'||hex(coalesce(m.group_title,'')) from message m where m.ROWID in ({})",
+        ids.join(",")
+    );
     let Some(out) = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await else { return };
-    let map: HashMap<i64, (String, i64)> = String::from_utf8_lossy(&out)
-        .lines()
-        .filter_map(|l| {
-            let mut f = l.splitn(3, '|');
-            Some((f.next()?.parse().ok()?, (f.next()?.to_string(), f.next().and_then(|e| e.parse().ok()).unwrap_or(0))))
-        })
-        .collect();
+    let text = String::from_utf8_lossy(&out);
+    let map: HashMap<i64, Vec<&str>> = text.lines().filter_map(|l| {
+        let f: Vec<&str> = l.splitn(9, '|').collect();
+        Some((f.first()?.parse().ok()?, f)).filter(|(_, f)| f.len() == 9)
+    }).collect();
     for m in msgs {
-        if let Some((svc, err)) = m["id"].as_i64().and_then(|i| map.get(&i)) {
-            m["service"] = Value::String(svc.clone());
-            m["error"] = Value::from(*err); // non-zero: Messages shows "Not Delivered"
+        let Some(f) = m["id"].as_i64().and_then(|i| map.get(&i)) else { continue };
+        let num = |k: usize| f[k].parse::<i64>().unwrap_or(0);
+        m["item_type"] = Value::from(num(4)); // not 0: a group event (someone joined, left, renamed), not a message
+        if !f[1].is_empty() {
+            m["service"] = Value::from(f[1]); // (group events have none)
+        }
+        m["error"] = Value::from(num(2)); // non-zero: Messages shows "Not Delivered"
+        if f[3] == "1" {
+            m["siri"] = Value::Bool(true);
+        }
+        if num(4) != 0 {
+            m["event"] = json!({"action": num(5), "who": f[6], "whom": f[7], "title": hex_text(f[8])});
         }
     }
 }
@@ -1421,6 +1435,29 @@ async fn fix_unread(session: &client::Handle<Handler>, chats: &mut [Value]) {
     }
 }
 
+/// imsg dates a chat by its newest row, but Messages leaves group events (someone joined or left, the RCS group
+/// re-created on one day for dozens of chats) out of it. Date group chats by their newest real message and order
+/// the list again.
+async fn fix_last_message(session: &client::Handle<Handler>, chats: &mut [Value]) {
+    let ids: Vec<String> = chats.iter().filter(|c| c["is_group"].as_bool() == Some(true)).filter_map(|c| c["id"].as_i64()).map(|i| i.to_string()).collect();
+    if ids.is_empty() {
+        return;
+    }
+    let sql = format!(
+        "select j.chat_id||'|'||strftime('%Y-%m-%dT%H:%M:%fZ', max(m.date)/1000000000+978307200, 'unixepoch') from chat_message_join j \
+         join message m on m.ROWID=j.message_id where j.chat_id in ({}) and m.item_type=0 group by j.chat_id",
+        ids.join(",")
+    );
+    let Some(out) = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await else { return };
+    for (id, when) in String::from_utf8_lossy(&out).lines().filter_map(|l| l.split_once('|')) {
+        let Ok(id) = id.parse::<i64>() else { continue };
+        if let Some(c) = chats.iter_mut().find(|c| c["id"].as_i64() == Some(id)) {
+            c["last_message_at"] = Value::from(when);
+        }
+    }
+    chats.sort_by(|a, b| b["last_message_at"].as_str().cmp(&a["last_message_at"].as_str()));
+}
+
 /// Longest side of the copy shown in the chat, and of the one fetched for the viewer.
 pub const CHAT_PX: u32 = 900; // a 300 pt photo at 250% needs 750; smaller files decode and upload faster
 pub const FULL_PX: u32 = 4096;
@@ -1432,6 +1469,7 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
         Cmd::Chats(n) => match cli(&session, &rpc, &format!("chats --limit {n}")).await {
             Some(mut chats) => {
                 fix_unread(&session, &mut chats).await;
+                fix_last_message(&session, &mut chats).await;
                 let _ = ev.send(Event::Chats(chats));
             }
             None => {

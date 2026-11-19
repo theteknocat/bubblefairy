@@ -1536,7 +1536,8 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             learn_names(u, &msgs);
             let is_sel = {
                 let mut st = u.st.borrow_mut();
-                if let Some(last) = msgs.last() {
+                // (a group event isn't a message: the list's preview and date are those of the last real one)
+                if let Some(last) = msgs.iter().rev().find(|m| m["item_type"].as_i64().unwrap_or(0) == 0) {
                     st.preview.insert(id, last.clone());
                 }
                 // a chat open on a search hit shows a window of its history, not its newest messages
@@ -1978,7 +1979,7 @@ fn on_message(u: &Rc<Ui>, m: Value) {
                 None => {}
             }
         }
-        if !mutation {
+        if !mutation && m["item_type"].as_i64().unwrap_or(0) == 0 {
             st.preview.insert(cid, m.clone());
         }
         (st.sel == Some(cid), st.chats.iter().any(|c| c["id"].as_i64() == Some(cid)))
@@ -3930,6 +3931,11 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     if m["is_reaction"].as_bool() == Some(true) {
         return out;
     }
+    // a group event (joined, left, renamed) is a line of its own, not a message; one we can't word is left out
+    let event = group_event(m, names);
+    if m["item_type"].as_i64().unwrap_or(0) != 0 && event.is_none() && clean_text(m).is_empty() && m["attachments"].as_array().is_none_or(|a| a.is_empty()) {
+        return out;
+    }
     let who = |m: &Value| (m["is_from_me"].as_bool() == Some(true), m["sender"].as_str().unwrap_or("").to_string());
     let me = m["is_from_me"].as_bool() == Some(true);
     let gap = |a: usize, b: usize| match (times[a], times[b]) {
@@ -3959,6 +3965,15 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         l.set_justify(gtk::Justification::Center);
         l.add_css_class("time-sep");
         out.push(l.upcast());
+    }
+    if let Some(text) = event {
+        let l = gtk::Label::new(Some(&text));
+        l.add_css_class("group-event");
+        l.set_justify(gtk::Justification::Center);
+        l.set_wrap(true);
+        l.set_halign(gtk::Align::Center);
+        out.push(l.upcast());
+        return out;
     }
     // a "run" = same sender, close together: shares one name label and one avatar
     let run_prev = !sep && i > 0 && who(&msgs[i - 1]) == who(m) && gap(i - 1, i) < 300;
@@ -4115,6 +4130,15 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
             l.add_controller(click);
             out.push(l.upcast());
         }
+    }
+    // a received message the sender dictated through Siri says so, small, under the message (Messages shows it
+    // only on received ones)
+    if !me && m["siri"].as_bool() == Some(true) {
+        let l = gtk::Label::new(Some("Sent with Siri"));
+        l.add_css_class("receipt");
+        l.set_halign(gtk::Align::Start);
+        l.set_margin_start(if group { 62 } else { 14 });
+        out.push(l.upcast());
     }
     // under a message that failed (any of mine), or my newest one: not delivered / delivered / read
     let failed = failed_msg && !resending; // (while it is sent again: no "Not delivered" and no "!")
@@ -6579,6 +6603,39 @@ fn clip_words(s: &str, max: usize) -> String {
     let cut: String = s.chars().take(max).collect();
     let cut = cut.rsplit_once(char::is_whitespace).map_or(cut.as_str(), |(a, _)| a);
     format!("{}…", cut.trim_end())
+}
+
+/// The line Messages shows for a group event, like "Jo Harris left the conversation." (None for kinds we don't word).
+fn group_event(m: &Value, names: &HashMap<String, String>) -> Option<String> {
+    let item = m["item_type"].as_i64().filter(|i| *i != 0)?;
+    let e = &m["event"];
+    let name = |h: &str| names.get(h).cloned().unwrap_or_else(|| pretty_handle(h));
+    let me = m["is_from_me"].as_bool() == Some(true);
+    let who = e["who"].as_str().filter(|s| !s.is_empty()).map(name);
+    let whom = e["whom"].as_str().filter(|s| !s.is_empty()).map(name);
+    let actor = if me { Some("You".to_string()) } else { who.clone() };
+    match (item, e["action"].as_i64().unwrap_or(0)) {
+        (3, _) => Some(format!("{} left the conversation.", if me { "You".to_string() } else { who.or(whom)? })),
+        (1, 1) => match (actor, whom) {
+            (Some(a), Some(w)) if a != w => Some(format!("{a} removed {w} from the conversation.")),
+            (_, Some(w)) => Some(format!("{w} left the conversation.")),
+            (Some(a), None) => Some(format!("{a} left the conversation.")),
+            _ => None,
+        },
+        (1, 0) => match (actor, whom) {
+            (Some(a), Some(w)) => Some(format!("{a} added {w} to the conversation.")),
+            (None, Some(w)) => Some(format!("{w} joined the conversation.")),
+            _ => None,
+        },
+        (2, _) => {
+            let a = actor.unwrap_or_else(|| "Someone".to_string());
+            match e["title"].as_str().filter(|t| !t.is_empty()) {
+                Some(t) => Some(format!("{a} named the conversation \u{201c}{t}\u{201d}.")),
+                None => Some(format!("{a} removed the conversation name.")),
+            }
+        }
+        _ => None,
+    }
 }
 
 fn clean_text(m: &Value) -> String {

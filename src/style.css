@@ -490,3 +490,6 @@ button.save-btn.done:disabled { opacity: 1; }
 .reply-text { color: var(--ink-soft); font-size: 0.86em; }
 .thread-bar { background-color: var(--ink-soft); min-width: 3px; min-height: 16px; border-radius: 2px; margin: 0 18px; }
 .reply-count { color: #3b82f6; font-size: 0.85em; margin: 5px 14px 4px 14px; }
+
+/* a group event: "Jo Harris left the conversation." */
+.group-event { color: var(--ink-soft); font-size: 0.82em; margin: 8px 24px 6px 24px; }
