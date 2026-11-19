@@ -515,7 +515,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     p5.append(&label("This sends a short message through Messages on your Mac, so you know it works. Have your Mac in view: the first time, macOS asks whether to allow control of Messages. Click Allow. You can send it to yourself: use your own phone number or Apple ID email.", "dim"));
     let to = gtk::Entry::builder().placeholder_text("your phone number or email").css_classes(["wiz-field", "with-action"]).build();
     // the send button sits inside the right end of the field; it becomes a spinner while sending, then a check
-    let test_btn = gtk::Button::from_icon_name("go-up-symbolic");
+    let test_btn = gtk::Button::from_icon_name("bf-send-symbolic");
     test_btn.add_css_class("wiz-drop-btn");
     test_btn.set_tooltip_text(Some("Send test message"));
     let test_stack = gtk::Stack::new();
@@ -525,13 +525,17 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     test_stack.add_named(&test_btn, Some("send"));
     let sending = gtk::Spinner::new();
     sending.start();
-    sending.set_margin_end(10);
+    sending.set_margin_end(6);
+    sending.set_halign(gtk::Align::Center);
+    sending.set_valign(gtk::Align::Center);
     test_stack.add_named(&sending, Some("spin"));
     let sent = gtk::Image::from_icon_name("object-select-symbolic");
     sent.set_pixel_size(10);
     sent.add_css_class("wiz-badge");
     sent.add_css_class("good");
-    sent.set_margin_end(10);
+    sent.set_margin_end(6);
+    sent.set_halign(gtk::Align::Center);
+    sent.set_valign(gtk::Align::Center); // else it stretches to the button's width and is no longer a circle
     test_stack.add_named(&sent, Some("done"));
     let to_field = gtk::Overlay::new();
     to_field.set_child(Some(&to));
