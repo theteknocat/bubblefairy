@@ -45,6 +45,12 @@ copy on this computer, so it **doesn't sync** with your Apple devices:
   Messages are not muted here (Messages stores that list in a form BubbleFairy can't match to chats), and the other
   way round.
 
+## Chats
+
+- **A person's chats are merged, group chats are not.** Messages shows everything with one contact as one conversation,
+  and so does BubbleFairy. Two group chats with the same people stay separate, and a person who isn't in your
+  contacts (a number or email with no card) can't be matched, so their chats stay separate.
+
 ## Files and pictures
 
 - **Anything that isn't on the Mac can't be shown.** If a photo or file hasn't been downloaded by Messages on the
