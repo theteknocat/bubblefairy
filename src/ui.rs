@@ -272,6 +272,8 @@ pub struct Ui {
     banner_offline: Cell<bool>,
     /// has this run connected to the Mac at least once (tells a lost connection from one that never came up)
     ever_connected: Cell<bool>,
+    /// failed connection attempts in a row
+    fails: Cell<u32>,
     chats_queued: Cell<bool>,
     title_queued: Cell<bool>,
     /// open chat is a group (them-side rows carry an avatar column)
@@ -844,6 +846,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         sel_gen: Cell::new(0),
         banner_offline: Cell::new(false),
         ever_connected: Cell::new(false),
+        fails: Cell::new(0),
         chats_queued: Cell::new(false),
         title_queued: Cell::new(false),
         group: Cell::new(false),
@@ -1430,9 +1433,7 @@ fn start_setup(u: &Rc<Ui>, over_main: bool) {
         }
         crate::save_config(&u2.store.config_file, &cfg);
         u2.st.borrow_mut().cfg = cfg.clone();
-        // the connection is about to start: orange, and no banner left over from before the setup
-        set_status(&u2, "connecting", "Connecting", None);
-        u2.banner.set_reveal_child(false);
+        set_status(&u2, "connecting", "Connecting", None); // (the banner is only ever shown for a failure, never cleared here)
         u2.send(Cmd::Configure(cfg));
     });
     let u3 = u.clone();
@@ -1478,6 +1479,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             }
             u.st.borrow_mut().connected = true;
             u.ever_connected.set(true);
+            u.fails.set(0);
             set_status(u, "online", "Connected", None);
             if u.banner_offline.get() {
                 u.banner.set_reveal_child(false);
@@ -1493,6 +1495,14 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             // not set up yet: nothing has failed, so no alarm (the setup wizard is on its way, or Settings)
             if u.st.borrow().cfg.host.is_empty() {
                 set_status(u, "offline", "Not set up", Some("Set up your Mac from Settings."));
+                return;
+            }
+            // a first failed try is only a try: the pill stays orange and the app tries again by itself. Only a second one
+            // in a row is a problem worth the person's attention.
+            let fails = u.fails.get() + 1;
+            u.fails.set(fails);
+            if fails < 2 {
+                set_status(u, "connecting", if u.ever_connected.get() { "Reconnecting" } else { "Connecting" }, Some(&why));
                 return;
             }
             set_status(u, "offline", "Offline", Some(&why));
