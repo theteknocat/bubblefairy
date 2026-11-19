@@ -1,9 +1,11 @@
 # BubbleFairy
 
-**Your iMessages on your Linux desktop, ferried over from your Mac.** BubbleFairy is a native Linux app (Rust, GTK4) that lets you read and send iMessage and SMS conversations from Linux. Your Mac does the actual messaging, and BubbleFairy connects to it securely over your local network.
+**Your iMessages on your Linux desktop, ferried over from your Mac.** BubbleFairy is a native Linux app that brings Messages to your desktop: your conversations with photos, videos, links and files, live notifications with sound, and search across everything, in a fast, good-looking window.
+
+It's a front end for Messages on your Mac, which still does the actual messaging (BubbleFairy connects to it securely over your local network). Things you manage in Messages, like blocking numbers and filtering unknown senders, stay there, and a few features Apple keeps locked down, such as sending tapback reactions or typing indicators, aren't possible. See the [known limitations](docs/LIMITATIONS.md) for the full list.
 
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-teknocat-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/teknocat)
-&nbsp;If BubbleFairy is useful to you, you can [buy me a coffee](https://buymeacoffee.com/teknocat).
+If BubbleFairy is useful to you, you can [buy me a coffee](https://buymeacoffee.com/teknocat).
 
 > **Status: early development.** There is nothing to install yet.
 
