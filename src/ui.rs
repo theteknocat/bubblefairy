@@ -6636,6 +6636,9 @@ fn chat_title(c: &Value, names: &HashMap<String, String>) -> String {
     // a group without a name: its people by first name, "Jo & Kari", "Jo, Rob & Drayven" (numbers stay whole)
     // (people with a contact name first, then numbers and emails, each in the order they come)
     let handles: Vec<&str> = c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).collect();
+    if let [one] = handles.as_slice() && let Some(n) = names.get(*one) {
+        return n.clone(); // one person: the full name
+    }
     let mut people: Vec<String> = handles.iter().filter_map(|p| names.get(*p).map(|n| first_name(n))).collect();
     people.extend(handles.iter().filter(|p| !names.contains_key(**p)).map(|p| pretty_handle(p)));
     match people.as_slice() {
