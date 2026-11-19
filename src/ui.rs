@@ -2068,7 +2068,7 @@ fn notify(u: &Ui, cid: i64, m: &Value) {
     {
         // a muted chat makes no sound and shows nothing
         let st = u.st.borrow();
-        if st.chats.iter().find(|c| c["id"].as_i64() == Some(cid)).is_some_and(|c| st.muted.contains(&pin_key(c))) {
+        if st.chats.iter().find(|c| c["id"].as_i64() == Some(cid)).is_some_and(|c| is_muted(&st.muted, c)) {
             return;
         }
     }
@@ -2913,15 +2913,14 @@ fn merged_chats(raw: &[Value], contacts: Option<&crate::mac::Contacts>) -> (Vec<
     for (slot, ms) in members.iter().enumerate().filter(|(_, m)| m.len() > 1) {
         let ids: Vec<i64> = ms.iter().filter_map(|&i| raw[i]["id"].as_i64()).collect();
         let Some(&canon) = ids.iter().min() else { continue };
-        let oldest = ms.iter().map(|&i| &raw[i]).find(|c| c["id"].as_i64() == Some(canon));
         let unread: i64 = ms.iter().map(|&i| raw[i]["unread_count"].as_i64().unwrap_or(0)).sum();
         let c = &mut out[slot];
         c["id"] = Value::from(canon);
         c["unread_count"] = Value::from(unread);
         c["merged"] = Value::from(ids.clone());
-        if let Some(o) = oldest {
-            c["pin_key"] = Value::from(pin_key(o));
-        }
+        // pins and mutes are kept by chat identifier; any of the chats' identifiers counts (which of them are loaded
+        // changes as older chats load, so none can stand for the whole)
+        c["merged_keys"] = Value::from(ms.iter().map(|&i| pin_key(&raw[i])).collect::<Vec<_>>());
         groups.push((canon, ids));
     }
     (out, groups)
@@ -2946,35 +2945,12 @@ fn set_chats(st: &mut State, raw: Vec<Value>) -> Vec<(i64, Vec<i64>)> {
     groups
 }
 
-/// In a list of chat keys, `from` becomes `to` (or just goes, when `to` is there already). True when it changed.
-fn move_key(list: &mut Vec<String>, from: &str, to: &str) -> bool {
-    let Some(at) = list.iter().position(|p| p == from) else { return false };
-    if list.iter().any(|p| p == to) {
-        list.remove(at);
-    } else {
-        list[at] = to.to_string();
-    }
-    true
-}
-
-/// A new merge: pins and mutes of the chats that were merged go to the merged one, the backend is told, and what
-/// was loaded for a conversation whose chats changed is read again.
+/// A new merge: the backend is told, and what was loaded for a conversation whose chats changed is read again.
 fn after_merge(u: &Rc<Ui>, groups: Vec<(i64, Vec<i64>)>) {
-    let (changed, pins_changed, muted_changed) = {
+    let changed = {
         let mut st = u.st.borrow_mut();
         if st.merge_sig == groups {
             return;
-        }
-        let ident = |st: &State, id: i64| st.raw_chats.iter().find(|c| c["id"].as_i64() == Some(id)).map(pin_key);
-        let (mut pins_changed, mut muted_changed) = (false, false);
-        for (canon, ids) in &groups {
-            let Some(key) = ident(&st, *canon) else { continue };
-            for id in ids.iter().filter(|i| *i != canon) {
-                let Some(other) = ident(&st, *id) else { continue };
-                let st = &mut *st;
-                pins_changed |= move_key(&mut st.pins, &other, &key);
-                muted_changed |= move_key(&mut st.muted, &other, &key);
-            }
         }
         let old = std::mem::replace(&mut st.merge_sig, groups.clone());
         let changed: Vec<i64> = groups.iter().filter(|g| !old.contains(g)).map(|g| g.0).collect();
@@ -2983,17 +2959,8 @@ fn after_merge(u: &Rc<Ui>, groups: Vec<(i64, Vec<i64>)>) {
             st.preview.remove(c);
             st.preview_asked.remove(c);
         }
-        (changed, pins_changed, muted_changed)
+        changed
     };
-    let write = |file: &PathBuf, list: &[String]| {
-        let _ = std::fs::write(file, list.iter().map(|p| format!("{p}\n")).collect::<String>());
-    };
-    if pins_changed {
-        write(&u.store.pins_file, &u.st.borrow().pins);
-    }
-    if muted_changed {
-        write(&u.store.muted_file, &u.st.borrow().muted);
-    }
     u.send(Cmd::Merge(groups));
     for c in &changed {
         u.send(Cmd::Preview(*c));
@@ -3250,10 +3217,10 @@ fn update_row(u: &Rc<Ui>, id: i64) {
     let parts = u.row_parts.borrow().get(&id).cloned();
     let info = {
         let st = u.st.borrow();
-        st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).map(|c| (row_info(&st, c), pin_key(c)))
+        st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).map(|c| (row_info(&st, c), pin_pos(&st.pins, c).is_some()))
     };
-    let (Some(parts), Some(((_, text, when, unread), key))) = (parts, info) else { return render_chats_soon(u) };
-    if u.st.borrow().pins.contains(&key) {
+    let (Some(parts), Some(((_, text, when, unread), pinned))) = (parts, info) else { return render_chats_soon(u) };
+    if pinned {
         return render_chats_soon(u); // its tile shows the unread dot
     }
     parts.prev.set_text(&text);
@@ -3308,7 +3275,7 @@ fn rebuild_tiles(u: &Rc<Ui>) {
         let st = u.st.borrow();
         let mut v = Vec::new();
         for c in &st.chats {
-            if let Some(i) = st.pins.iter().position(|p| *p == pin_key(c)) {
+            if let Some(i) = pin_pos(&st.pins, c) {
                 let (title, _, _, unread) = row_info(&st, c);
                 v.push((i, c["id"].as_i64().unwrap_or(0), title, unread, c.clone()));
             }
@@ -3354,8 +3321,8 @@ fn render_chats(u: &Rc<Ui>) {
     let (pins, muted) = { let st = u.st.borrow(); (st.pins.clone(), st.muted.clone()) };
     let mut pinned: Vec<(usize, i64, String, bool, Value)> = Vec::new();
     for (title, preview, when, unread, id, chat) in rows {
-        let key = pin_key(&chat);
-        let pin_at = pins.iter().position(|p| *p == key);
+        let keys = keys_of(&chat);
+        let pin_at = pin_pos(&pins, &chat);
         let name = gtk::Label::new(Some(&title));
         name.add_css_class("chat-name");
         name.set_xalign(0.0);
@@ -3366,7 +3333,7 @@ fn render_chats(u: &Rc<Ui>) {
         let time_unix = track_time(u, &time, when, TimeKind::Row, None);
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         top.append(&name);
-        let is_muted = muted.contains(&key);
+        let is_muted = is_muted(&muted, &chat);
         if is_muted {
             let m = gtk::Label::new(Some("🔕"));
             m.add_css_class("chat-time");
@@ -3416,7 +3383,7 @@ fn render_chats(u: &Rc<Ui>) {
             row.add_css_class("unread");
         }
         row.set_child(Some(&row_box));
-        pin_menu(u, row.upcast_ref(), &key, pin_at.is_some(), is_muted);
+        pin_menu(u, row.upcast_ref(), &keys, pin_at.is_some(), is_muted);
         if let Some(i) = pin_at {
             // hidden, not left out: row indexes must keep matching `State.chats`
             row.set_visible(!u.search.text().trim().is_empty());
@@ -3474,7 +3441,7 @@ fn apply_search(u: &Rc<Ui>) {
     // pinned chats are in the list only as hidden rows: while searching they show there, and their tiles give way
     let pinned: Vec<bool> = {
         let st = u.st.borrow();
-        st.chats.iter().map(|c| st.pins.contains(&pin_key(c))).collect()
+        st.chats.iter().map(|c| pin_pos(&st.pins, c).is_some()).collect()
     };
     for (i, p) in pinned.into_iter().enumerate() {
         if p && let Some(row) = u.chat_list.row_at_index(i as i32) {
@@ -3753,19 +3720,33 @@ fn load_more_chats(u: &Rc<Ui>) {
 
 /// A chat's stable identity for pinning (its row id changes between runs of the Mac's database).
 fn pin_key(c: &Value) -> String {
-    if let Some(k) = c["pin_key"].as_str() {
-        return k.to_string(); // a merged conversation: the key of its oldest chat, which doesn't change
-    }
     c["identifier"].as_str().or(c["guid"].as_str()).map(String::from).unwrap_or_else(|| {
         c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).collect::<Vec<_>>().join(",")
     })
 }
 
+/// The keys a chat can be pinned or muted under: its own, or one for each chat behind a merged conversation.
+fn keys_of(c: &Value) -> Vec<String> {
+    match c["merged_keys"].as_array() {
+        Some(a) => a.iter().filter_map(|k| k.as_str().map(String::from)).collect(),
+        None => vec![pin_key(c)],
+    }
+}
+
+/// Where this chat is in the pin order (None: not pinned).
+fn pin_pos(pins: &[String], c: &Value) -> Option<usize> {
+    keys_of(c).iter().filter_map(|k| pins.iter().position(|p| p == k)).min()
+}
+
+fn is_muted(muted: &[String], c: &Value) -> bool {
+    keys_of(c).iter().any(|k| muted.contains(k))
+}
+
 /// Right-click menu on a row or tile: Pin / Unpin.
-fn pin_menu(u: &Rc<Ui>, w: &gtk::Widget, key: &str, pinned: bool, muted: bool) {
+fn pin_menu(u: &Rc<Ui>, w: &gtk::Widget, keys: &[String], pinned: bool, muted: bool) {
     let g = gtk::GestureClick::new();
     g.set_button(3);
-    let (u, w2, key) = (u.clone(), w.clone(), key.to_string());
+    let (u, w2, key) = (u.clone(), w.clone(), keys.to_vec());
     g.connect_pressed(move |g, _, x, y| {
         g.set_state(gtk::EventSequenceState::Claimed);
         let b = gtk::Button::with_label(if pinned { "Unpin" } else { "Pin to top" });
@@ -3799,14 +3780,14 @@ fn pin_menu(u: &Rc<Ui>, w: &gtk::Widget, key: &str, pinned: bool, muted: bool) {
     w.add_controller(g);
 }
 
-fn toggle_mute(u: &Rc<Ui>, key: &str) {
+/// Mute or unmute a chat: `keys` are the identifiers it goes by (several for a merged conversation).
+fn toggle_mute(u: &Rc<Ui>, keys: &[String]) {
     {
         let mut st = u.st.borrow_mut();
-        match st.muted.iter().position(|p| p == key) {
-            Some(i) => {
-                st.muted.remove(i);
-            }
-            None => st.muted.push(key.to_string()),
+        if keys.iter().any(|k| st.muted.contains(k)) {
+            st.muted.retain(|p| !keys.contains(p));
+        } else if let Some(k) = keys.first() {
+            st.muted.push(k.clone());
         }
         let _ = std::fs::create_dir_all(u.store.muted_file.parent().unwrap());
         let _ = std::fs::write(&u.store.muted_file, st.muted.iter().map(|p| format!("{p}\n")).collect::<String>());
@@ -3814,14 +3795,14 @@ fn toggle_mute(u: &Rc<Ui>, key: &str) {
     render_chats(u);
 }
 
-fn toggle_pin(u: &Rc<Ui>, key: &str) {
+/// Pin or unpin a chat: `keys` are the identifiers it goes by (several for a merged conversation).
+fn toggle_pin(u: &Rc<Ui>, keys: &[String]) {
     {
         let mut st = u.st.borrow_mut();
-        match st.pins.iter().position(|p| p == key) {
-            Some(i) => {
-                st.pins.remove(i);
-            }
-            None => st.pins.push(key.to_string()),
+        if keys.iter().any(|k| st.pins.contains(k)) {
+            st.pins.retain(|p| !keys.contains(p));
+        } else if let Some(k) = keys.first() {
+            st.pins.push(k.clone());
         }
         let _ = std::fs::create_dir_all(u.store.pins_file.parent().unwrap());
         let _ = std::fs::write(&u.store.pins_file, st.pins.iter().map(|p| format!("{p}\n")).collect::<String>());
@@ -3859,7 +3840,7 @@ fn render_tiles(u: &Rc<Ui>, pinned: Vec<(usize, i64, String, bool, Value)>, sel:
         tile.set_tooltip_text(Some(&title));
         tile.append(&holder);
         tile.append(&name);
-        let key = pin_key(&chat);
+        let keys = keys_of(&chat);
         if sel == Some(id) {
             tile.add_css_class("selected");
         }
@@ -3870,12 +3851,9 @@ fn render_tiles(u: &Rc<Ui>, pinned: Vec<(usize, i64, String, bool, Value)>, sel:
             u2.compose.grab_focus();
         });
         tile.add_controller(g);
-        let tile_muted = u.st.borrow().muted.contains(&key);
-        pin_menu(u, tile.upcast_ref(), &key, true, tile_muted);
+        let tile_muted = is_muted(&u.st.borrow().muted, &chat);
+        pin_menu(u, tile.upcast_ref(), &keys, true, tile_muted);
         u.tiles.append(&tile);
-        if let Some(f) = tile.parent() {
-            f.set_focusable(false); // no focus box round a clicked tile
-        }
     }
 }
 
