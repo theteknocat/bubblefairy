@@ -556,3 +556,22 @@ label:focus, label:focus-visible { outline: none; }
 .wiz-dot { min-width: 8px; min-height: 8px; border-radius: 99px; background-color: alpha(currentColor, 0.18); transition: background-color 160ms ease, min-width 160ms ease; }
 .wiz-dot.on { background-color: #7b5cff; min-width: 20px; }
 .wizard .setup-fp { background-color: var(--field); }
+
+/* the Mac picker's list: it drops down from the field, as wide as the field */
+popover.wiz-drop > contents {
+  background-color: var(--panel-solid);
+  color: var(--ink);
+  border-radius: 16px;
+  border: 1px solid var(--panel-edge);
+  padding: 6px;
+  box-shadow: 0 10px 26px var(--shadow-strong);
+}
+popover.wiz-drop button.flat { border-radius: 12px; padding: 6px 10px; color: var(--ink); }
+popover.wiz-drop button.flat:hover { background-color: var(--sel-a); }
+
+/* the Mac field's verdict, inside its left end */
+.wizard entry.with-status { padding-left: 40px; }
+.wiz-badge { min-width: 22px; min-height: 22px; border-radius: 99px; color: #ffffff; padding: 0; }
+.wiz-badge.good { background-color: #34c759; box-shadow: 0 2px 6px alpha(#34c759, 0.5); }
+.wiz-badge.bad { background-color: #ff5a5f; box-shadow: 0 2px 6px alpha(#ff5a5f, 0.5); }
+.wiz-err { color: #ff6b6b; }

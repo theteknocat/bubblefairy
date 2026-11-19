@@ -383,20 +383,38 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     let host = gtk::Entry::builder().placeholder_text("my-mac.local").hexpand(true).css_classes(["wiz-field"]).build();
     host.set_icon_from_icon_name(gtk::EntryIconPosition::Secondary, Some("pan-down-symbolic"));
     host.set_icon_tooltip_text(gtk::EntryIconPosition::Secondary, Some("Macs found on the network"));
+    // the verdict sits inside the left end of the field (the arrow / clear button is at the right end): a computer
+    // before anything is entered, a spinner while it is checked, a green circle with a check, a red one with a cross
     let host_status = gtk::Stack::new();
-    host_status.add_named(&gtk::Box::new(gtk::Orientation::Horizontal, 0), Some("none"));
+    host_status.set_halign(gtk::Align::Start);
+    host_status.set_valign(gtk::Align::Center);
+    host_status.set_margin_start(13);
+    host_status.set_can_target(false);
+    let idle = gtk::Image::from_icon_name("computer-symbolic");
+    idle.add_css_class("dim");
+    host_status.add_named(&idle, Some("none"));
     let spin = gtk::Spinner::new();
     spin.start();
     host_status.add_named(&spin, Some("checking"));
-    let ok = label("✓", "step-ok");
-    host_status.add_named(&ok, Some("ok"));
-    let bad = label("✗", "step-bad");
-    host_status.add_named(&bad, Some("bad"));
-    let hrow = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    hrow.append(&host);
-    hrow.append(&host_status);
-    p1.append(&hrow);
-    let host_msg = label("", "dim");
+    let badge = |icon: &str, class: &str| {
+        let i = gtk::Image::from_icon_name(icon);
+        i.set_pixel_size(12);
+        i.add_css_class("wiz-badge");
+        i.add_css_class(class);
+        i
+    };
+    host_status.add_named(&badge("object-select-symbolic", "good"), Some("ok"));
+    host_status.add_named(&badge("window-close-symbolic", "bad"), Some("bad"));
+    host.add_css_class("with-status");
+    let field = gtk::Overlay::new();
+    field.set_child(Some(&host));
+    field.add_overlay(&host_status);
+    field.set_halign(gtk::Align::Center);
+    field.set_size_request(420, -1);
+    p1.append(&field);
+    let host_msg = label("", "wiz-err");
+    host_msg.set_halign(gtk::Align::Center);
+    host_msg.set_justify(gtk::Justification::Center);
     p1.append(&host_msg);
     let pick = gtk::ListBox::new();
     pick.set_selection_mode(gtk::SelectionMode::None);
@@ -405,15 +423,13 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     scan_row.append(&scan);
     scan_row.append(&label("Looking for Macs…", "dim"));
     let pick_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    pick_box.set_margin_top(6);
-    pick_box.set_margin_bottom(6);
-    pick_box.set_margin_start(6);
-    pick_box.set_margin_end(6);
     pick_box.append(&pick);
     pick_box.append(&scan_row);
-    let pick_pop = gtk::Popover::builder().child(&pick_box).autohide(true).build();
+    // a drop-down: as wide as the field, directly under it, no arrow
+    let pick_pop = gtk::Popover::builder().child(&pick_box).autohide(true).has_arrow(false).css_classes(["wiz-drop"]).build();
     pick_pop.set_parent(&host);
     pick_pop.set_position(gtk::PositionType::Bottom);
+    pick_pop.set_offset(0, 2);
 
     // 2: the account
     let p2 = page("Your Mac account");
@@ -620,7 +636,8 @@ fn lock_host(w: &Rc<W>, host: &str) {
     w.locked.set(true);
     w.host.set_icon_from_icon_name(gtk::EntryIconPosition::Secondary, Some("edit-clear-symbolic"));
     w.host.set_icon_tooltip_text(gtk::EntryIconPosition::Secondary, Some("Choose a different Mac"));
-    set_host_status(w, "ok", "Found on your network.");
+    set_host_status(w, "ok", "");
+    w.next.grab_focus(); // the next thing is the button; the field is locked, so no cursor in it
 }
 
 fn unlock_host(w: &Rc<W>) {
@@ -654,7 +671,7 @@ fn check_host(w: &Rc<W>) {
             return; // changed since
         }
         match r {
-            Ok(()) => set_host_status(&w2, "ok", "Found."),
+            Ok(()) => set_host_status(&w2, "ok", ""),
             Err(e) => set_host_status(&w2, "bad", &e),
         }
     });
@@ -670,6 +687,8 @@ fn add_found(w: &Rc<W>, f: Found) {
     let row = gtk::Button::new();
     row.add_css_class("flat");
     let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    b.set_hexpand(true);
+    row.set_hexpand(true);
     let n = gtk::Label::new(Some(&f.name));
     n.set_xalign(0.0);
     let h = gtk::Label::new(Some(&f.host));
@@ -712,6 +731,9 @@ fn wire_host(w: &Rc<W>) {
         if w2.locked.get() {
             unlock_host(&w2);
         } else {
+            if let Some(b) = w2.pick_pop.child() {
+                b.set_size_request(w2.host.width() - 16, -1); // the field's width less the popover's own padding and edge
+            }
             w2.pick_pop.popup();
         }
     });
