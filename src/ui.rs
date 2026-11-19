@@ -19,6 +19,8 @@ const SIDEBAR_MIN: i32 = 260; // paned positions and widths below include the pa
 const CHAT_MIN: i32 = 440;
 /// Chats asked for at first, and added each time the sidebar is scrolled to its end.
 const CHATS_PAGE: usize = 100;
+/// how many older messages one request brings (`Cmd::Older`)
+const HISTORY_OLDER: usize = 100;
 const COLLAPSED_W: i32 = 96;
 const NO_SLIDE: i32 = i32::MIN;
 const AVATAR: i32 = 44; // the chat list's avatar size // the sidebar showing avatars only (side margins included)
@@ -937,7 +939,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     if let Some(adj) = side_adjustment(&ui) {
         let u = ui.clone();
         adj.connect_value_changed(move |a| {
-            if a.upper() > a.page_size() && a.value() + a.page_size() >= a.upper() - 300.0 {
+            // halfway through the newest page of chats (about CHATS_PAGE rows) counts as near the end
+            let loaded = u.st.try_borrow().map_or(0, |st| st.chats.len()).max(1);
+            let page_h = a.upper() * (CHATS_PAGE as f64 / loaded as f64).min(1.0);
+            if a.upper() > a.page_size() && a.value() + a.page_size() >= a.upper() - (page_h / 2.0).max(300.0) {
                 load_more_chats(&u);
             }
         });
@@ -973,7 +978,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // scrolled near the top: fetch older messages (the view itself stays put, see chatscroll.rs)
     let u = ui.clone();
     ui.scroller.vadjustment().connect_value_changed(move |a| {
-        if a.value() < 400.0 && a.upper() > a.page_size() {
+        // like Messages: older messages come once the view is halfway through the newest page loaded above
+        let loaded = u.st.try_borrow().ok().and_then(|st| Some(st.hist.get(&st.sel?)?.len())).unwrap_or(0).max(1);
+        let page_h = a.upper() * (HISTORY_OLDER as f64 / loaded as f64).min(1.0);
+        if a.value() < (page_h / 2.0).max(400.0) && a.upper() > a.page_size() {
             load_older(&u);
         }
         if a.upper() - a.value() - a.page_size() < 400.0 && a.upper() > a.page_size() {
