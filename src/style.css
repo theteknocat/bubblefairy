@@ -571,7 +571,7 @@ popover.wiz-drop button.flat:hover { background-color: var(--sel-a); }
 
 /* the Mac field's verdict, inside its left end */
 .wizard entry.with-status { padding-left: 40px; }
-.wiz-badge { min-width: 22px; min-height: 22px; border-radius: 99px; color: #ffffff; padding: 0; }
-.wiz-badge.good { background-color: #34c759; box-shadow: 0 2px 6px alpha(#34c759, 0.5); }
-.wiz-badge.bad { background-color: #ff5a5f; box-shadow: 0 2px 6px alpha(#ff5a5f, 0.5); }
+.wiz-badge { min-width: 10px; min-height: 10px; padding: 3px; border-radius: 99px; color: #ffffff; } /* 16 px, like the computer icon it replaces */
+.wiz-badge.good { background-color: #1e7d3a; } /* the colours of a finished download's check */
+.wiz-badge.bad { background-color: #b3262e; }
 .wiz-err { color: #ff6b6b; }

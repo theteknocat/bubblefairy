@@ -310,6 +310,8 @@ struct W {
     pick: gtk::ListBox,
     pick_pop: gtk::Popover,
     scan: gtk::Spinner,
+    scan_row: gtk::Box,
+    scan_text: gtk::Label,
     found: RefCell<Vec<Found>>,
     locked: Cell<bool>,
     host_ok: Cell<bool>,
@@ -398,7 +400,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     host_status.add_named(&spin, Some("checking"));
     let badge = |icon: &str, class: &str| {
         let i = gtk::Image::from_icon_name(icon);
-        i.set_pixel_size(12);
+        i.set_pixel_size(10);
         i.add_css_class("wiz-badge");
         i.add_css_class(class);
         i
@@ -420,8 +422,9 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     pick.set_selection_mode(gtk::SelectionMode::None);
     let scan = gtk::Spinner::new();
     let scan_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let scan_text = label("Looking for Macs…", "dim");
     scan_row.append(&scan);
-    scan_row.append(&label("Looking for Macs…", "dim"));
+    scan_row.append(&scan_text);
     let pick_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     pick_box.append(&pick);
     pick_box.append(&scan_row);
@@ -530,6 +533,8 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         pick,
         pick_pop,
         scan,
+        scan_row,
+        scan_text,
         found: RefCell::new(Vec::new()),
         locked: Cell::new(false),
         host_ok: Cell::new(false),
@@ -704,6 +709,7 @@ fn add_found(w: &Rc<W>, f: Found) {
     });
     w.pick.append(&row);
     w.found.borrow_mut().push(f);
+    w.scan_row.set_visible(false); // "Looking for Macs…" is only for an empty list; more may still be added below
 }
 
 fn wire_host(w: &Rc<W>) {
@@ -721,6 +727,9 @@ fn wire_host(w: &Rc<W>) {
         }
         w2.scan.stop();
         w2.scan.set_visible(false);
+        if w2.found.borrow().is_empty() {
+            w2.scan_text.set_text("No Macs found. Type its name in the field.");
+        }
     });
     // the list opens from the arrow in the field
     let w2 = w.clone();
