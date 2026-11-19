@@ -157,12 +157,13 @@ impl Link {
     }
 
     /// macOS version, home folder, and the tools BubbleFairy needs.
-    async fn check_mac(&self) -> Result<String, String> {
-        let script = "sw_vers -productVersion; printf '%s\\n' \"$HOME\"; for t in sqlite3 qlmanage sips unzip; do command -v $t >/dev/null || echo \"MISSING $t\"; done";
+    async fn check_mac(&self) -> Result<(String, String), String> {
+        let script = "sw_vers -productVersion; printf '%s\\n' \"$HOME\"; scutil --get ComputerName 2>/dev/null || hostname; for t in sqlite3 qlmanage sips unzip; do command -v $t >/dev/null || echo \"MISSING $t\"; done";
         let (_, out) = self.run(script, None, Duration::from_secs(20)).await?;
         let mut lines = out.lines();
         let version = lines.next().unwrap_or("").to_string();
         let home = lines.next().unwrap_or("").to_string();
+        let name = lines.next().unwrap_or("").to_string();
         let missing: Vec<&str> = lines.filter_map(|l| l.strip_prefix("MISSING ")).collect();
         let major: u32 = version.split('.').next().and_then(|m| m.parse().ok()).unwrap_or(0);
         if major == 0 || home.is_empty() {
@@ -174,7 +175,7 @@ impl Link {
         if !missing.is_empty() {
             return Err(format!("this Mac is missing {}", missing.join(", ")));
         }
-        Ok(home)
+        Ok((home, format!("Connected to {name} · macOS {version}")))
     }
 
     /// Add `key` to the Mac's authorized keys (once), with the modes sshd insists on.
@@ -322,17 +323,16 @@ struct W {
     pass: gtk::PasswordEntry,
     acct_msg: gtk::Label,
     // page 3: the fingerprint
-    fp: gtk::Label,
     // page 4: the work
     steps: Vec<(gtk::Image, gtk::Spinner, gtk::Label)>,
     work_msg: gtk::Label,
+    work_info: gtk::Label,
     work_btn: gtk::Button,
     // page 5: the test message
     to: gtk::Entry,
     test_msg: gtk::Label,
     test_btn: gtk::Button,
     // connection state
-    link: RefCell<Option<Link>>,
     online: RefCell<Option<Arc<Link>>>,
     imsg: RefCell<String>,
     page: Cell<usize>,
@@ -341,7 +341,7 @@ struct W {
     dots: Vec<gtk::Box>,
 }
 
-const PAGES: [&str; 6] = ["mac", "account", "fingerprint", "work", "test", "done"];
+const PAGES: [&str; 5] = ["mac", "account", "work", "test", "done"];
 const STEPS: [&str; 6] = ["Signing in", "Checking the Mac", "Adding BubbleFairy's key", "Checking that the key works", "Installing imsg", "Checking that Messages can be read"];
 
 /// Open the wizard over `parent`.
@@ -452,15 +452,10 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     let acct_msg = label("", "step-bad");
     p2.append(&acct_msg);
 
-    // 3: the fingerprint
-    let p3 = page("Is this your Mac?");
-    p3.append(&label("The Mac identified itself with this fingerprint. BubbleFairy will only talk to a Mac that shows the same one from now on. If you set this up at home, on your own network, you can go on.", "dim"));
-    let fp = label("", "setup-fp");
-    fp.set_selectable(true);
-    p3.append(&fp);
-
-    // 4: the work
+    // 3: the work
     let p4 = page("Setting up");
+    let work_info = label("", "dim");
+    p4.append(&work_info);
     let mut steps = Vec::new();
     for t in STEPS {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -498,7 +493,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     p6.append(&label("BubbleFairy is connected to your Mac.", "dim"));
 
     let pages = gtk::Stack::new();
-    for (name, p) in PAGES.iter().zip([&p1, &p2, &p3, &p4, &p5, &p6]) {
+    for (name, p) in PAGES.iter().zip([&p1, &p2, &p4, &p5, &p6]) {
         pages.add_named(p, Some(name));
     }
     let back = gtk::Button::with_label("Back");
@@ -551,14 +546,13 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         user,
         pass,
         acct_msg,
-        fp,
         steps,
         work_msg,
+        work_info,
         work_btn,
         to,
         test_msg,
         test_btn,
-        link: RefCell::new(None),
         online: RefCell::new(None),
         imsg: RefCell::new(String::new()),
         page: Cell::new(0),
@@ -621,10 +615,10 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         w.pass.set_text("x");
         let w2 = w.clone();
         glib::timeout_add_local(Duration::from_millis(1500), move || {
-            if w2.page.get() <= 2 && w2.next.is_sensitive() {
+            if w2.page.get() <= 1 && w2.next.is_sensitive() {
                 w2.next.emit_clicked();
             }
-            if w2.page.get() >= 3 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+            if w2.page.get() >= 2 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
         });
     }
 }
@@ -635,17 +629,17 @@ fn show_page(w: &Rc<W>, i: usize) {
         if n == i { d.add_css_class("on") } else { d.remove_css_class("on") }
     }
     w.pages.set_visible_child_name(PAGES[i]);
-    w.back.set_visible(matches!(i, 1 | 2));
+    w.back.set_visible(i == 1);
     w.next.set_visible(true);
     w.next.set_label(match i {
-        2 => "Trust and continue",
-        4 => "Skip",
-        5 => "Finish",
+        1 => "Connect",
+        3 => "Skip",
+        4 => "Finish",
         _ => "Next",
     });
     w.next.set_sensitive(match i {
         0 => w.host_ok.get(),
-        3 => false,
+        2 => false,
         _ => true,
     });
 }
@@ -859,11 +853,7 @@ fn wire_host(w: &Rc<W>) {
 fn wire_nav(w: &Rc<W>) {
     let w2 = w.clone();
     w.back.connect_clicked(move |_| {
-        let i = w2.page.get();
-        if i == 2 {
-            *w2.link.borrow_mut() = None;
-        }
-        show_page(&w2, i.saturating_sub(1));
+        show_page(&w2, w2.page.get().saturating_sub(1));
     });
     let w2 = w.clone();
     w.next.connect_clicked(move |_| match w2.page.get() {
@@ -875,8 +865,7 @@ fn wire_nav(w: &Rc<W>) {
             }
         }
         1 => connect(&w2),
-        2 => sign_in(&w2),
-        4 => show_page(&w2, 5),
+        3 => show_page(&w2, 4),
         _ => finish(&w2),
     });
     let w2 = w.clone();
@@ -891,7 +880,9 @@ fn wire_nav(w: &Rc<W>) {
     w.test_btn.connect_clicked(move |_| test_send(&w2));
 }
 
-/// Page 2 → 3: connect, and show the Mac's fingerprint.
+/// Page 2 → 3: connect and sign in (a wrong password stays here, with the message), then set everything up.
+/// The Mac's host key is pinned as first seen, like `ssh` does on a first connection: the person picked this Mac by
+/// name on their own network, and "fingerprints" mean nothing to most people.
 fn connect(w: &Rc<W>) {
     if w.user.text().trim().is_empty() || w.pass.text().is_empty() {
         w.acct_msg.set_text("Enter the Mac's user name and password.");
@@ -899,53 +890,33 @@ fn connect(w: &Rc<W>) {
     }
     w.acct_msg.set_text("");
     w.next.set_sensitive(false);
-    let (w2, host) = (w.clone(), w.host.text().trim().to_string());
+    let (host, user, pass) = (w.host.text().trim().to_string(), w.user.text().trim().to_string(), w.pass.text().to_string());
+    let dev_key = std::env::var_os("BF_SETUP_KEYLOGIN").map(|_| glib::user_data_dir().join("bubblefairy/id_ed25519"));
+    let w2 = w.clone();
     glib::spawn_future_local(async move {
-        let r = rt(async move { open(&host).await }).await;
+        let r = rt(async move {
+            let mut link = open(&host).await?;
+            match dev_key {
+                Some(k) => link.login_key(&user, &k).await?,
+                None => link.login(&user, &pass).await?,
+            }
+            Ok::<Link, String>(link)
+        })
+        .await;
         w2.next.set_sensitive(true);
         match r {
             Ok(link) => {
-                w2.fp.set_text(&crate::mac::fingerprint(&link.host_key));
-                *w2.link.borrow_mut() = Some(link);
-                show_page(&w2, 2);
-            }
-            Err(e) => w2.acct_msg.set_text(&e),
-        }
-    });
-}
-
-/// Page 3 → 4: the fingerprint is accepted, sign in and set everything up.
-fn sign_in(w: &Rc<W>) {
-    let Some(mut link) = w.link.borrow_mut().take() else { return };
-    let (user, pass) = (w.user.text().trim().to_string(), w.pass.text().to_string());
-    show_page(w, 3);
-    for i in 0..STEPS.len() {
-        set_step(w, i, Step::Wait);
-    }
-    set_step(w, 0, Step::Run);
-    w.work_msg.set_text("");
-    w.work_btn.set_visible(false);
-    let w2 = w.clone();
-    glib::spawn_future_local(async move {
-        let dev_key = std::env::var_os("BF_SETUP_KEYLOGIN").map(|_| glib::user_data_dir().join("bubblefairy/id_ed25519"));
-        let r = rt(async move {
-            let r = match dev_key {
-                Some(k) => link.login_key(&user, &k).await,
-                None => link.login(&user, &pass).await,
-            };
-            (link, r)
-        })
-        .await;
-        match r {
-            (link, Ok(())) => {
                 *w2.online.borrow_mut() = Some(Arc::new(link));
+                show_page(&w2, 2);
+                for i in 0..STEPS.len() {
+                    set_step(&w2, i, Step::Wait);
+                }
                 set_step(&w2, 0, Step::Ok);
+                w2.work_msg.set_text("");
+                w2.work_btn.set_visible(false);
                 provision_from(&w2, 1).await;
             }
-            (_, Err(e)) => {
-                set_step(&w2, 0, Step::Bad);
-                fail(&w2, &e, Some("Back to the password"));
-            }
+            Err(e) => w2.acct_msg.set_text(&e),
         }
     });
 }
@@ -1006,7 +977,10 @@ async fn provision_from(w: &Rc<W>, from: usize) {
         let r: Result<(), String> = match i {
             1 => {
                 let l = link.clone();
-                rt(async move { l.check_mac().await }).await.map(|h| home = h)
+                rt(async move { l.check_mac().await }).await.map(|(h, about)| {
+                    home = h;
+                    w.work_info.set_text(&about); // which Mac this is, in words the person knows
+                })
             }
             2 => {
                 let (l, key) = (link.clone(), w.ctx.public_key.clone());
@@ -1065,7 +1039,7 @@ async fn provision_from(w: &Rc<W>, from: usize) {
             return;
         }
     }
-    show_page(w, 4);
+    show_page(w, 3);
 }
 
 fn test_send(w: &Rc<W>) {
@@ -1094,9 +1068,8 @@ fn test_send(w: &Rc<W>) {
 
 fn finish(w: &Rc<W>) {
     let (host, user, imsg) = (w.host.text().trim().to_string(), w.user.text().trim().to_string(), w.imsg.borrow().clone());
-    let key = w.link.borrow().as_ref().map(|l| l.host_key.clone());
     let online = w.online.borrow().clone();
-    let host_key = online.as_ref().map(|l| l.host_key.clone()).or(key).unwrap_or_default();
+    let host_key = online.as_ref().map(|l| l.host_key.clone()).unwrap_or_default();
     if w.ctx.test {
         // dev profile: take the throwaway key off the Mac again and keep nothing
         if let Some(l) = online {
