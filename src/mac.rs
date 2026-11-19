@@ -1435,11 +1435,11 @@ async fn fix_unread(session: &client::Handle<Handler>, chats: &mut [Value]) {
     }
 }
 
-/// imsg dates a chat by its newest row, but Messages leaves group events (someone joined or left, the RCS group
-/// re-created on one day for dozens of chats) out of it. Date group chats by their newest real message and order
-/// the list again.
+/// imsg dates a chat by its newest row, but Messages leaves events (someone joined or left, the RCS group re-created
+/// on one day for dozens of chats, shared locations and the like) out of it. Date chats by their newest real message,
+/// order the list again, and drop chats that have none.
 async fn fix_last_message(session: &client::Handle<Handler>, chats: &mut [Value]) {
-    let ids: Vec<String> = chats.iter().filter(|c| c["is_group"].as_bool() == Some(true)).filter_map(|c| c["id"].as_i64()).map(|i| i.to_string()).collect();
+    let ids: Vec<String> = chats.iter().filter_map(|c| c["id"].as_i64()).map(|i| i.to_string()).collect();
     if ids.is_empty() {
         return;
     }
@@ -1449,10 +1449,19 @@ async fn fix_last_message(session: &client::Handle<Handler>, chats: &mut [Value]
         ids.join(",")
     );
     let Some(out) = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await else { return };
+    let mut real = std::collections::HashSet::new();
     for (id, when) in String::from_utf8_lossy(&out).lines().filter_map(|l| l.split_once('|')) {
         let Ok(id) = id.parse::<i64>() else { continue };
+        real.insert(id);
         if let Some(c) = chats.iter_mut().find(|c| c["id"].as_i64() == Some(id)) {
             c["last_message_at"] = Value::from(when);
+        }
+    }
+    // a chat with nothing but events (everyone left, say) isn't a conversation: Messages doesn't list it. Marked, not
+    // removed: the app asks for more chats while the answer is as long as it asked for.
+    for c in chats.iter_mut() {
+        if !c["id"].as_i64().is_some_and(|id| real.contains(&id)) {
+            c["hidden"] = Value::Bool(true);
         }
     }
     chats.sort_by(|a, b| b["last_message_at"].as_str().cmp(&a["last_message_at"].as_str()));

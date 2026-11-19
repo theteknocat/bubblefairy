@@ -2929,6 +2929,7 @@ fn merged_chats(raw: &[Value], contacts: Option<&crate::mac::Contacts>) -> (Vec<
 
 /// Replace the chat list with `raw` (as imsg gave it), merged by person. Returns the merges.
 fn set_chats(st: &mut State, raw: Vec<Value>) -> Vec<(i64, Vec<i64>)> {
+    let raw: Vec<Value> = raw.into_iter().filter(|c| c["hidden"].as_bool() != Some(true)).collect(); // (chats without a message)
     let (merged, groups) = merged_chats(&raw, st.contacts.as_ref());
     let alias: HashMap<i64, i64> = groups.iter().flat_map(|(c, ids)| ids.iter().map(move |i| (*i, *c))).collect();
     if let Some(c) = st.sel.and_then(|s| alias.get(&s)) {
