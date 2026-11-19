@@ -596,3 +596,6 @@ row:focus-visible { outline: 2px solid #b9a6ff; outline-offset: -2px; }
 
 .wizard entry.with-action { padding-right: 44px; }
 .wiz-link { background: transparent; border: none; box-shadow: none; color: var(--ink-soft); text-decoration: underline; }
+
+.wizard button.wiz-retry { background: transparent; background-image: none; border: 1px solid alpha(#7b5cff, 0.7); color: var(--ink); border-radius: 99px; padding: 6px 18px; box-shadow: none; }
+.wizard button.wiz-retry:hover { background-color: alpha(#7b5cff, 0.25); }

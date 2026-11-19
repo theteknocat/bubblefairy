@@ -245,8 +245,23 @@ impl Link {
     }
 }
 
-/// Does signing in with the key work now?
+/// Does signing in with the key work now? Tried a few times: right after the key was added, the first sign-in has
+/// been seen to fail and the next one to work.
 async fn verify_key(host: &str, user: &str, key_path: PathBuf) -> Result<Link, String> {
+    let mut last = String::new();
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        }
+        match verify_key_once(host, user, key_path.clone()).await {
+            Ok(l) => return Ok(l),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+async fn verify_key_once(host: &str, user: &str, key_path: PathBuf) -> Result<Link, String> {
     let mut link = open(host).await?;
     let key = russh::keys::load_secret_key(&key_path, None).map_err(|e| format!("can't read the key: {e}"))?;
     let r = link.session.authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), None)).await.map_err(|e| format!("{e}"))?;
@@ -506,6 +521,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     work_msg.set_selectable(true);
     p4.append(&work_msg);
     let work_btn = gtk::Button::with_label("Try again");
+    work_btn.add_css_class("wiz-retry");
     work_btn.set_halign(gtk::Align::Start);
     work_btn.set_visible(false);
     p4.append(&work_btn);
@@ -700,6 +716,9 @@ fn show_page(w: &Rc<W>, i: usize) {
         if n == i { d.add_css_class("on") } else { d.remove_css_class("on") }
     }
     w.pages.set_visible_child_name(PAGES[i]);
+    if i == 2 {
+        w.to.grab_focus(); // the number or address is what to type next
+    }
     w.back.set_visible(false);
     w.next.set_visible(true);
     w.next.set_label(match i {
