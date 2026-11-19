@@ -518,3 +518,41 @@ label:focus, label:focus-visible { outline: none; }
 .setup-fp { font-family: monospace; font-size: 1.05em; padding: 10px 12px; background-color: alpha(currentColor, 0.07); border-radius: 12px; }
 .step-ok { color: #3ccf6f; font-weight: 800; }
 .step-bad { color: #ff6b6b; font-weight: 700; }
+
+/* the setup wizard wears the app's look: gradient window, glassy panel, gradient buttons */
+.wizard .wiz-panel {
+  background-color: var(--panel);
+  border-radius: 22px;
+  box-shadow: 0 8px 28px var(--shadow), 0 1px 3px var(--shadow), inset 0 1px var(--panel-edge);
+  margin: 2px 14px 14px 14px;
+  padding: 26px 28px 20px 28px;
+  color: var(--ink);
+}
+.wizard .setup-title { font-size: 1.5em; font-weight: 800; color: var(--ink); }
+.wizard .wiz-field, .wizard entry.wiz-field {
+  background-color: var(--field);
+  border-radius: 99px;
+  border: 1px solid transparent;
+  padding: 2px 14px;
+  min-height: 38px;
+  color: var(--ink);
+  box-shadow: inset 0 1px 3px var(--shadow);
+}
+.wizard .wiz-field:focus-within { outline: none; border-color: alpha(#7b5cff, 0.55); box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(#7b5cff, 0.18); }
+.wizard button.wiz-next {
+  background-image: linear-gradient(135deg, #7b5cff, #ff5fa8);
+  background-color: transparent;
+  color: #ffffff;
+  font-weight: 700;
+  border: none;
+  border-radius: 99px;
+  padding: 8px 22px;
+  box-shadow: 0 4px 12px alpha(#7b5cff, 0.40), inset 0 1px rgba(255, 255, 255, 0.35);
+}
+.wizard button.wiz-next:disabled { background-image: none; background-color: alpha(currentColor, 0.12); color: var(--ink-soft); box-shadow: none; }
+.wizard button.wiz-back { background: transparent; border: none; box-shadow: none; border-radius: 99px; color: var(--ink-soft); padding: 8px 16px; }
+.wizard button.wiz-back:hover { background-color: alpha(currentColor, 0.08); }
+.wizard button.flat, .wizard button.wiz-retry { border-radius: 99px; }
+.wiz-dot { min-width: 8px; min-height: 8px; border-radius: 99px; background-color: alpha(currentColor, 0.18); transition: background-color 160ms ease, min-width 160ms ease; }
+.wiz-dot.on { background-color: #7b5cff; min-width: 20px; }
+.wizard .setup-fp { background-color: var(--field); }

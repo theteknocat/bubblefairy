@@ -285,6 +285,8 @@ pub struct Ctx {
     pub test: bool,
     /// called with (host, user, imsg path on the Mac, host key line) when the wizard finishes
     pub done: Rc<dyn Fn(String, String, String, String)>,
+    /// called when the wizard window closes, finished or not (the first run shows the main window then)
+    pub closed: Rc<dyn Fn()>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -331,15 +333,34 @@ struct W {
     online: RefCell<Option<Arc<Link>>>,
     imsg: RefCell<String>,
     page: Cell<usize>,
+    dots: Vec<gtk::Box>,
 }
 
 const PAGES: [&str; 6] = ["mac", "account", "fingerprint", "work", "test", "done"];
 const STEPS: [&str; 6] = ["Signing in", "Checking the Mac", "Adding BubbleFairy's key", "Checking that the key works", "Installing imsg", "Checking that Messages can be read"];
 
 /// Open the wizard over `parent`.
-pub fn open_wizard(parent: &impl IsA<gtk::Window>, ctx: Ctx) {
-    let win = gtk::Window::builder().transient_for(parent).modal(true).title("Set up BubbleFairy").default_width(560).default_height(520).build();
-    win.add_css_class("bf-settings");
+pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ctx) {
+    let win = gtk::Window::builder().application(app).title("Set up BubbleFairy").default_width(640).default_height(660).build();
+    if let Some(p) = parent {
+        win.set_transient_for(Some(p));
+        win.set_modal(true);
+    }
+    // the app's own look: the gradient window, a glassy panel, the brand in the title bar
+    win.add_css_class("bf");
+    win.add_css_class("wizard");
+    let head = gtk::HeaderBar::new();
+    head.add_css_class("bf-head");
+    let brand = gtk::Label::new(None);
+    brand.set_markup("<span foreground='#7b5cff'>Bubble</span><span foreground='#ff5fa8'>Fairy</span> ✨");
+    brand.add_css_class("app-title");
+    head.set_title_widget(Some(&brand));
+    win.set_titlebar(Some(&head));
+    let closed = ctx.closed.clone();
+    win.connect_close_request(move |_| {
+        closed();
+        glib::Propagation::Proceed
+    });
     let label = |t: &str, class: &str| {
         let l = gtk::Label::new(Some(t));
         l.set_wrap(true);
@@ -359,7 +380,7 @@ pub fn open_wizard(parent: &impl IsA<gtk::Window>, ctx: Ctx) {
     // 1: the Mac
     let p1 = page("Find your Mac");
     p1.append(&label("On the Mac, open System Settings → General → Sharing and turn on Remote Login. Then pick the Mac here, or type its name or address.", "dim"));
-    let host = gtk::Entry::builder().placeholder_text("my-mac.local").hexpand(true).build();
+    let host = gtk::Entry::builder().placeholder_text("my-mac.local").hexpand(true).css_classes(["wiz-field"]).build();
     host.set_icon_from_icon_name(gtk::EntryIconPosition::Secondary, Some("pan-down-symbolic"));
     host.set_icon_tooltip_text(gtk::EntryIconPosition::Secondary, Some("Macs found on the network"));
     let host_status = gtk::Stack::new();
@@ -397,8 +418,8 @@ pub fn open_wizard(parent: &impl IsA<gtk::Window>, ctx: Ctx) {
     // 2: the account
     let p2 = page("Your Mac account");
     p2.append(&label("BubbleFairy signs in once with your Mac's user name and password to set things up. The password is used for that and then forgotten.", "dim"));
-    let user = gtk::Entry::builder().text(&ctx.default_user).placeholder_text("Mac user name").build();
-    let pass = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("Mac password").build();
+    let user = gtk::Entry::builder().text(&ctx.default_user).placeholder_text("Mac user name").css_classes(["wiz-field"]).build();
+    let pass = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("Mac password").css_classes(["wiz-field"]).build();
     p2.append(&user);
     p2.append(&pass);
     let acct_msg = label("", "step-bad");
@@ -437,7 +458,7 @@ pub fn open_wizard(parent: &impl IsA<gtk::Window>, ctx: Ctx) {
     // 5: the test message
     let p5 = page("Send a test message");
     p5.append(&label("This sends a short message through Messages on your Mac, so you know it works. Have your Mac in view: the first time, macOS asks whether to allow control of Messages. Click Allow. You can send it to yourself: use your own phone number or Apple ID email.", "dim"));
-    let to = gtk::Entry::builder().placeholder_text("your phone number or email").build();
+    let to = gtk::Entry::builder().placeholder_text("your phone number or email").css_classes(["wiz-field"]).build();
     p5.append(&to);
     let test_btn = gtk::Button::with_label("Send test message");
     test_btn.set_halign(gtk::Align::Start);
@@ -454,21 +475,28 @@ pub fn open_wizard(parent: &impl IsA<gtk::Window>, ctx: Ctx) {
         pages.add_named(p, Some(name));
     }
     let back = gtk::Button::with_label("Back");
+    back.add_css_class("wiz-back");
     let next = gtk::Button::with_label("Next");
-    next.add_css_class("suggested-action");
-    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
-    bar.append(&back);
-    bar.append(&spacer);
-    bar.append(&next);
+    next.add_css_class("wiz-next");
+    // one dot per page, the current one lit
+    let dot_row = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+    dot_row.set_halign(gtk::Align::Center);
+    dot_row.set_valign(gtk::Align::Center);
+    let dots: Vec<gtk::Box> = PAGES
+        .iter()
+        .map(|_| {
+            let d = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            d.add_css_class("wiz-dot");
+            dot_row.append(&d);
+            d
+        })
+        .collect();
+    let bar = gtk::CenterBox::new();
+    bar.set_start_widget(Some(&back));
+    bar.set_center_widget(Some(&dot_row));
+    bar.set_end_widget(Some(&next));
     let root = gtk::Box::new(gtk::Orientation::Vertical, 16);
-    for m in [&root] {
-        m.set_margin_top(18);
-        m.set_margin_bottom(18);
-        m.set_margin_start(22);
-        m.set_margin_end(22);
-    }
+    root.add_css_class("wiz-panel");
     pages.set_vexpand(true);
     root.append(&pages);
     root.append(&bar);
@@ -504,7 +532,11 @@ pub fn open_wizard(parent: &impl IsA<gtk::Window>, ctx: Ctx) {
         online: RefCell::new(None),
         imsg: RefCell::new(String::new()),
         page: Cell::new(0),
+        dots,
     });
+    for i in 0..STEPS.len() {
+        set_step(&w, i, Step::Wait);
+    }
     wire_host(&w);
     wire_nav(&w);
     show_page(&w, 0);
@@ -549,6 +581,9 @@ pub fn open_wizard(parent: &impl IsA<gtk::Window>, ctx: Ctx) {
 
 fn show_page(w: &Rc<W>, i: usize) {
     w.page.set(i);
+    for (n, d) in w.dots.iter().enumerate() {
+        if n == i { d.add_css_class("on") } else { d.remove_css_class("on") }
+    }
     w.pages.set_visible_child_name(PAGES[i]);
     w.back.set_visible(matches!(i, 1 | 2));
     w.next.set_visible(true);
@@ -817,7 +852,7 @@ fn set_step(w: &Rc<W>, i: usize, s: Step) {
     icon.set_visible(s != Step::Run);
     match s {
         Step::Wait => {
-            icon.set_icon_name(Some("content-loading-symbolic"));
+            icon.set_icon_name(Some("media-record-symbolic"));
             label.add_css_class("dim");
         }
         Step::Run => label.remove_css_class("dim"),

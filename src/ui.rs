@@ -1260,7 +1260,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         }
     });
 
-    win.present();
+    // first run: only the setup wizard shows; the main window follows when it closes
+    let first_run = ui.st.borrow().cfg.host.is_empty() || std::env::var_os("BF_SETUP").is_some() || std::env::var_os("BF_SETUP_TEST").is_some();
+    if !first_run {
+        win.present();
+    }
     if let Ok(t) = std::env::var("BF_TYPE") {
         // dev aid: type this into the composer one character every 25 ms (`\\n` = Shift+Enter)
         let chars: Vec<char> = t.replace("\\n", "\n").chars().collect();
@@ -1397,14 +1401,14 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             w.application().unwrap().quit();
         });
     }
-    if ui.st.borrow().cfg.host.is_empty() || std::env::var_os("BF_SETUP").is_some() || std::env::var_os("BF_SETUP_TEST").is_some() {
-        start_setup(&ui);
+    if first_run {
+        start_setup(&ui, false);
     }
 }
 
 /// The first-run wizard (also reachable from Settings). `BF_SETUP_TEST=1` is the dev profile: a throwaway key and a
 /// separate folder on the Mac, and nothing saved.
-fn start_setup(u: &Rc<Ui>) {
+fn start_setup(u: &Rc<Ui>, over_main: bool) {
     let test = std::env::var_os("BF_SETUP_TEST").is_some();
     let data = glib::user_data_dir().join("bubblefairy");
     let (key_path, public_key) = if test {
@@ -1425,7 +1429,11 @@ fn start_setup(u: &Rc<Ui>) {
         u2.st.borrow_mut().cfg = cfg.clone();
         u2.send(Cmd::Configure(cfg));
     });
-    crate::setup::open_wizard(&u.win, crate::setup::Ctx { public_key, key_path, default_user: crate::setup::default_user(), test, done });
+    let u3 = u.clone();
+    let closed = Rc::new(move || u3.win.present());
+    let app = u.win.application().expect("application");
+    let parent = over_main.then(|| u.win.clone().upcast::<gtk::Window>());
+    crate::setup::open_wizard(&app, parent.as_ref(), crate::setup::Ctx { public_key, key_path, default_user: crate::setup::default_user(), test, done, closed });
 }
 
 // ---------- events from the Mac ----------
@@ -6692,7 +6700,7 @@ fn settings(u: &Rc<Ui>) {
     let (u2, w2) = (u.clone(), w.clone());
     redo.connect_clicked(move |_| {
         w2.close();
-        start_setup(&u2);
+        start_setup(&u2, true);
     });
     // the settings scroll, the buttons stay in view; the window is never taller than the screen
     let max_h = u.win.surface().and_then(|s| gdk::Display::default()?.monitor_at_surface(&s)).map_or(700, |m| (m.geometry().height() * 85 / 100).min(780));
