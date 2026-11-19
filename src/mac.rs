@@ -483,8 +483,9 @@ async fn fetch_image(session: &client::Handle<Handler>, path: &str, max: u32) ->
     let path = path.strip_prefix("~/").map(|p| format!("\"$HOME\"/{}", sh_quote(p))).unwrap_or_else(|| sh_quote(path));
     let ql = if ql {
         // Quick Look applies the photo's rotation (HEIC `irot`), which sips ignores; sips is the fallback.
-        // The watchdog stops a stuck qlmanage from holding this channel forever.
-        format!("qlmanage -t -s {max} -o \"$d\" {path} >/dev/null 2>&1 & q=$!; (sleep 8; kill $q 2>/dev/null) & w=$!; wait $q; kill $w 2>/dev/null;")
+        // The watchdog stops a stuck qlmanage from holding this channel forever. Its output goes to /dev/null: the
+        // `sleep` outlives the script, and while it held the channel's stdout open every photo took 8 s to finish.
+        format!("qlmanage -t -s {max} -o \"$d\" {path} >/dev/null 2>&1 & q=$!; (sleep 8; kill $q 2>/dev/null) >/dev/null 2>&1 & w=$!; wait $q; kill $w 2>/dev/null;")
     } else {
         String::new()
     };
@@ -1520,7 +1521,11 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let _ = ev.send(Event::Image { path, full: false, bytes });
         }
         Cmd::Image { path, full } => {
+            let t0 = std::time::Instant::now();
             let bytes = fetch_image(&session, &path, if full { FULL_PX } else { CHAT_PX }).await;
+            if std::env::var_os("BF_PROF").is_some() {
+                eprintln!("prof: image {} took {} ms, {} KB{}", path.rsplit('/').next().unwrap_or(""), t0.elapsed().as_millis(), bytes.as_ref().map_or(0, |b| b.len() / 1024), if full { " (full)" } else { "" });
+            }
             let _ = ev.send(Event::Image { path, full, bytes });
         }
         Cmd::Media { chat_id, kind, offset } => {

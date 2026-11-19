@@ -263,6 +263,7 @@ pub struct Ui {
     sel_gen: Cell<u32>,
     banner_offline: Cell<bool>,
     chats_queued: Cell<bool>,
+    title_queued: Cell<bool>,
     /// open chat is a group (them-side rows carry an avatar column)
     group: Cell<bool>,
     /// re-lay photo stacks when the chat width changes (rebuilt with the conversation)
@@ -837,6 +838,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         sel_gen: Cell::new(0),
         banner_offline: Cell::new(false),
         chats_queued: Cell::new(false),
+        title_queued: Cell::new(false),
         group: Cell::new(false),
         stacks: RefCell::default(),
         render_queued: Cell::new(false),
@@ -1091,6 +1093,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
 
     // coming back to the window counts as seeing the open chat
     let u = ui.clone();
+    // dev aid BF_PROF=1: report when the GTK thread was busy for 250 ms or more, and what the app holds
+    if std::env::var_os("BF_PROF").is_some() {
+        let last = Cell::new(std::time::Instant::now());
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            let late = last.replace(std::time::Instant::now()).elapsed().as_millis();
+            if late > 300 {
+                eprintln!("prof: GTK thread stalled {} ms", late - 50);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
     ui.win.connect_is_active_notify(move |_| {
         // back from a suspend that spanned midnight: the timer is late
         if u.time_day.get() != glib::DateTime::now_local().map(|n| n.ymd()).ok() {
@@ -1133,7 +1146,12 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let u = ui.clone();
     glib::spawn_future_local(async move {
         while let Some(e) = ev.recv().await {
+            let t0 = std::time::Instant::now();
+            let kind = format!("{:?}", std::mem::discriminant(&e));
             on_event(&u, e);
+            if std::env::var_os("BF_PROF").is_some() && t0.elapsed().as_millis() > 40 {
+                eprintln!("prof: event {kind} took {} ms", t0.elapsed().as_millis());
+            }
         }
     });
 
@@ -1440,7 +1458,12 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             }
             prefetch_avatars(u);
             u.side_more.set_visible(false);
+            let prof = std::time::Instant::now();
             render_chats(u); // before the fade starts: building the rows takes long enough to freeze it half way
+            if std::env::var_os("BF_PROF").is_some() {
+                let rss = std::fs::read_to_string("/proc/self/statm").ok().and_then(|t| t.split(' ').nth(1)?.parse::<u64>().ok()).unwrap_or(0) * 4 / 1024;
+                eprintln!("prof: {} chats, render_chats {} ms, previews asked {}, memory {} MB", u.st.borrow().chats.len(), prof.elapsed().as_millis(), u.st.borrow().preview_asked.len(), rss);
+            }
             u.side_stack.set_visible_child_name("list");
             let first = {
                 let st = u.st.borrow();
@@ -3058,6 +3081,17 @@ fn row_info(st: &State, c: &Value) -> (String, String, Option<i64>, bool) {
     (chat_title(c, &st.names), text.unwrap_or_default(), when, unread)
 }
 
+/// `update_title` once, after the events that are waiting: it counts every chat, so doing it per preview is O(n²).
+fn update_title_soon(u: &Rc<Ui>) {
+    if !u.title_queued.replace(true) {
+        let u2 = u.clone();
+        glib::idle_add_local_once(move || {
+            u2.title_queued.set(false);
+            update_title(&u2);
+        });
+    }
+}
+
 /// The window's title (what a taskbar or window list shows) carries the number of unread conversations.
 fn update_title(u: &Ui) {
     let n = {
@@ -3086,12 +3120,14 @@ fn update_row(u: &Rc<Ui>, id: i64) {
     }
     parts.prev.set_text(&text);
     parts.time_unix.set(when);
-    refresh_times(u); // (also rewrites its label; cheap)
+    if let Some(t) = when {
+        parts.time.set_text(&rel_time(t, TimeKind::Row)); // only this row's: rewriting every tracked time per preview was O(n) each
+    }
     for (c, on) in [("unread-dot", unread), ("read-dot", !unread)] {
         if on { parts.dot.add_css_class(c) } else { parts.dot.remove_css_class(c) }
     }
     if unread { parts.row.add_css_class("unread") } else { parts.row.remove_css_class("unread") }
-    update_title(u);
+    update_title_soon(u);
 }
 
 /// Names and photos have arrived (the Contacts are read after the chat list is shown): change what the rows and
@@ -3150,6 +3186,7 @@ fn rebuild_tiles(u: &Rc<Ui>) {
 struct RowParts {
     row: gtk::ListBoxRow,
     time_unix: Rc<Cell<Option<i64>>>,
+    time: gtk::Label,
     name: gtk::Label,
     /// the row's avatar is its child: swapped in place when a name or photo arrives
     row_box: gtk::Overlay,
@@ -3235,7 +3272,7 @@ fn render_chats(u: &Rc<Ui>) {
             row.set_tooltip_text(Some(&title));
         }
         new_rows.push((row.clone(), slot, title.clone()));
-        u.row_parts.borrow_mut().insert(id, RowParts { row: row.clone(), time_unix, name: name.clone(), row_box: row_box.clone(), prev: prev.clone(), dot: dot.clone() });
+        u.row_parts.borrow_mut().insert(id, RowParts { row: row.clone(), time_unix, time: time.clone(), name: name.clone(), row_box: row_box.clone(), prev: prev.clone(), dot: dot.clone() });
         row.add_css_class("chat-row");
         if unread {
             row.add_css_class("unread");
