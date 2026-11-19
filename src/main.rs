@@ -3,6 +3,7 @@ mod chatscroll;
 mod demo;
 mod mac;
 mod player;
+mod setup;
 mod sound;
 mod tilegrid;
 mod ui;
@@ -103,6 +104,7 @@ fn main() -> glib::ExitCode {
     std::thread::spawn(move || prune_cache(&cache, CACHE_MAX));
 
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio runtime");
+    let _ = setup::RT.set(rt.handle().clone());
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     let (ev_tx, ev_rx) = tokio::sync::mpsc::unbounded_channel();
     if demo {

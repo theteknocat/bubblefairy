@@ -512,3 +512,9 @@ label:focus, label:focus-visible { outline: none; }
 
 /* the number or address a conversation uses, on the contact card */
 .used-star { color: #f5b82e; font-size: 1.1em; }
+
+/* the setup wizard */
+.setup-title { font-size: 1.35em; font-weight: 800; }
+.setup-fp { font-family: monospace; font-size: 1.05em; padding: 10px 12px; background-color: alpha(currentColor, 0.07); border-radius: 12px; }
+.step-ok { color: #3ccf6f; font-weight: 800; }
+.step-bad { color: #ff6b6b; font-weight: 700; }

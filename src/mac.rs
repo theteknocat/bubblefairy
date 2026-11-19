@@ -246,9 +246,9 @@ impl Rpc {
     }
 }
 
-struct Handler {
-    known: Option<String>,
-    seen: Arc<Mutex<Option<String>>>,
+pub(crate) struct Handler {
+    pub(crate) known: Option<String>,
+    pub(crate) seen: Arc<Mutex<Option<String>>>,
 }
 
 impl client::Handler for Handler {
@@ -292,7 +292,7 @@ pub fn fingerprint(openssh_line: &str) -> String {
         .unwrap_or_default()
 }
 
-async fn resolve(host: &str) -> Result<std::net::SocketAddr, String> {
+pub(crate) async fn resolve(host: &str) -> Result<std::net::SocketAddr, String> {
     if let Ok(mut it) = tokio::net::lookup_host((host, 22)).await
         && let Some(a) = it.next()
     {

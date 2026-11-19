@@ -1397,9 +1397,35 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             w.application().unwrap().quit();
         });
     }
-    if ui.st.borrow().cfg.host.is_empty() {
-        settings(&ui);
+    if ui.st.borrow().cfg.host.is_empty() || std::env::var_os("BF_SETUP").is_some() || std::env::var_os("BF_SETUP_TEST").is_some() {
+        start_setup(&ui);
     }
+}
+
+/// The first-run wizard (also reachable from Settings). `BF_SETUP_TEST=1` is the dev profile: a throwaway key and a
+/// separate folder on the Mac, and nothing saved.
+fn start_setup(u: &Rc<Ui>) {
+    let test = std::env::var_os("BF_SETUP_TEST").is_some();
+    let data = glib::user_data_dir().join("bubblefairy");
+    let (key_path, public_key) = if test {
+        let p = data.join("setup-test/id_ed25519");
+        let k = crate::mac::ensure_key(&p).unwrap_or_default();
+        (p, k)
+    } else {
+        (data.join("id_ed25519"), u.store.public_key.clone())
+    };
+    let u2 = u.clone();
+    let done = Rc::new(move |host: String, user: String, imsg: String, host_key: String| {
+        let mut cfg = u2.st.borrow().cfg.clone();
+        (cfg.host, cfg.user, cfg.imsg) = (host, user, imsg);
+        if !host_key.is_empty() {
+            let _ = std::fs::write(&u2.store.known_host, host_key); // the fingerprint the person accepted
+        }
+        crate::save_config(&u2.store.config_file, &cfg);
+        u2.st.borrow_mut().cfg = cfg.clone();
+        u2.send(Cmd::Configure(cfg));
+    });
+    crate::setup::open_wizard(&u.win, crate::setup::Ctx { public_key, key_path, default_user: crate::setup::default_user(), test, done });
 }
 
 // ---------- events from the Mac ----------
@@ -6654,8 +6680,20 @@ fn settings(u: &Rc<Ui>) {
     let cancel = gtk::Button::with_label("Cancel");
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     buttons.set_halign(gtk::Align::End);
+    let redo = gtk::Button::with_label("Set up again…");
+    redo.set_tooltip_text(Some("Run the setup wizard: find the Mac, install the key and imsg"));
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    buttons.set_halign(gtk::Align::Fill);
+    buttons.append(&redo);
+    buttons.append(&spacer);
     buttons.append(&cancel);
     buttons.append(&save);
+    let (u2, w2) = (u.clone(), w.clone());
+    redo.connect_clicked(move |_| {
+        w2.close();
+        start_setup(&u2);
+    });
     // the settings scroll, the buttons stay in view; the window is never taller than the screen
     let max_h = u.win.surface().and_then(|s| gdk::Display::default()?.monitor_at_surface(&s)).map_or(700, |m| (m.geometry().height() * 85 / 100).min(780));
     w.set_default_height(max_h);

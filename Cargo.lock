@@ -149,6 +149,7 @@ dependencies = [
  "plist",
  "russh",
  "serde_json",
+ "sha2",
  "tokio",
  "webkit6",
 ]
