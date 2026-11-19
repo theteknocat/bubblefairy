@@ -1053,6 +1053,8 @@ fn connect(w: &Rc<W>) {
 
 fn set_step(w: &Rc<W>, i: usize, s: Step) {
     let (icon, spin, label) = &w.steps[i];
+    icon.remove_css_class("step-ok"); // a step that failed and then worked must not keep its red
+    icon.remove_css_class("step-bad");
     spin.set_spinning(s == Step::Run);
     spin.set_visible(s == Step::Run);
     icon.set_visible(s != Step::Run);
