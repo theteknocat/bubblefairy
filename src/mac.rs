@@ -326,7 +326,7 @@ pub(crate) async fn resolve(host: &str) -> Result<std::net::SocketAddr, String> 
             return Ok((ip, 22).into());
         }
     }
-    Err(format!("can't find {host} on the network (is the Mac awake?)"))
+    Err(format!("can't find {host} on the network - is it awake?"))
 }
 
 /// sshd allows 10 channels per connection by default (MaxSessions); the rpc channel uses one.
@@ -343,7 +343,7 @@ async fn connect(cfg: &Config, paths: &Paths, ev: &mpsc::UnboundedSender<Event>)
     let known = std::fs::read_to_string(&paths.known_host).ok().map(|s| s.trim().to_string());
     let seen = Arc::new(Mutex::new(None));
     let config = client::Config {
-        keepalive_interval: Some(Duration::from_secs(15)),
+        keepalive_interval: Some(Duration::from_secs(5)),
         keepalive_max: 3,
         nodelay: true,
         ..Default::default()
@@ -351,7 +351,7 @@ async fn connect(cfg: &Config, paths: &Paths, ev: &mpsc::UnboundedSender<Event>)
     let handler = Handler { known: known.clone(), seen: seen.clone() };
     let conn = tokio::time::timeout(Duration::from_secs(10), client::connect(Arc::new(config), addr, handler)).await;
     let mut session = match conn {
-        Err(_) => return Err(format!("{} didn't answer (is Remote Login on?)", cfg.host)),
+        Err(_) => return Err(format!("{} didn't answer - is Remote Login on?", cfg.host)),
         Ok(Err(russh::Error::UnknownKey)) => {
             return Err("the Mac's identity changed since the first connection. If you reinstalled or replaced the Mac, \
                         delete the saved host key in Settings and connect again."
