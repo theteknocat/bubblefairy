@@ -1369,6 +1369,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             }
         });
     }
+    if let Some(ms) = std::env::var("BF_SETTINGS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        // dev aid: open Settings after <ms>; BF_SETTINGS_TAB=mac shows the second tab, BF_SETTINGS_SHOT=<png> saves the dialog 1.5 s later
+        let u = ui.clone();
+        glib::timeout_add_local_once(Duration::from_millis(ms), move || settings(&u));
+    }
     if let Some(ms) = std::env::var("BF_SIDE").ok().and_then(|v| v.parse::<u64>().ok()) {
         // dev aid: press the sidebar button after <ms> (narrow window)
         let u = ui.clone();
@@ -5471,36 +5476,7 @@ fn build_info() -> Info {
     stack.add_titled(&tab(videos.upcast_ref(), &more[1]), Some("videos"), "Videos");
     stack.add_titled(&tab(files.upcast_ref(), &more[2]), Some("files"), "Files");
     stack.add_titled(&tab(links.upcast_ref(), &more[3]), Some("links"), "Links");
-    // our own tabs: StackSwitcher's buttons measured far wider than their labels
-    let switcher = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    switcher.add_css_class("linked");
-    switcher.set_homogeneous(true); // equal widths, filling the row
-    switcher.set_hexpand(true);
-    let mut group: Option<gtk::ToggleButton> = None;
-    let mut tabs = Vec::new();
-    for (name, label) in [("photos", "Photos"), ("videos", "Videos"), ("files", "Files"), ("links", "Links")] {
-        let t = gtk::ToggleButton::with_label(label);
-        t.add_css_class("info-tab");
-        t.set_hexpand(true);
-        t.set_group(group.as_ref());
-        t.set_active(name == "photos");
-        let stack = stack.clone();
-        t.connect_toggled(move |t| {
-            if t.is_active() {
-                stack.set_visible_child_name(name);
-            }
-        });
-        switcher.append(&t);
-        group.get_or_insert_with(|| t.clone());
-        tabs.push((name, t));
-    }
-    stack.connect_visible_child_name_notify(move |st| {
-        if let Some(n) = st.visible_child_name() {
-            for (name, t) in &tabs {
-                t.set_active(*name == n);
-            }
-        }
-    });
+    let switcher = tab_switcher(&stack, &[("photos", "Photos"), ("videos", "Videos"), ("files", "Files"), ("links", "Links")]);
     // narrow panel: "‹ Photos ›". Both carets take the same room even when one is hidden, so the name stays centred.
     let prev = gtk::Button::from_icon_name("pan-start-symbolic");
     let next = gtk::Button::from_icon_name("pan-end-symbolic");
@@ -6455,95 +6431,134 @@ fn render_videos(u: &Rc<Ui>) {
 
 // ---------- settings ----------
 
+/// Our own tabs for a Stack (StackSwitcher's buttons measured far wider than their labels): a rounded track with
+/// pill buttons, the open one filled. Used by the info panel and Settings.
+fn tab_switcher(stack: &gtk::Stack, items: &[(&'static str, &str)]) -> gtk::Box {
+    let switcher = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    switcher.add_css_class("bf-tabs");
+    switcher.set_homogeneous(true); // equal widths, filling the row
+    switcher.set_hexpand(true);
+    let mut group: Option<gtk::ToggleButton> = None;
+    let mut tabs = Vec::new();
+    for (i, (name, label)) in items.iter().enumerate() {
+        let t = gtk::ToggleButton::with_label(label);
+        t.add_css_class("info-tab");
+        t.set_hexpand(true);
+        t.set_group(group.as_ref());
+        t.set_active(i == 0);
+        let (stack, name) = (stack.clone(), *name);
+        t.connect_toggled(move |t| {
+            if t.is_active() {
+                stack.set_visible_child_name(name);
+            }
+        });
+        switcher.append(&t);
+        group.get_or_insert_with(|| t.clone());
+        tabs.push((name, t));
+    }
+    stack.connect_visible_child_name_notify(move |st| {
+        if let Some(n) = st.visible_child_name() {
+            for (name, t) in &tabs {
+                t.set_active(*name == n);
+            }
+        }
+    });
+    switcher
+}
+
+
+/// Settings' second tab: where BubbleFairy connects, read only. Changing any of it is what the setup wizard is for.
+fn mac_tab(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Box {
+    let cfg = u.st.borrow().cfg.clone();
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
+        page.set_property(m, 18);
+    }
+    if cfg.host.is_empty() {
+        let l = gtk::Label::new(Some("Not set up yet."));
+        l.set_xalign(0.0);
+        page.append(&l);
+    } else {
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
+            card.set_property(m, 14);
+        }
+        let grid = gtk::Grid::builder().row_spacing(10).column_spacing(14).build();
+        let hk = u.st.borrow().host_key.clone();
+        let hk = if hk.is_empty() { std::fs::read_to_string(&u.store.known_host).unwrap_or_default() } else { hk };
+        let ours = cfg.imsg.contains("/BubbleFairy");
+        let mut rows = vec![("Mac", cfg.host.clone()), ("Mac user", cfg.user.clone()), ("imsg", cfg.imsg.clone())];
+        if ours {
+            rows.push(("imsg version", crate::setup::IMSG_VERSION.to_string()));
+        }
+        if !hk.trim().is_empty() {
+            rows.push(("Mac identity", crate::mac::fingerprint(hk.trim())));
+        }
+        for (i, (k, v)) in rows.iter().enumerate() {
+            let l = gtk::Label::new(Some(k));
+            l.set_xalign(1.0);
+            l.set_yalign(0.0);
+            l.add_css_class("dim");
+            let val = gtk::Label::new(Some(v));
+            val.set_xalign(0.0);
+            val.set_wrap(true);
+            val.set_wrap_mode(gtk::pango::WrapMode::Char);
+            val.set_selectable(true);
+            val.set_max_width_chars(44);
+            val.set_hexpand(true);
+            if *k == "Mac identity" || *k == "imsg" {
+                val.add_css_class("monospace");
+            }
+            grid.attach(&l, 0, i as i32, 1, 1);
+            grid.attach(&val, 1, i as i32, 1, 1);
+        }
+        card.append(&grid);
+        let note = gtk::Label::new(Some(
+            "The Mac identity is how BubbleFairy recognises your Mac. It is saved on the first connection, and BubbleFairy refuses to connect if it ever changes. To use a different Mac, or to fix the connection, run the setup again.",
+        ));
+        note.set_wrap(true);
+    note.set_max_width_chars(58);
+        note.set_xalign(0.0);
+        note.add_css_class("dim");
+        card.append(&note);
+        let frame = gtk::Frame::new(None);
+        frame.set_child(Some(&card));
+        page.append(&frame);
+    }
+    let redo = gtk::Button::with_label("Set up again…");
+    redo.add_css_class("wiz-next");
+    redo.set_halign(gtk::Align::Start);
+    redo.set_margin_top(6);
+    let (u2, w2) = (u.clone(), win.clone());
+    redo.connect_clicked(move |_| {
+        w2.close();
+        start_setup(&u2, true);
+    });
+    page.append(&redo);
+    page
+}
+
 fn settings(u: &Rc<Ui>) {
-    let w = gtk::Window::builder().transient_for(&u.win).modal(true).title("Settings").default_width(560).build();
+    let w = gtk::Window::builder().transient_for(&u.win).modal(true).title("Settings").default_width(520).build();
+    w.set_application(u.win.application().as_ref()); // so the light/dark class reaches it, as for the other windows
+    w.add_css_class("bf");
     w.add_css_class("bf-settings");
+    let head = gtk::HeaderBar::new();
+    head.add_css_class("bf-head");
+    let brand = gtk::Label::new(None);
+    brand.set_markup("<span foreground='#7b5cff'>Bubble</span><span foreground='#ff5fa8'>Fairy</span> ✨");
+    brand.add_css_class("app-title");
+    head.set_title_widget(Some(&brand));
+    w.set_titlebar(Some(&head));
     let grid = gtk::Grid::builder().row_spacing(10).column_spacing(12).margin_top(18).margin_bottom(18).margin_start(18).margin_end(18).build();
     let cfg = u.st.borrow().cfg.clone();
-    let field = |row: i32, label: &str, value: &str, hint: &str| {
-        let l = gtk::Label::new(Some(label));
-        l.set_xalign(1.0);
-        let e = gtk::Entry::builder().text(value).placeholder_text(hint).hexpand(true).build();
-        grid.attach(&l, 0, row, 1, 1);
-        grid.attach(&e, 1, row, 1, 1);
-        e
-    };
-    let intro = gtk::Label::new(Some("BubbleFairy connects to your Mac over SSH (Remote Login) and uses imsg there to read and send messages."));
-    intro.set_wrap(true);
-    intro.set_xalign(0.0);
-    intro.add_css_class("dim");
-    grid.attach(&intro, 0, 0, 2, 1);
-    let host = field(1, "Mac", &cfg.host, "e.g. my-mac.local");
-    let user = field(2, "Mac user", &cfg.user, "your short user name on the Mac");
-    let imsg = field(3, "imsg path", &cfg.imsg, "/opt/homebrew/bin/imsg");
-
-    let key_title = gtk::Label::new(Some("BubbleFairy's key"));
-    key_title.set_xalign(1.0);
-    key_title.set_valign(gtk::Align::Start);
-    let key = gtk::Label::new(Some(&u.store.public_key));
-    key.set_wrap(true);
-    key.set_wrap_mode(gtk::pango::WrapMode::Char);
-    key.set_selectable(true);
-    key.set_xalign(0.0);
-    key.add_css_class("monospace");
-    let how = gtk::Label::new(Some(
-        "Let your Mac accept this key: copy the command below, open Terminal on the Mac, paste it and press Return.",
-    ));
-    how.set_wrap(true);
-    how.set_xalign(0.0);
-    how.add_css_class("dim");
-    let copy = gtk::Button::with_label("Copy command for the Mac");
-    copy.set_halign(gtk::Align::Start);
-    let line = format!(
-        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo {} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys",
-        crate::mac::sh_quote(&u.store.public_key)
-    );
-    let win = u.win.clone();
-    copy.connect_clicked(move |b| {
-        win.clipboard().set_text(&line);
-        b.set_label("Copied ✓");
-    });
-    let kbox = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    kbox.append(&key);
-    kbox.append(&how);
-    kbox.append(&copy);
-    grid.attach(&key_title, 0, 4, 1, 1);
-    grid.attach(&kbox, 1, 4, 1, 1);
-
-    let hk = u.st.borrow().host_key.clone();
-    let hk = if hk.is_empty() { std::fs::read_to_string(&u.store.known_host).unwrap_or_default() } else { hk };
-    if !hk.trim().is_empty() {
-        let l = gtk::Label::new(Some("Mac identity"));
-        l.set_xalign(1.0);
-        let fp = gtk::Label::new(Some(&crate::mac::fingerprint(hk.trim())));
-        fp.set_selectable(true);
-        fp.set_xalign(0.0);
-        fp.add_css_class("monospace");
-        fp.set_tooltip_text(Some("Saved on first connection. BubbleFairy refuses to connect if it changes."));
-        let forget = gtk::Button::with_label("Forget");
-        forget.set_tooltip_text(Some("Only if you replaced or reinstalled the Mac"));
-        let kh = u.store.known_host.clone();
-        forget.connect_clicked(move |b| {
-            let _ = std::fs::remove_file(&kh);
-            b.set_label("Forgotten");
-            b.set_sensitive(false);
-        });
-        let hb = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        hb.append(&fp);
-        hb.append(&forget);
-        grid.attach(&l, 0, 5, 1, 1);
-        grid.attach(&hb, 1, 5, 1, 1);
-    }
-
-    let privacy_title = gtk::Label::new(Some("Privacy"));
-    privacy_title.set_xalign(1.0);
-    privacy_title.set_valign(gtk::Align::Start);
     let previews = gtk::CheckButton::with_label("Show map previews on contact cards");
     previews.set_active(cfg.map_previews);
     let why = gtk::Label::new(Some(
         "Uses OpenStreetMap: a contact's postal address is sent there to find it on the map. When off, cards show a plain button that opens the address in your maps app.",
     ));
     why.set_wrap(true);
+    why.set_max_width_chars(58);
     why.set_xalign(0.0);
     why.add_css_class("dim");
     let links = gtk::CheckButton::with_label("Make previews for links Messages didn't");
@@ -6552,6 +6567,7 @@ fn settings(u: &Rc<Ui>) {
         "A link with no preview shows its title and picture, read from the page itself. This computer fetches the page, so the linked site sees your internet address. Off: such links stay a plain card with the site's name.",
     ));
     links_why.set_wrap(true);
+    links_why.set_max_width_chars(58);
     links_why.set_xalign(0.0);
     links_why.add_css_class("dim");
     let pbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -6559,8 +6575,12 @@ fn settings(u: &Rc<Ui>) {
     pbox.append(&why);
     pbox.append(&links);
     pbox.append(&links_why);
-    grid.attach(&privacy_title, 0, 6, 1, 1);
-    grid.attach(&pbox, 1, 6, 1, 1);
+    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
+        pbox.set_property(m, 10);
+    }
+    let privacy_frame = gtk::Frame::new(Some("Privacy"));
+    privacy_frame.set_child(Some(&pbox));
+    grid.attach(&privacy_frame, 0, 0, 2, 1);
 
     // default download folders: empty = the download buttons ask every time
     let dl = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -6614,6 +6634,7 @@ fn settings(u: &Rc<Ui>) {
         "The download button next to a picture or file saves it to the folder set here. With no folder set, it opens a save dialog every time so you choose where it goes.",
     ));
     dl_help.set_wrap(true);
+    dl_help.set_max_width_chars(58);
     dl_help.set_xalign(0.0);
     dl_help.add_css_class("dim");
     dl.append(&images_row);
@@ -6621,7 +6642,7 @@ fn settings(u: &Rc<Ui>) {
     dl.append(&dl_help);
     let dl_frame = gtk::Frame::new(Some("Default download folders"));
     dl_frame.set_child(Some(&dl));
-    grid.attach(&dl_frame, 0, 7, 2, 1);
+    grid.attach(&dl_frame, 0, 1, 2, 1);
 
     // notifications: whether, with a sound (which), and what they show
     let nb = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -6701,6 +6722,7 @@ fn settings(u: &Rc<Ui>) {
         "Notifications follow your desktop's own settings (do not disturb, per-app controls). The sound is played by BubbleFairy itself, and stays quiet while the desktop is in do-not-disturb. A message in the chat you are looking at makes neither.",
     ));
     notify_help.set_wrap(true);
+    notify_help.set_max_width_chars(58);
     notify_help.set_xalign(0.0);
     notify_help.add_css_class("dim");
     for wd in [notify_on.upcast_ref::<gtk::Widget>(), sound_on.upcast_ref(), sound_row.upcast_ref(), text_row.upcast_ref(), notify_help.upcast_ref()] {
@@ -6708,37 +6730,37 @@ fn settings(u: &Rc<Ui>) {
     }
     let notify_frame = gtk::Frame::new(Some("Notifications"));
     notify_frame.set_child(Some(&nb));
-    grid.attach(&notify_frame, 0, 8, 2, 1);
+    grid.attach(&notify_frame, 0, 2, 2, 1);
 
     let save = gtk::Button::with_label("Save");
     save.add_css_class("suggested-action");
     let cancel = gtk::Button::with_label("Cancel");
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     buttons.set_halign(gtk::Align::End);
-    let redo = gtk::Button::with_label("Set up again…");
-    redo.set_tooltip_text(Some("Run the setup wizard: find the Mac, install the key and imsg"));
-    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
-    buttons.set_halign(gtk::Align::Fill);
-    buttons.append(&redo);
-    buttons.append(&spacer);
     buttons.append(&cancel);
     buttons.append(&save);
-    let (u2, w2) = (u.clone(), w.clone());
-    redo.connect_clicked(move |_| {
-        w2.close();
-        start_setup(&u2, true);
-    });
     // the settings scroll, the buttons stay in view; the window is never taller than the screen
     let max_h = u.win.surface().and_then(|s| gdk::Display::default()?.monitor_at_surface(&s)).map_or(700, |m| (m.geometry().height() * 85 / 100).min(780));
     w.set_default_height(max_h);
     let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&grid).build();
+    let pages = gtk::Stack::new();
+    pages.add_named(&scroller, Some("app"));
+    pages.add_named(&gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&mac_tab(u, &w)).build(), Some("mac"));
+    let tabs = tab_switcher(&pages, &[("app", "Settings"), ("mac", "Mac connection")]);
+    tabs.set_halign(gtk::Align::Center);
+    tabs.set_hexpand(false);
+    tabs.set_margin_bottom(10);
+    // the buttons only apply to the first tab
+    pages.connect_visible_child_name_notify({
+        let buttons = buttons.clone();
+        move |p| buttons.set_visible(p.visible_child_name().as_deref() == Some("app"))
+    });
     buttons.set_margin_top(10);
     buttons.set_margin_bottom(14);
     buttons.set_margin_end(18);
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    root.append(&scroller);
-    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    root.append(&tabs);
+    root.append(&pages);
     root.append(&buttons);
     w.set_child(Some(&root));
 
@@ -6746,17 +6768,30 @@ fn settings(u: &Rc<Ui>) {
     cancel.connect_clicked(move |_| w2.close());
     let (u2, w2) = (u.clone(), w.clone());
     save.connect_clicked(move |_| {
-        let mut imsg_path = imsg.text().trim().to_string();
-        if imsg_path.is_empty() {
-            imsg_path = crate::DEFAULT_IMSG.into();
-        }
-        let cfg = Config { host: host.text().trim().to_string(), user: user.text().trim().to_string(), imsg: imsg_path, map_previews: previews.is_active(), link_previews: links.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone(), notify: notify_on.is_active(), notify_sound: sound_on.is_active(), sound: chosen.borrow().clone(), notify_text: text_pick.selected() as u8 };
+        let cfg = Config { map_previews: previews.is_active(), link_previews: links.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone(), notify: notify_on.is_active(), notify_sound: sound_on.is_active(), sound: chosen.borrow().clone(), notify_text: text_pick.selected() as u8, ..u2.st.borrow().cfg.clone() };
         crate::save_config(&u2.store.config_file, &cfg);
         u2.st.borrow_mut().cfg = cfg.clone();
         u2.send(Cmd::Configure(cfg)); // the connection is only redone if where we connect to changed
         w2.close();
     });
     w.present();
+    if std::env::var("BF_SETTINGS_TAB").as_deref() == Ok("mac") {
+        pages.set_visible_child_name("mac");
+    }
+    if let Some(out) = std::env::var_os("BF_SETTINGS_SHOT") {
+        let w = w.clone();
+        glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+            let p = gtk::WidgetPaintable::new(Some(&w));
+            let snap = gtk::Snapshot::new();
+            p.snapshot(&snap, w.width() as f64, w.height() as f64);
+            if let (Some(node), Some(r)) = (snap.to_node(), w.renderer()) {
+                let _ = r.render_texture(&node, None).save_to_png(&out);
+            }
+            if let Some(app) = w.application() {
+                app.quit();
+            }
+        });
+    }
 }
 
 // ---------- helpers ----------

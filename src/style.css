@@ -158,6 +158,11 @@ row.unread .chat-name { font-weight: 800; }
 .play-badge { background-color: rgba(0, 0, 0, 0.55); color: #ffffff; border-radius: 99px; min-width: 24px; min-height: 24px; font-size: 0.7em; padding-left: 2px; }
 .info-missing { background-color: rgba(128, 118, 200, 0.14); border-radius: 12px; }
 .info-tab { padding: 4px 10px; min-width: 0; }
+/* tabs (info panel, Settings): a soft track with pill buttons, the open one filled with the brand gradient */
+.bf-tabs { background-color: alpha(currentColor, 0.07); border-radius: 99px; padding: 3px; }
+.bf-tabs .info-tab { border-radius: 99px; background: transparent; background-image: none; box-shadow: none; border: none; padding: 5px 14px; color: var(--ink-soft); transition: background-color 160ms ease; }
+.bf-tabs .info-tab:hover { background-color: alpha(currentColor, 0.08); }
+.bf-tabs .info-tab:checked { background-image: linear-gradient(135deg, #7b5cff, #ff5fa8); color: #ffffff; font-weight: 700; box-shadow: 0 2px 8px alpha(#7b5cff, 0.35); }
 .tab-name { font-weight: 700; }
 .info-person { padding: 4px 0; }
 .text link, .text link:visited, .text link:hover { color: inherit; text-decoration: underline; }
@@ -599,3 +604,19 @@ row:focus-visible { outline: 2px solid #b9a6ff; outline-offset: -2px; }
 
 .wizard button.wiz-retry { background: transparent; background-image: none; border: 1px solid alpha(#7b5cff, 0.7); color: var(--ink); border-radius: 99px; padding: 6px 18px; box-shadow: none; }
 .wizard button.wiz-retry:hover { background-color: alpha(#7b5cff, 0.25); }
+
+/* Settings wears the same look as the wizard */
+.bf-settings entry { background-color: var(--field); border-radius: 99px; border: 1px solid transparent; padding: 2px 14px; min-height: 34px; color: var(--ink); box-shadow: inset 0 1px 3px var(--shadow); }
+.bf-settings frame { background-color: var(--panel); border: none; border-radius: 18px; box-shadow: 0 4px 16px var(--shadow), inset 0 1px var(--panel-edge); }
+.bf-settings frame > label { font-weight: 700; margin: 10px 0 0 14px; }
+.bf-settings button { border-radius: 99px; }
+.bf-settings button.suggested-action, .bf-settings button.wiz-next { background-image: linear-gradient(135deg, #7b5cff, #ff5fa8); background-color: transparent; color: #ffffff; font-weight: 700; border: none; padding: 8px 22px; box-shadow: 0 4px 12px alpha(#7b5cff, 0.40), inset 0 1px rgba(255, 255, 255, 0.35); }
+.bf-settings dropdown > button { background-color: var(--field); border: none; box-shadow: inset 0 1px 3px var(--shadow); }
+.bf-settings button:not(.suggested-action):not(.wiz-next):not(.info-tab) { background-image: none; background-color: alpha(currentColor, 0.09); color: var(--ink); box-shadow: none; border: none; padding: 6px 16px; }
+.bf-settings button:not(.suggested-action):not(.wiz-next):not(.info-tab):hover { background-color: alpha(#7b5cff, 0.22); }
+.bf-settings dropdown > button { padding: 4px 14px; }
+.bf-tabs button.info-tab { padding: 5px 14px; }
+.bf-settings check { border-radius: 7px; background-image: none; background-color: var(--field); border: 1px solid alpha(#7b5cff, 0.55); box-shadow: inset 0 1px 2px var(--shadow); color: #ffffff; }
+.bf-settings check:checked { background-image: linear-gradient(135deg, #7b5cff, #ff5fa8); border-color: transparent; }
+.bf-settings windowcontrols button:not(.suggested-action):not(.wiz-next):not(.info-tab) { background-color: transparent; box-shadow: none; border-radius: 99px; background-image: none; padding: 4px; min-width: 24px; min-height: 24px; color: var(--ink-soft); }
+.bf-settings windowcontrols button:not(.suggested-action):not(.wiz-next):not(.info-tab):hover { background-color: alpha(currentColor, 0.12); }
