@@ -2926,9 +2926,50 @@ fn merged_chats(raw: &[Value], contacts: Option<&crate::mac::Contacts>) -> (Vec<
     (out, groups)
 }
 
+/// Order a group's people for showing: those with a contact name first, the people you wrote to most recently ahead of
+/// the others (numbers and emails last, in the order they came). Messages does something like this (a group of Jo, Rob
+/// and Drayven reads "Jo, Rob & Drayven": the people you message most).
+fn rank_members(handles: &[String], known: impl Fn(&str) -> bool, when: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let mut v: Vec<(bool, Option<String>, usize, &String)> = handles.iter().enumerate().map(|(i, h)| (known(h), when(h), i, h)).collect();
+    // known first; then newest first (those with no conversation after the others); ties in the original order
+    v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| if a.0 { b.1.cmp(&a.1) } else { std::cmp::Ordering::Equal }).then(a.2.cmp(&b.2)));
+    v.into_iter().map(|(_, _, _, h)| h.clone()).collect()
+}
+
+/// Put every group's `participants` in the order `rank_members` gives, from when you last wrote to each person.
+fn rank_group_members(st: &State, raw: &mut [Value]) {
+    let Some(k) = st.contacts.as_ref() else { return };
+    let mut by_addr: HashMap<String, String> = HashMap::new();
+    let mut by_person: HashMap<usize, String> = HashMap::new();
+    for c in raw.iter().filter(|c| c["is_group"].as_bool() != Some(true)) {
+        let (Some(h), Some(t)) = (c["participants"][0].as_str(), c["last_message_at"].as_str()) else { continue };
+        if let Some(a) = crate::mac::addr_key(h) {
+            let e = by_addr.entry(a).or_default();
+            if t > e.as_str() {
+                *e = t.to_string();
+            }
+        }
+        if let Some(p) = k.person_id(h) {
+            let e = by_person.entry(p).or_default();
+            if t > e.as_str() {
+                *e = t.to_string();
+            }
+        }
+    }
+    let known = |h: &str| st.names.contains_key(h) || k.person(h).is_some_and(|p| !p.name.is_empty());
+    let when = |h: &str| k.person_id(h).and_then(|p| by_person.get(&p)).or_else(|| crate::mac::addr_key(h).and_then(|a| by_addr.get(&a))).cloned();
+    for c in raw.iter_mut().filter(|c| c["is_group"].as_bool() == Some(true)) {
+        let handles: Vec<String> = c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
+        if handles.len() > 1 {
+            c["participants"] = Value::from(rank_members(&handles, known, when));
+        }
+    }
+}
+
 /// Replace the chat list with `raw` (as imsg gave it), merged by person. Returns the merges.
 fn set_chats(st: &mut State, raw: Vec<Value>) -> Vec<(i64, Vec<i64>)> {
-    let raw: Vec<Value> = raw.into_iter().filter(|c| c["hidden"].as_bool() != Some(true)).collect(); // (chats without a message)
+    let mut raw: Vec<Value> = raw.into_iter().filter(|c| c["hidden"].as_bool() != Some(true)).collect(); // (chats without a message)
+    rank_group_members(st, &mut raw);
     let (merged, groups) = merged_chats(&raw, st.contacts.as_ref());
     let alias: HashMap<i64, i64> = groups.iter().flat_map(|(c, ids)| ids.iter().map(move |i| (*i, *c))).collect();
     if let Some(c) = st.sel.and_then(|s| alias.get(&s)) {
@@ -4210,24 +4251,35 @@ fn render_conv(u: &Rc<Ui>) {
     let sms = now_svc != "iMessage";
     u.compose_hint.set_text(&if sms { format!("Text Message · {now_svc}") } else { "iMessage".into() });
     let group = chat["is_group"].as_bool() == Some(true);
-    u.head_title.set_text(&title);
-    let mut sub = now_svc.clone();
-    if group {
-        let people: Vec<String> = chat["participants"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|p| p.as_str())
-            .map(|p| names.get(p).cloned().unwrap_or_else(|| pretty_handle(p)))
-            .collect();
-        sub = format!("{sub} · {}", people.join(", "));
-    } else if let Some(h) = chat["participants"][0].as_str()
-        && pretty_handle(h) != title
-    {
-        sub = format!("{sub} · {}", pretty_handle(h));
-    }
+    let people_n = chat["participants"].as_array().map_or(0, Vec::len);
+    let big = group && people_n > BIG_GROUP;
+    // a big group: its name (or "Chat with N People"), not every name; the avatar opens the list
+    let named = chat["display_name"].as_str().filter(|s| !s.is_empty()).map(String::from);
+    let head = match (&named, big) {
+        (Some(n), _) => n.clone(),
+        (None, true) => big_group_title(&chat, &names),
+        (None, false) => title.clone(),
+    };
+    u.head_title.set_text(&head);
+    // only the kind of service under the name: the people and numbers are in the title, the card and the info panel
+    let sub = match now_svc.as_str() {
+        "SMS" | "RCS" => format!("Text Message \u{b7} {now_svc}"),
+        other => other.to_string(),
+    };
     u.head_sub.set_text(&sub);
     set_head_avatar(u, &chat, &title);
+    // dev aid BF_PEOPLE=<ms>: open the people list of a big group, click the first person 0.6 s later and report
+    if big && let Some(ms) = std::env::var("BF_PEOPLE").ok().and_then(|v| v.parse::<u64>().ok()) {
+        static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !ONCE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let (u2, chat2) = (u.clone(), chat.clone());
+            glib::timeout_add_local_once(Duration::from_millis(ms), move || {
+                let members: Vec<String> = chat2["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
+                let w = u2.head_avatar.first_child().and_then(|c| c.first_child()).unwrap_or_else(|| u2.head_avatar.clone().upcast());
+                show_people(&u2, &w, &members);
+            });
+        }
+    }
     for c in ["sms", "imessage"] {
         u.send_btn.remove_css_class(c);
     }
@@ -6581,15 +6633,15 @@ fn chat_title(c: &Value, names: &HashMap<String, String>) -> String {
             return s.to_string();
         }
     }
-    let people: Vec<String> = c["participants"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|p| p.as_str())
-        .map(|p| names.get(p).cloned().unwrap_or_else(|| pretty_handle(p)))
-        .collect();
-    if !people.is_empty() {
-        return people.join(", ");
+    // a group without a name: its people by first name, "Jo & Kari", "Jo, Rob & Drayven" (numbers stay whole)
+    // (people with a contact name first, then numbers and emails, each in the order they come)
+    let handles: Vec<&str> = c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).collect();
+    let mut people: Vec<String> = handles.iter().filter_map(|p| names.get(*p).map(|n| first_name(n))).collect();
+    people.extend(handles.iter().filter(|p| !names.contains_key(**p)).map(|p| pretty_handle(p)));
+    match people.as_slice() {
+        [] => {}
+        [one] => return one.clone(),
+        [init @ .., last] => return format!("{} & {last}", init.join(", ")),
     }
     pretty_handle(c["identifier"].as_str().unwrap_or("?"))
 }
@@ -6643,6 +6695,35 @@ fn group_event(m: &Value, names: &HashMap<String, String>) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// "Jo Harris" -> "Jo".
+fn first_name(name: &str) -> String {
+    name.split_whitespace().next().unwrap_or(name).to_string()
+}
+
+/// The header title of a group with more than a handful of people and no name: a few first names, then how many
+/// more there are. Numbers and emails are never listed (they count among the others); with no names at all it is
+/// just the number of people.
+fn big_group_title(c: &Value, names: &HashMap<String, String>) -> String {
+    let handles: Vec<&str> = c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).collect();
+    let known: Vec<String> = handles.iter().filter_map(|p| names.get(*p).map(|n| first_name(n))).take(3).collect();
+    if known.is_empty() {
+        return format!("Chat with {} People", handles.len());
+    }
+    let others = handles.len() - known.len();
+    let others = if others == 1 { "1 other".to_string() } else { format!("{others} others") };
+    match known.as_slice() {
+        [one] => format!("{one} & {others}"),
+        _ => format!("{} & {others}", known.join(", ")),
+    }
+}
+
+/// People with a contact name first, the rest after them, each group in the order it came.
+fn known_first(members: &[String], names: &HashMap<String, String>) -> Vec<String> {
+    let mut v: Vec<String> = members.iter().filter(|m| names.contains_key(*m)).cloned().collect();
+    v.extend(members.iter().filter(|m| !names.contains_key(*m)).cloned());
+    v
 }
 
 fn clean_text(m: &Value) -> String {
@@ -6824,17 +6905,24 @@ fn mini_avatar(u: &Ui, name: &str, handle: &str, d: i32) -> gtk::Widget {
 
 /// "+3": how many more people than there is room for.
 fn more_pill(n: usize, d: i32) -> gtk::Widget {
-    let l = gtk::Label::new(Some(&format!("+{n}")));
+    let text = format!("+{n}");
+    let l = gtk::Label::new(Some(&text));
     l.add_css_class("avatar");
     l.add_css_class("mini");
     l.add_css_class("more");
-    l.set_size_request(d, d);
+    l.set_size_request(more_width(n, d), d); // a pill, not a squeezed circle, for two digits or more
     l.upcast()
+}
+
+/// How wide the "+N" pill is for a circle size `d`.
+fn more_width(n: usize, d: i32) -> i32 {
+    d + (n.to_string().len() as i32 - 1) * d / 3
 }
 
 /// A group's avatar, like Messages: a disc with the other members' small avatars inside it. With
 /// more than four people it shows three and a "+N" circle for the rest.
 fn group_avatar(u: &Ui, title: &str, members: &[String], names: &HashMap<String, String>) -> gtk::Widget {
+    let members = &known_first(members, names)[..];
     let n = members.len();
     if n < 2 {
         return avatar(u, title, members.first().map(String::as_str), false);
@@ -6854,7 +6942,8 @@ fn group_avatar(u: &Ui, title: &str, members: &[String], names: &HashMap<String,
     }
     if n > 4 {
         let (x, y) = spots[3];
-        fixed.put(&more_pill(n - 3, d), x as f64, y as f64);
+        let w = more_width(n - 3, d);
+        fixed.put(&more_pill(n - 3, d), (x - (w - d)).max(0) as f64, y as f64); // grows to the left, inside the avatar
     }
     let b = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     b.add_css_class("group-avatar");
@@ -6878,6 +6967,7 @@ type Slot = Rc<Cell<Option<usize>>>;
 // fire leave/enter events on it. The avatars therefore don't take events at all: the stack does the
 // hit-testing itself, by position.
 fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<String, String>, open_card: OpenCard) -> gtk::Widget {
+    let members = &known_first(members, names)[..];
     let n = members.len();
     if n < 2 {
         let w = avatar(u, title, members.first().map(String::as_str), false);
@@ -7001,6 +7091,17 @@ fn header_avatar(u: &Rc<Ui>, chat: &Value, title: &str) -> gtk::Widget {
     if chat["is_group"].as_bool() == Some(true) {
         let members: Vec<String> = chat["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
         let names = u.st.borrow().names.clone();
+        if members.len() > BIG_GROUP {
+            // too many to show one by one: the list's avatar, which opens the list of people
+            let w = group_avatar(u, title, &members, &names);
+            w.set_halign(gtk::Align::Start);
+            w.set_cursor_from_name(Some("pointer"));
+            let (u2, w2) = (u.clone(), w.clone());
+            let g = gtk::GestureClick::new();
+            g.connect_released(move |_, _, _, _| show_people(&u2, &w2, &members));
+            w.add_controller(g);
+            return w;
+        }
         stacked_avatars(u, title, &members, &names, click)
     } else {
         let w = avatar(u, title, direct_addr(chat), false);
@@ -7049,6 +7150,121 @@ fn show_card(u: &Rc<Ui>, w: &gtk::Widget, handle: &str, name: &str, open: CardOp
     pop.popup();
     open(true);
     body.grab_focus(); // else the first button opens with a focus ring
+}
+
+/// More people than this in a group chat and the header shows the list's avatar and "N People" instead of one
+/// avatar and one name for each.
+const BIG_GROUP: usize = 4;
+
+/// The list of people in a big group, dropped in under its header avatar. Picking a person swaps the list for their
+/// contact card, with a back button, so it is one popover of one width whatever the window's size.
+fn show_people(u: &Rc<Ui>, w: &gtk::Widget, members: &[String]) {
+    let pop = gtk::Popover::new();
+    pop.set_parent(&u.win);
+    pop.set_position(gtk::PositionType::Bottom);
+    let mut room = u.win.height();
+    if let Some(r) = w.compute_bounds(&u.win) {
+        pop.set_pointing_to(Some(&gdk::Rectangle::new(r.x() as i32, r.y() as i32, r.width() as i32, r.height() as i32)));
+        room -= (r.y() + r.height()) as i32;
+    }
+    if let Some(mon) = u.win.surface().and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s)) {
+        room = room.min(mon.geometry().height() - 120);
+    }
+    let max_h = (room - 30).max(200);
+    let names = u.st.borrow().names.clone();
+
+    let stack = gtk::Stack::new();
+    stack.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
+    stack.set_transition_duration(160);
+    stack.set_vhomogeneous(false);
+    stack.set_interpolate_size(true);
+
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    list.add_css_class("people-list");
+    list.set_size_request(340, -1);
+    let head = gtk::Label::new(Some(&format!("{} People", members.len())));
+    head.add_css_class("card-name");
+    head.set_xalign(0.0);
+    list.append(&head);
+    let people = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let mut first_row: Option<gtk::Button> = None;
+    for h in members {
+        let name = names.get(h).cloned().unwrap_or_else(|| pretty_handle(h));
+        let row = gtk::Button::new();
+        row.add_css_class("flat");
+        row.add_css_class("person-row");
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        line.append(&mini_avatar(u, &name, h, 32));
+        let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        col.set_valign(gtk::Align::Center);
+        let n = gtk::Label::new(Some(&name));
+        n.set_xalign(0.0);
+        n.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        col.append(&n);
+        if pretty_handle(h) != name {
+            let a = gtk::Label::new(Some(&pretty_handle(h)));
+            a.add_css_class("dim");
+            a.set_xalign(0.0);
+            a.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            col.append(&a);
+        }
+        line.append(&col);
+        row.set_child(Some(&line));
+        let (u2, pop2, stack2, h2, name2, count) = (u.clone(), pop.clone(), stack.clone(), h.clone(), name.clone(), members.len());
+        row.connect_clicked(move |_| {
+            if let Some(old) = stack2.child_by_name("card") {
+                stack2.remove(&old);
+            }
+            let page = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            let back = gtk::Button::with_label(&format!("\u{2039} {count} People"));
+            back.add_css_class("flat");
+            back.set_halign(gtk::Align::Start);
+            let stack3 = stack2.clone();
+            back.connect_clicked(move |_| stack3.set_visible_child_name("list"));
+            page.append(&back);
+            let scroll = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .propagate_natural_height(true)
+                .propagate_natural_width(true)
+                .max_content_height(max_h - 40)
+                .child(&card_body(&u2, &pop2, &h2, &name2))
+                .build();
+            page.append(&scroll);
+            stack2.add_named(&page, Some("card"));
+            stack2.set_visible_child_name("card");
+            back.grab_focus(); // keep the focus inside the popover: the list's button, which had it, is hidden now
+        });
+        first_row.get_or_insert_with(|| row.clone());
+        people.append(&row);
+    }
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .max_content_height(max_h - 40)
+        .propagate_natural_width(true)
+        .child(&people)
+        .build();
+    list.append(&scroll);
+    stack.add_named(&list, Some("list"));
+    pop.set_child(Some(&stack));
+    if std::env::var_os("BF_PEOPLE").is_some() {
+        let (stack2, pop2) = (stack.clone(), pop.clone());
+        glib::timeout_add_local_once(Duration::from_millis(600), move || {
+            eprintln!("people: before click visible={} page={:?} width={}", pop2.is_visible(), stack2.visible_child_name(), stack2.width());
+            if let Some(b) = first_row {
+                b.emit_clicked();
+            }
+            let (stack3, pop3) = (stack2.clone(), pop2.clone());
+            glib::timeout_add_local_once(Duration::from_millis(600), move || {
+                eprintln!("people: after click visible={} page={:?} width={}", pop3.is_visible(), stack3.visible_child_name(), stack3.width());
+            });
+        });
+    }
+    pop.connect_closed(move |p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
+    pop.popup();
 }
 
 /// A round icon button for the contact card.
@@ -7451,7 +7667,7 @@ fn rel_time(unix: i64, kind: TimeKind) -> String {
         (TimeKind::Sep, 1) => format!("Yesterday {clock}"),
         (TimeKind::Sep, 2..=6) => format!("{} {clock}", fmt("%a")),
         (TimeKind::Sep, _) if this_year => format!("{}, {clock}", fmt("%a, %b %-d")),
-        (TimeKind::Sep, _) => format!("{}, {clock}", fmt("%a, %b %-d, %Y")),
+        (TimeKind::Sep, _) => format!("{}, {clock}", fmt("%b %-d, %Y")),
         (_, 0) => clock,
         (_, 1) => "Yesterday".into(),
         (_, 2..=6) => fmt("%a"),
@@ -7579,7 +7795,27 @@ mod tests {
     #[test]
     fn titles_and_initials() {
         let names = HashMap::from([("+1".to_string(), "Ann Lee".to_string())]);
-        assert_eq!(chat_title(&json!({"display_name": "", "participants": ["+1", "+2"]}), &names), "Ann Lee, +2");
+        assert_eq!(chat_title(&json!({"display_name": "", "participants": ["+1", "+2"]}), &names), "Ann & +2");
+        let names3 = HashMap::from([("a".to_string(), "Jo Harris".to_string()), ("b".to_string(), "Rob Epp".to_string()), ("c".to_string(), "Drayven".to_string())]);
+        assert_eq!(chat_title(&json!({"display_name": "", "participants": ["a", "b", "c"]}), &names3), "Jo, Rob & Drayven");
+        assert_eq!(chat_title(&json!({"display_name": "Book Club", "participants": ["a", "b"]}), &names3), "Book Club");
+        // numbers go last, in titles and avatars
+        assert_eq!(chat_title(&json!({"display_name": "", "participants": ["+9", "a", "b"]}), &names3), "Jo, Rob & +9");
+        assert_eq!(known_first(&["+9".to_string(), "a".to_string()], &names3), vec!["a".to_string(), "+9".to_string()]);
+        // ranked: known first, those you wrote to last come first, a number after them all
+        let hs: Vec<String> = ["drayven", "+9", "rob", "jo"].iter().map(|s| s.to_string()).collect();
+        let when = |h: &str| match h { "jo" => Some("2026-11".to_string()), "rob" => Some("2025-01".to_string()), "drayven" => Some("2024-02".to_string()), _ => None };
+        let got = rank_members(&hs, |h| h != "+9", when);
+        assert_eq!(got, vec!["jo", "rob", "drayven", "+9"]);
+        // a big group: first names, the rest counted; no names, just the count
+        let big = json!({"display_name": "", "participants": ["+1", "+2", "a", "b", "c", "+3", "+4"]});
+        assert_eq!(big_group_title(&big, &names3), "Jo, Rob, Drayven & 4 others");
+        let few = json!({"display_name": "", "participants": ["+1", "+2", "a", "+3", "+4"]});
+        assert_eq!(big_group_title(&few, &names3), "Jo & 4 others");
+        let none = json!({"display_name": "", "participants": ["+1", "+2", "+3", "+4", "+5"]});
+        assert_eq!(big_group_title(&none, &names3), "Chat with 5 People");
+        let one_left = json!({"display_name": "", "participants": ["a", "b", "c", "+1", "d"]});
+        assert_eq!(big_group_title(&one_left, &names3), "Jo, Rob, Drayven & 2 others");
         assert_eq!(chat_title(&json!({"display_name": "", "contact_name": "Rob"}), &names), "Rob");
         assert_eq!(initials("Ann Lee"), "AL");
         assert_eq!(initials("+1 555"), "#");

@@ -246,11 +246,12 @@ row.unread .chat-preview { color: var(--ink); }
 }
 .avatar.mini.more {
   background-image: none;
-  background-color: var(--panel);
-  color: var(--ink);
-  font-weight: 700;
-  font-size: 0.55em;
+  background-color: #6a55e8;
+  color: #ffffff;
+  font-weight: 800;
+  font-size: 0.72em;
   text-shadow: none;
+  border-color: rgba(255, 255, 255, 0.9);
 }
 .avatar.mini.stackav { font-size: 0.85em; border-width: 2px; box-shadow: 0 2px 6px var(--shadow); }
 .avatar.mini.more.stackav { font-size: 0.8em; }
@@ -493,3 +494,7 @@ button.save-btn.done:disabled { opacity: 1; }
 
 /* a group event: "Jo Harris left the conversation." */
 .group-event { color: var(--ink-soft); font-size: 0.82em; margin: 8px 24px 6px 24px; }
+
+/* the people of a big group, in the popover under the header avatar */
+.people-list { padding: 4px 2px; }
+.person-row { padding: 4px 6px; border-radius: 12px; }
