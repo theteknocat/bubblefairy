@@ -1,0 +1,42 @@
+# Push a tag like v0.1.0 to build the Flatpak bundle and publish it as a GitHub Release.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match Cargo.toml
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $v"; exit 1; }
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: BubbleFairy-${{ github.ref_name }}.flatpak
+          manifest-path: flatpak/io.github.theteknocat.BubbleFairy.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: BubbleFairy-${{ github.ref_name }}.flatpak
+
+  release:
+    needs: bundle
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" BubbleFairy-*.flatpak --repo "$GITHUB_REPOSITORY" --title "BubbleFairy ${GITHUB_REF_NAME#v}" --generate-notes

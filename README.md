@@ -7,14 +7,14 @@ It's a front end for Messages on your Mac, which still does the actual messaging
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-teknocat-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/teknocat)
 If BubbleFairy is useful to you, you can [buy me a coffee](https://buymeacoffee.com/teknocat).
 
-> **Status: early development.** There is nothing to install yet.
+> **Status: early release.** Get the latest `.flatpak` from the [Releases](../../releases) page.
 
-> ### 🤖 Fully vibe coded
-> **Every line of this project was written by AI.** I'm building BubbleFairy entirely by describing what I want to
-> [Claude Code](https://claude.com/claude-code) (Anthropic's AI coding tool) and testing the result by using it.
-> I'm being upfront about that so anyone reading or reviewing the code knows what they are looking at. It works
-> well for me, but it has not had a professional audit, and some of the code will look like what it is. Reviews,
-> bug reports and pull requests are very welcome.
+> ### 🤖 Built with AI
+> **Every line of this project was written by AI** ([Claude Code](https://claude.com/claude-code), Anthropic's AI
+> coding tool). It wasn't one prompt: I design the app, review each piece, test it on my own Mac and conversations,
+> and decide what stays. Before release it had an AI code audit and has unit tests for the risky parts, but it has
+> not had a review by a human Rust developer, and some of the code will look like what it is. I'm not a Rust developer,
+> so reviews, bug reports and pull requests are very welcome. More on [how I work with AI](https://github.com/theteknocat/theteknocat/blob/main/AI.md).
 
 ## How it works
 
@@ -30,7 +30,18 @@ Nothing related to iMessage runs on Linux. BubbleFairy talks to [imsg](https://g
 - For SMS: Text Message Forwarding turned on for the Mac on your iPhone.
 - A Linux desktop that can run Flatpak apps. It's tested on KDE Plasma and GNOME.
 
-## Planned setup
+## Install
+
+Download `BubbleFairy-vX.Y.Z.flatpak` from the [Releases](../../releases) page, then:
+
+```text
+flatpak install --bundle BubbleFairy-vX.Y.Z.flatpak
+flatpak run io.github.theteknocat.BubbleFairy
+```
+
+The GNOME runtime it needs comes from Flathub, so Flathub should be set up as a Flatpak remote.
+
+## Setup
 
 You do only these things on the Mac:
 

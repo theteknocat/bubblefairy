@@ -8058,7 +8058,7 @@ mod tests {
         assert!(!is_addr("Sue") && !is_addr("12") && !is_addr("a@b"));
         assert!(same_addr("403 555 1234", "+14035551234"));
         assert!(same_addr("Sue@iCloud.com", "sue@icloud.com"));
-        assert!(!same_addr("562528", "+14035562528"));
+        assert!(!same_addr("551299", "+14035551299"));
         assert!(!same_addr("4035551234", "+14035551235"));
         assert_eq!(clean_addr(" +1 (403) 555-1234 "), "+14035551234");
     }
