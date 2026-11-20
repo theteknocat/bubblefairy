@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=BubbleFairy
+Comment=Your iMessages on your Linux desktop
+Exec=bubblefairy
+Icon=io.github.theteknocat.BubbleFairy
+Terminal=false
+Categories=Network;InstantMessaging;Chat;GTK;
+Keywords=messages;imessage;chat;
+StartupNotify=true

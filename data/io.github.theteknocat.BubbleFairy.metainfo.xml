@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.theteknocat.BubbleFairy</id>
+  <name>BubbleFairy</name>
+  <summary>Your iMessages on your Linux desktop, ferried over from your Mac</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.theteknocat"><name>Peter Epp</name></developer>
+  <description>
+    <p>BubbleFairy brings Messages to your Linux desktop: conversations with photos, videos, links and files, live notifications with sound, and search across everything.</p>
+    <p>It is a front end for Messages on your Mac, which still does the messaging. BubbleFairy connects to the Mac securely over your network.</p>
+  </description>
+  <launchable type="desktop-id">io.github.theteknocat.BubbleFairy.desktop</launchable>
+  <url type="homepage">https://github.com/theteknocat/bubblefairy</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-20"/>
+  </releases>
+</component>

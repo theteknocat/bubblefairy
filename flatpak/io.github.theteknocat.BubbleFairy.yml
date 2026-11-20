@@ -1,0 +1,37 @@
+# Local build manifest. It builds from this checkout and lets cargo download crates (build-args below); Flathub
+# will need the crates vendored as offline sources instead (flatpak-cargo-generator), see PLAN.md.
+app-id: io.github.theteknocat.BubbleFairy
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: bubblefairy
+finish-args:
+  - --share=network                          # SSH to the Mac, link previews, map tiles, YouTube
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --socket=pulseaudio                      # notification sounds, video and YouTube audio
+  - --talk-name=org.freedesktop.Notifications  # asks whether do-not-disturb is on
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  build-args:
+    - --share=network                        # local builds only
+  env:
+    CARGO_HOME: /run/build/bubblefairy/cargo
+modules:
+  - name: bubblefairy
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked
+      - install -Dm755 target/release/bubblefairy /app/bin/bubblefairy
+      - install -Dm644 data/io.github.theteknocat.BubbleFairy.desktop /app/share/applications/io.github.theteknocat.BubbleFairy.desktop
+      - install -Dm644 data/io.github.theteknocat.BubbleFairy.metainfo.xml /app/share/metainfo/io.github.theteknocat.BubbleFairy.metainfo.xml
+      - mkdir -p /app/share/icons && cp -r data/icons/hicolor /app/share/icons/
+      - mkdir -p /app/share/bubblefairy/sounds && install -m644 data/sounds/*.wav /app/share/bubblefairy/sounds/
+    sources:
+      - type: dir
+        path: ..
+        skip: [target, .git, .flatpak-builder, shots, poc]

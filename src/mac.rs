@@ -356,7 +356,7 @@ async fn connect(cfg: &Config, paths: &Paths, ev: &mpsc::UnboundedSender<Event>)
         Err(_) => return Err(format!("{} didn't answer - is Remote Login on?", cfg.host)),
         Ok(Err(russh::Error::UnknownKey)) => {
             return Err("the Mac's identity changed since the first connection. If you reinstalled or replaced the Mac, \
-                        delete the saved host key in Settings and connect again."
+                        open Settings > Mac connection and choose Set up again…"
                 .into());
         }
         Ok(Err(e)) => return Err(format!("couldn't connect: {e}")),
@@ -371,7 +371,7 @@ async fn connect(cfg: &Config, paths: &Paths, ev: &mpsc::UnboundedSender<Event>)
         .await
         .map_err(|e| format!("login failed: {e}"))?;
     if !auth.success() {
-        return Err("the Mac refused BubbleFairy's key. Add the public key from Settings to ~/.ssh/authorized_keys on the Mac.".into());
+        return Err("the Mac refused BubbleFairy's key. Open Settings > Mac connection and choose Set up again… to add it again.".into());
     }
     if known.is_none() {
         let _ = std::fs::write(&paths.known_host, &seen);
@@ -1809,6 +1809,14 @@ mod tests {
     fn quoting_survives_shell_tricks() {
         assert_eq!(sh_quote("$(rm -rf ~)"), "'$(rm -rf ~)'");
         assert_eq!(sh_quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn quoting_round_trips_through_a_real_shell() {
+        for s in ["plain", "it's", "a b", "$(echo hi)", "`id`", "x; echo pwned", "a\\b", "\"q\"", "tab\there", "é ✨", "''", ""] {
+            let out = std::process::Command::new("sh").arg("-c").arg(format!("printf %s {}", sh_quote(s))).output().unwrap();
+            assert_eq!(String::from_utf8_lossy(&out.stdout), s);
+        }
     }
 
     #[test]
