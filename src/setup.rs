@@ -240,9 +240,15 @@ impl Link {
     async fn remove_key(&self, key: &str) {
         let id = key.split_whitespace().nth(1).unwrap_or("").to_string();
         if id.len() > 20 {
-            let _ = self.run(&format!("grep -vF {} ~/.ssh/authorized_keys > ~/.ssh/ak.tmp; cat ~/.ssh/ak.tmp > ~/.ssh/authorized_keys; rm -f ~/.ssh/ak.tmp", sh_quote(&id)), None, Duration::from_secs(20)).await;
+            let _ = self.run(&remove_key_cmd(&id), None, Duration::from_secs(20)).await;
         }
     }
+}
+
+/// Shell line that drops the lines containing `id` from the Mac's authorized_keys. grep exits 1 when nothing is left
+/// (fine) and 2 on an error: then the file must be left alone, never overwritten by a half-written copy.
+fn remove_key_cmd(id: &str) -> String {
+    format!("grep -vF {} ~/.ssh/authorized_keys > ~/.ssh/ak.tmp; [ $? -le 1 ] && cat ~/.ssh/ak.tmp > ~/.ssh/authorized_keys; rm -f ~/.ssh/ak.tmp", sh_quote(id))
 }
 
 /// Does signing in with the key work now? Tried a few times: right after the key was added, the first sign-in has
@@ -1387,5 +1393,25 @@ mod tests {
     #[test]
     fn hash_helper_matches_known_value() {
         assert_eq!(super::sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    #[test]
+    fn removing_a_key_keeps_the_others_and_never_empties_the_file_on_error() {
+        let home = std::env::temp_dir().join(format!("bf-ak-{}", std::process::id()));
+        let ssh = home.join(".ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        let run = |cmd: String| std::process::Command::new("sh").env("HOME", &home).arg("-c").arg(cmd).status().unwrap();
+        let f = ssh.join("authorized_keys");
+        std::fs::write(&f, "ssh-ed25519 AAAAkeep one\nssh-ed25519 AAAAdropme two\n").unwrap();
+        run(super::remove_key_cmd("AAAAdropme"));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "ssh-ed25519 AAAAkeep one\n");
+        run(super::remove_key_cmd("AAAAkeep")); // the last key goes: an empty file is right
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "");
+        std::fs::write(&f, "ssh-ed25519 AAAAkeep one\n").unwrap();
+        std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o200)).unwrap(); // write-only: grep can't read it (exit 2) but a blind overwrite would work
+        run(super::remove_key_cmd("AAAAdropme"));
+        std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "ssh-ed25519 AAAAkeep one\n");
+        std::fs::remove_dir_all(&home).ok();
     }
 }
