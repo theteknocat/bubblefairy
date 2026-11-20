@@ -388,7 +388,7 @@ const STEPS: [&str; 6] = ["Signing in", "Checking the Mac", "Adding BubbleFairy'
 
 /// Open the wizard over `parent`.
 pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ctx) {
-    let win = gtk::Window::builder().application(app).title("Set up BubbleFairy").default_width(640).default_height(660).build();
+    let win = gtk::Window::builder().application(app).title("Set up BubbleFairy").default_width(720).default_height(540).resizable(false).build();
     if let Some(p) = parent {
         win.set_transient_for(Some(p));
         win.set_modal(true);
@@ -417,19 +417,45 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         }
         l
     };
+    // every page: the title on top, the fairy on the left (a third), the page's own content on the right (two thirds)
+    let outers: RefCell<Vec<gtk::Box>> = RefCell::new(Vec::new());
     let page = |title: &str| {
-        let b = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        b.set_margin_top(8);
-        b.append(&label(title, "setup-title"));
-        b
+        let outer = gtk::Box::new(gtk::Orientation::Vertical, 14);
+        outer.set_margin_top(8);
+        outer.append(&label(title, "setup-title"));
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 22);
+        // a Picture keeps the artwork's own shape (a gtk::Image draws icons into a square)
+        let icon = gtk::IconTheme::for_display(&gtk::gdk::Display::default().expect("display")).lookup_icon("bf-intro", &[], 260, 1, gtk::TextDirection::Ltr, gtk::IconLookupFlags::empty());
+        let art = gtk::Picture::for_file(&icon.file().expect("icon file"));
+        art.set_content_fit(gtk::ContentFit::Contain);
+        art.set_valign(gtk::Align::Start);
+        art.set_halign(gtk::Align::Start);
+        art.set_hexpand(false);
+        art.set_size_request(260, 169);
+        let art_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        art_box.set_valign(gtk::Align::Start);
+        art_box.set_hexpand(false);
+        art_box.append(&art);
+        row.append(&art_box);
+        // divider + content share a box that is only as tall as the content, so the divider matches it
+        let side = gtk::Box::new(gtk::Orientation::Horizontal, 22);
+        side.set_hexpand(true);
+        side.set_valign(gtk::Align::Start);
+        let divider = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        divider.add_css_class("wiz-divider");
+        side.append(&divider);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        content.set_hexpand(true);
+        side.append(&content);
+        row.append(&side);
+        row.set_vexpand(true);
+        outer.append(&row);
+        outers.borrow_mut().push(outer);
+        content
     };
 
     // 0: welcome, and the one thing to do on the Mac first
     let p0 = page("Welcome to BubbleFairy");
-    let art = gtk::Image::from_icon_name("bf-intro");
-    art.set_pixel_size(340);
-    art.set_halign(gtk::Align::Center);
-    p0.prepend(&art);
     p0.append(&label("BubbleFairy shows your Messages on this computer by talking to a Mac of yours, which has to be on and signed in. It needs one thing switched on there first:", "dim"));
     let steps_l = label("", "");
     steps_l.set_markup("<b>1.</b>  On the Mac, open <b>System Settings → General → Sharing</b>.\n<b>2.</b>  Turn on <b>Remote Login</b>. (Scroll down if you don't see it; some versions keep it under <b>Advanced</b>.)\n<b>3.</b>  Come back here and click <b>Get started</b>.");
@@ -479,7 +505,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     field.add_overlay(&host_status);
     field.add_overlay(&drop_btn);
     field.set_halign(gtk::Align::Center);
-    field.set_size_request(420, -1);
+    field.set_size_request(340, -1);
     p1.append(&field);
     let host_msg = label("", "wiz-err");
     host_msg.set_visible(false);
@@ -491,7 +517,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     let pass = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("Mac password").css_classes(["wiz-field"]).sensitive(false).build();
     for f in [user.upcast_ref::<gtk::Widget>(), pass.upcast_ref::<gtk::Widget>()] {
         f.set_halign(gtk::Align::Center);
-        f.set_size_request(420, -1);
+        f.set_size_request(340, -1);
     }
     p1.append(&user);
     p1.append(&pass);
@@ -552,7 +578,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
 
     // 5: the test message
     let p5 = page("Send a test message");
-    let test_title = p5.first_child().and_downcast::<gtk::Label>().expect("page title");
+    let test_title = outers.borrow().last().and_then(|o| o.first_child()).and_downcast::<gtk::Label>().expect("page title");
     p5.append(&label("This sends a short message through Messages on your Mac, so you know sending works. Have your Mac in view: the first time, macOS asks whether to allow control of Messages. Click Allow. You can send it to yourself: use your own phone number or Apple ID email.", "dim"));
     let to = gtk::Entry::builder().placeholder_text("your phone number or email").css_classes(["wiz-field", "with-action"]).build();
     // the send button sits inside the right end of the field; it becomes a spinner while sending, then a check
@@ -582,7 +608,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     to_field.set_child(Some(&to));
     to_field.add_overlay(&test_stack);
     to_field.set_halign(gtk::Align::Center);
-    to_field.set_size_request(420, -1);
+    to_field.set_size_request(340, -1);
     p5.append(&to_field);
     let test_msg = label("", "dim");
     test_msg.set_halign(gtk::Align::Center);
@@ -599,8 +625,9 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     p5.append(&stop_btn);
 
     let pages = gtk::Stack::new();
-    pages.add_named(&p0, Some("intro"));
-    for (name, p) in PAGES.iter().zip([&p1, &p4, &p5]) {
+    let outers = outers.into_inner();
+    pages.add_named(&outers[0], Some("intro"));
+    for (name, p) in PAGES.iter().zip(&outers[1..]) {
         pages.add_named(p, Some(name));
     }
     let back = gtk::Button::with_label("Back");
@@ -621,6 +648,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         })
         .collect();
     let bar = gtk::CenterBox::new();
+    bar.add_css_class("wiz-footer");
     bar.set_start_widget(Some(&back));
     bar.set_center_widget(Some(&dot_row));
     bar.set_end_widget(Some(&next));

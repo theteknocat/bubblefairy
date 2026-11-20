@@ -530,10 +530,12 @@ label:focus, label:focus-visible { outline: none; }
   border-radius: 22px;
   box-shadow: 0 8px 28px var(--shadow), 0 1px 3px var(--shadow), inset 0 1px var(--panel-edge);
   margin: 2px 14px 14px 14px;
-  padding: 26px 28px 20px 28px;
+  padding: 10px 28px 20px 0;
   color: var(--ink);
 }
-.wizard .setup-title { font-size: 1.5em; font-weight: 800; color: var(--ink); }
+.wizard .setup-title { font-size: 1.5em; font-weight: 800; color: var(--ink); margin-left: 28px; }
+.wizard .wiz-divider { min-width: 1px; background-image: linear-gradient(to bottom, transparent, alpha(white, 0.55) 25%, alpha(white, 0.55) 75%, transparent); }
+.wizard .wiz-footer { margin-left: 28px; }
 .wizard .wiz-field, .wizard entry.wiz-field {
   background-color: var(--field);
   border-radius: 99px;
