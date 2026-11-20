@@ -126,9 +126,9 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 - Files: saving to a chosen place is covered by "Save attachments" under Candidate features.
 - The control-layout question for the viewer is settled: photos and video files use the shared control bar and fading buttons; YouTube keeps its own player controls with our buttons in a strip above it that shrinks away when they hide.
 
-### App icon (before the first release)
+### App icon (done 2026-11-20)
 
-A chat bubble with a cartoon magic wand: a stick with a five-point star on the end, drawn in a cartoon style with a few little sparkles around the star. Decided 2026-11-20: instead of generating options in Draw Things, base the icon on part of the fairy image already made for the setup wizard; Claude turns it into the Flatpak icon set (scalable SVG plus a symbolic version). Needs to be done before Flathub submission.
+Chosen: variant B3 — a glossy blue bubble on a lavender rounded tile with a gold star on a wand handle (down to the right), in the wizard fairy's style (navy outlines, gloss, glow). Files: `data/icons/hicolor/scalable/apps/io.github.theteknocat.BubbleFairy.svg` and `...-symbolic.svg` (checked at 16/32/64 px; the symbolic one is a bubble with a star cut-out). Other variants (fairy peeking, fairy holding the wand to the bubble) were made and set aside. Still to do: the Flatpak must install them, and the window/desktop entry must use the ID.
 
 The header's "BubbleFairy ✨" title (with the round unread-count badge after it) is a stand-in: revisit it together with the icon.
 
