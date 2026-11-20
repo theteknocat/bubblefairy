@@ -20,7 +20,7 @@ pub const APP_ID: &str = "io.github.theteknocat.BubbleFairy";
 pub const DEFAULT_IMSG: &str = "/opt/homebrew/bin/imsg";
 
 fn load_config(path: &Path) -> mac::Config {
-    let mut c = mac::Config { imsg: DEFAULT_IMSG.into(), map_previews: true, notify: true, notify_sound: true, sound: sound::DEFAULT.into(), ..Default::default() };
+    let mut c = mac::Config { imsg: DEFAULT_IMSG.into(), notify: true, notify_sound: true, sound: sound::DEFAULT.into(), ..Default::default() };
     for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
         match line.split_once('=') {
             Some(("host", v)) => c.host = v.trim().into(),
