@@ -4874,7 +4874,11 @@ fn plain_link_card(u: &Rc<Ui>, url: &str, look: bubble::Look) -> gtk::Widget {
     row.append(&title);
     row.append(&link_glyph());
     b.add(&row);
-    b.set_tooltip_text(Some(url));
+    if u.st.borrow().cfg.link_previews {
+        b.set_tooltip_text(Some(url));
+    } else {
+        b.set_tooltip_text(Some(&format!("{url}\nTo see a preview, turn on \"Make previews for links Messages didn't\" in Settings > Privacy")));
+    }
     b.set_cursor_from_name(Some("pointer"));
     let key = chat_youtube(u, url, b.upcast_ref());
     let (u2, url, b2) = (u.clone(), url.to_string(), b.clone().upcast::<gtk::Widget>());
@@ -7634,7 +7638,7 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
             row.append(&map_box(u, &query)); // always there, so nothing shifts when the map arrives
         } else {
             // no lookups: the maps app searches for the address itself
-            let b = card_button("bf-map-pin-symbolic", "Show on a map");
+            let b = card_button("bf-map-pin-symbolic", "Show on a map\nTo see a small map here, turn on map previews in Settings > Privacy");
             let win = u.win.clone();
             b.connect_clicked(move |_| {
                 let q = crate::mac::url_encode(&query);
