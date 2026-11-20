@@ -535,6 +535,8 @@ label:focus, label:focus-visible { outline: none; }
 }
 .wizard .setup-title { font-size: 1.5em; font-weight: 800; color: var(--ink); margin-left: 28px; }
 .wizard .wiz-divider { min-width: 1px; background-image: linear-gradient(to bottom, transparent, alpha(white, 0.55) 25%, alpha(white, 0.55) 75%, transparent); }
+.wizard .wiz-step { margin-bottom: 8px; }
+.wizard .wiz-hint { color: var(--ink-soft); font-size: 0.85em; }
 .wizard .wiz-footer { margin-left: 28px; }
 .wizard .wiz-field, .wizard entry.wiz-field {
   background-color: var(--field);

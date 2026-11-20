@@ -419,6 +419,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     };
     // every page: the title on top, the fairy on the left (a third), the page's own content on the right (two thirds)
     let outers: RefCell<Vec<gtk::Box>> = RefCell::new(Vec::new());
+    let arts: RefCell<Vec<gtk::Box>> = RefCell::new(Vec::new());
     let page = |title: &str| {
         let outer = gtk::Box::new(gtk::Orientation::Vertical, 14);
         outer.set_margin_top(8);
@@ -437,6 +438,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         art_box.set_hexpand(false);
         art_box.append(&art);
         row.append(&art_box);
+        arts.borrow_mut().push(art_box);
         // divider + content share a box that is only as tall as the content, so the divider matches it
         let side = gtk::Box::new(gtk::Orientation::Horizontal, 22);
         side.set_hexpand(true);
@@ -456,11 +458,40 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
 
     // 0: welcome, and the one thing to do on the Mac first
     let p0 = page("Welcome to BubbleFairy");
-    p0.append(&label("BubbleFairy shows your Messages on this computer by talking to a Mac of yours, which has to be on and signed in. It needs one thing switched on there first:", "dim"));
-    let steps_l = label("", "");
-    steps_l.set_markup("<b>1.</b>  On the Mac, open <b>System Settings → General → Sharing</b>.\n<b>2.</b>  Turn on <b>Remote Login</b>. (Scroll down if you don't see it; some versions keep it under <b>Advanced</b>.)\n<b>3.</b>  Come back here and click <b>Get started</b>.");
-    steps_l.set_margin_top(4);
-    p0.append(&steps_l);
+    // under the fairy: what this is and what the Mac needs
+    let intro_l = label("", "dim");
+    intro_l.set_markup("<b>BubbleFairy shows your Messages on this computer by talking to your Mac.</b>\n\nThe Mac must be running <b>macOS 14 (Sonoma)</b> or newer, switched on and signed in.");
+    intro_l.set_width_chars(30);
+    intro_l.set_max_width_chars(30);
+    intro_l.set_margin_start(28); // lines up with the title
+    intro_l.set_valign(gtk::Align::Start);
+    intro_l.set_margin_top(12);
+    arts.borrow()[0].append(&intro_l);
+    p0.append(&label("To get started:", ""));
+    // a numbered step: the number, the instruction, and a smaller dim line of extra help
+    let step = |n: u8, text: &str, hint: Option<&str>| {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.add_css_class("wiz-step");
+        let num = label("", "");
+        num.set_markup(&format!("<b>{n}.</b>"));
+        num.set_valign(gtk::Align::Start);
+        row.append(&num);
+        let col = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let t = label("", "");
+        t.set_markup(text);
+        col.append(&t);
+        if let Some(h) = hint {
+            col.append(&label(h, "wiz-hint"));
+        }
+        row.append(&col);
+        row
+    };
+    let steps = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    p0.append(&steps);
+    steps.append(&step(1, "On the Mac, open <b>System Settings → General → Sharing</b>.", None));
+    steps.append(&step(2, "Turn on <b>Remote Login</b>.", Some("Scroll down if you don't see it; some versions keep it under Advanced.")));
+    steps.append(&step(3, "Turn on <b>Allow full disk access for remote users</b>.", Some("It sits just under Remote Login; on some versions it's behind the ⓘ next to it.")));
+    steps.append(&step(4, "Come back here and click <b>Get started</b>.", None));
     let skip_cb = gtk::CheckButton::with_label("Don't show this again");
     skip_cb.set_halign(gtk::Align::Start);
     skip_cb.set_margin_top(6);
@@ -638,8 +669,8 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     let dot_row = gtk::Box::new(gtk::Orientation::Horizontal, 7);
     dot_row.set_halign(gtk::Align::Center);
     dot_row.set_valign(gtk::Align::Center);
-    let dots: Vec<gtk::Box> = PAGES
-        .iter()
+    // the first dot is the welcome page, which stays as a dot even when it's switched off
+    let dots: Vec<gtk::Box> = (0..=PAGES.len())
         .map(|_| {
             let d = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             d.add_css_class("wiz-dot");
@@ -710,7 +741,9 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     wire_nav(&w);
     show_page(&w, 0);
     let dev_skip = ["BF_SETUP_PAGE", "BF_SETUP_AUTO"].iter().any(|k| std::env::var_os(k).is_some());
-    if (!w.ctx.skip_intro && !dev_skip) || std::env::var_os("BF_SETUP_INTRO").is_some() {
+    let intro_shown = (!w.ctx.skip_intro && !dev_skip) || std::env::var_os("BF_SETUP_INTRO").is_some();
+    w.dots[0].set_visible(intro_shown); // no dot for a welcome page that's switched off
+    if intro_shown {
         show_intro(&w);
     }
     win.present();
@@ -774,8 +807,8 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
 /// The welcome page, before the first real page: no dots lit, no Back, a Get started button.
 fn show_intro(w: &Rc<W>) {
     w.intro.set(true);
-    for d in &w.dots {
-        d.remove_css_class("on");
+    for (n, d) in w.dots.iter().enumerate() {
+        if n == 0 { d.add_css_class("on") } else { d.remove_css_class("on") }
     }
     w.pages.set_visible_child_name("intro");
     w.back.set_visible(false);
@@ -787,7 +820,7 @@ fn show_intro(w: &Rc<W>) {
 fn show_page(w: &Rc<W>, i: usize) {
     w.page.set(i);
     for (n, d) in w.dots.iter().enumerate() {
-        if n == i { d.add_css_class("on") } else { d.remove_css_class("on") }
+        if n == i + 1 { d.add_css_class("on") } else { d.remove_css_class("on") }
     }
     w.pages.set_visible_child_name(PAGES[i]);
     if i == 2 {
@@ -1232,7 +1265,7 @@ async fn provision_from(w: &Rc<W>, from: usize) {
                         set_step(w, i, Step::Bad);
                         fail(
                             w,
-                            "macOS isn't letting BubbleFairy read Messages. On the Mac, open System Settings → General → Sharing, click ⓘ next to Remote Login, turn on \"Allow full disk access for remote users\", then check again.",
+                            "macOS isn't letting BubbleFairy read Messages. On the Mac, open System Settings → General → Sharing and turn on \"Allow full disk access for remote users\" (just under Remote Login, or behind the ⓘ next to it on some versions), then check again.",
                             Some("Check again"),
                         );
                         return;
