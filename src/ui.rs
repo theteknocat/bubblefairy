@@ -1443,9 +1443,17 @@ fn start_setup(u: &Rc<Ui>, over_main: bool) {
     });
     let u3 = u.clone();
     let closed = Rc::new(move || u3.win.present());
+    let u4 = u.clone();
+    let set_skip_intro = Rc::new(move |skip: bool| {
+        let mut cfg = u4.st.borrow().cfg.clone();
+        cfg.skip_intro = skip;
+        crate::save_config(&u4.store.config_file, &cfg);
+        u4.st.borrow_mut().cfg = cfg;
+    });
+    let skip_intro = u.st.borrow().cfg.skip_intro;
     let app = u.win.application().expect("application");
     let parent = over_main.then(|| u.win.clone().upcast::<gtk::Window>());
-    crate::setup::open_wizard(&app, parent.as_ref(), crate::setup::Ctx { public_key, key_path, default_user: crate::setup::default_user(), test, done, closed });
+    crate::setup::open_wizard(&app, parent.as_ref(), crate::setup::Ctx { public_key, key_path, default_user: crate::setup::default_user(), test, done, closed, skip_intro, set_skip_intro });
 }
 
 // ---------- events from the Mac ----------

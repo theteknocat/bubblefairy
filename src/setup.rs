@@ -317,6 +317,9 @@ pub struct Ctx {
     pub done: Rc<dyn Fn(String, String, String, String)>,
     /// called when the wizard window closes, finished or not (the first run shows the main window then)
     pub closed: Rc<dyn Fn()>,
+    /// the welcome page is left out (the person ticked "Don't show this again"), and how to remember that
+    pub skip_intro: bool,
+    pub set_skip_intro: Rc<dyn Fn(bool)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -375,6 +378,9 @@ struct W {
     /// the last thing to act on the arrow button was the keyboard (so the list's entries take focus), not the pointer
     btn_key: Cell<bool>,
     dots: Vec<gtk::Box>,
+    /// the welcome page is showing (before page 0)
+    intro: Cell<bool>,
+    skip_cb: gtk::CheckButton,
 }
 
 const PAGES: [&str; 3] = ["mac", "work", "test"];
@@ -417,6 +423,22 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         b.append(&label(title, "setup-title"));
         b
     };
+
+    // 0: welcome, and the one thing to do on the Mac first
+    let p0 = page("Welcome to BubbleFairy");
+    let art = gtk::Image::from_icon_name("bf-intro");
+    art.set_pixel_size(340);
+    art.set_halign(gtk::Align::Center);
+    p0.prepend(&art);
+    p0.append(&label("BubbleFairy shows your Messages on this computer by talking to a Mac of yours, which has to be on and signed in. It needs one thing switched on there first:", "dim"));
+    let steps_l = label("", "");
+    steps_l.set_markup("<b>1.</b>  On the Mac, open <b>System Settings → General → Sharing</b>.\n<b>2.</b>  Turn on <b>Remote Login</b>. (Scroll down if you don't see it; some versions keep it under <b>Advanced</b>.)\n<b>3.</b>  Come back here and click <b>Get started</b>.");
+    steps_l.set_margin_top(4);
+    p0.append(&steps_l);
+    let skip_cb = gtk::CheckButton::with_label("Don't show this again");
+    skip_cb.set_halign(gtk::Align::Start);
+    skip_cb.set_margin_top(6);
+    p0.append(&skip_cb);
 
     // 1: the Mac
     let p1 = page("Connect to your Mac");
@@ -577,6 +599,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     p5.append(&stop_btn);
 
     let pages = gtk::Stack::new();
+    pages.add_named(&p0, Some("intro"));
     for (name, p) in PAGES.iter().zip([&p1, &p4, &p5]) {
         pages.add_named(p, Some(name));
     }
@@ -649,6 +672,8 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         page: Cell::new(0),
         btn_key: Cell::new(false),
         dots,
+        intro: Cell::new(false),
+        skip_cb,
     });
     for i in 0..STEPS.len() {
         set_step(&w, i, Step::Wait);
@@ -656,6 +681,10 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     wire_host(&w);
     wire_nav(&w);
     show_page(&w, 0);
+    let dev_skip = ["BF_SETUP_PAGE", "BF_SETUP_AUTO"].iter().any(|k| std::env::var_os(k).is_some());
+    if (!w.ctx.skip_intro && !dev_skip) || std::env::var_os("BF_SETUP_INTRO").is_some() {
+        show_intro(&w);
+    }
     win.present();
     // dev aids: BF_SETUP_PAGE=<n> starts on that page; BF_SETUP_SHOT=<file.png> saves the wizard after BF_SETUP_MS (default 3 s)
     if let Some(n) = std::env::var("BF_SETUP_PAGE").ok().and_then(|v| v.parse::<usize>().ok()) {
@@ -714,6 +743,19 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     }
 }
 
+/// The welcome page, before the first real page: no dots lit, no Back, a Get started button.
+fn show_intro(w: &Rc<W>) {
+    w.intro.set(true);
+    for d in &w.dots {
+        d.remove_css_class("on");
+    }
+    w.pages.set_visible_child_name("intro");
+    w.back.set_visible(false);
+    w.next.set_visible(true);
+    w.next.set_label("Get started");
+    w.next.set_sensitive(true);
+}
+
 fn show_page(w: &Rc<W>, i: usize) {
     w.page.set(i);
     for (n, d) in w.dots.iter().enumerate() {
@@ -755,7 +797,7 @@ fn set_host_status(w: &Rc<W>, state: &str, msg: &str) {
     if state != "ok" {
         w.pass.set_text("");
     }
-    if w.page.get() == 0 {
+    if w.page.get() == 0 && !w.intro.get() {
         w.next.set_sensitive(ready(w));
     }
 }
@@ -967,6 +1009,13 @@ fn wire_nav(w: &Rc<W>) {
     });
     let w2 = w.clone();
     w.next.connect_clicked(move |_| match w2.page.get() {
+        _ if w2.intro.get() => {
+            if w2.skip_cb.is_active() {
+                (w2.ctx.set_skip_intro)(true);
+            }
+            w2.intro.set(false);
+            show_page(&w2, 0);
+        }
         0 => connect(&w2),
         _ => finish(&w2),
     });

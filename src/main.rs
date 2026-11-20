@@ -34,6 +34,7 @@ fn load_config(path: &Path) -> mac::Config {
             Some(("notify_text", v)) => c.notify_text = v.trim().parse().unwrap_or(0),
             Some(("dir_images", v)) => c.dir_images = v.trim().into(),
             Some(("dir_files", v)) => c.dir_files = v.trim().into(),
+            Some(("skip_intro", v)) => c.skip_intro = v.trim() == "1",
             _ => {}
         }
     }
@@ -42,7 +43,7 @@ fn load_config(path: &Path) -> mac::Config {
 
 pub fn save_config(path: &Path, c: &mac::Config) {
     let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\n", c.host, c.user, c.imsg, u8::from(c.map_previews), u8::from(c.link_previews), u8::from(c.notify), u8::from(c.notify_sound), c.sound, c.notify_text, c.dir_images, c.dir_files));
+    let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\nskip_intro={}\n", c.host, c.user, c.imsg, u8::from(c.map_previews), u8::from(c.link_previews), u8::from(c.notify), u8::from(c.notify_sound), c.sound, c.notify_text, c.dir_images, c.dir_files, u8::from(c.skip_intro)));
 }
 
 /// Image cache size cap. Everything in it can be fetched again from the Mac.

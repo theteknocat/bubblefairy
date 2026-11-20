@@ -38,6 +38,8 @@ pub struct Config {
     /// where the download buttons save pictures / other files; empty = ask every time
     pub dir_images: String,
     pub dir_files: String,
+    /// the setup wizard's welcome page is skipped (its "Don't show this again")
+    pub skip_intro: bool,
 }
 
 pub enum Cmd {
