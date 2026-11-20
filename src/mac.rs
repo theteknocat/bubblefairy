@@ -260,7 +260,9 @@ impl client::Handler for Handler {
         let PublicKeyOrCertificate::PublicKey { key, .. } = key else { return Ok(false) };
         let line = key.to_openssh().unwrap_or_default();
         *self.seen.lock().unwrap() = Some(line.clone());
-        // ponytail: trust on first use, like ssh's StrictHostKeyChecking=accept-new
+        // shortcut: trust on first use (ssh's accept-new): with no saved key file any server is accepted and pinned after
+        // sign-in. The wizard always saves the accepted fingerprint, so only a deleted `mac_host_key` opens this; audit
+        // finding 2 was skipped on 2026-11-20 as a very small risk. Refuse here and point to Set up again… if that changes.
         Ok(self.known.as_deref().is_none_or(|k| k == line))
     }
 }
