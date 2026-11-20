@@ -2113,7 +2113,7 @@ fn on_message(u: &Rc<Ui>, m: Value) {
         return;
     }
     render_chats(u);
-    if m["is_from_me"].as_bool() != Some(true) && (!u.win.is_active() || !is_sel) {
+    if m["is_from_me"].as_bool() != Some(true) {
         notify(u, cid, &m);
     }
 }
@@ -2180,6 +2180,8 @@ fn notify(u: &Ui, cid: i64, m: &Value) {
         let c = &u.st.borrow().cfg;
         (c.notify, c.notify_sound, c.sound.clone(), c.notify_text)
     };
+    // window in front: the in-app counterpart of the send swish, not the chosen notification sound
+    let choice = if u.win.is_active() { "received".to_string() } else { choice };
     if sound {
         // not while the desktop is in do-not-disturb
         glib::spawn_future_local(async move {
@@ -2188,7 +2190,8 @@ fn notify(u: &Ui, cid: i64, m: &Value) {
             }
         });
     }
-    if !show {
+    // window in front: the sound is all you get; the desktop notification is for when you're elsewhere
+    if !show || u.win.is_active() {
         return;
     }
     let st = u.st.borrow();
@@ -2739,6 +2742,13 @@ fn failed_button(u: &Rc<Ui>, m: &Value) -> gtk::Button {
     b
 }
 
+/// The little swish when you send, while the window is in front (it's your own action, so no notification).
+fn sent_sound(u: &Ui) {
+    if u.st.borrow().cfg.notify_sound && u.win.is_active() {
+        crate::sound::play("sent");
+    }
+}
+
 fn send_now(u: &Rc<Ui>) {
     let buf = u.compose.buffer();
     let text = buf.text(&buf.start_iter(), &buf.end_iter(), false).trim().to_string();
@@ -2746,10 +2756,12 @@ fn send_now(u: &Rc<Ui>) {
         return;
     }
     if u.new_mode.get() {
+        sent_sound(u);
         send_new(u, &text);
         return;
     }
     let Some(chat_id) = u.st.borrow().sel else { return };
+    sent_sound(u);
     let to = direct_to(u, chat_id);
     let files = take_files(u);
     buf.set_text(""); // also disables the send button (buffer changed)
