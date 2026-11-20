@@ -84,6 +84,9 @@ fn main() -> glib::ExitCode {
             return glib::ExitCode::FAILURE;
         }
     };
+    // shortcut: the BF_* dev switches (screenshots, demos, wizard tests) are read in release builds too, about 100 reads.
+    // Only BF_LINKS=1 plus a Settings save could write a privacy setting by accident, and only on purpose. Audit
+    // finding 4 was skipped on 2026-11-20; gate them on `cfg!(debug_assertions)` through one helper if that ever matters.
     let demo = std::env::var_os("BF_DEMO").is_some();
     let mut cfg = load_config(&config_file);
     if demo {
