@@ -67,6 +67,10 @@ headerbar.bf-head {
   letter-spacing: 0.02em;
 }
 
+.brand-b { color: #2b79ff; }
+.brand-f { color: #ff5fa8; }
+window.dark .brand-b { color: #5aa8ff; }
+
 .head-btn, .emoji-btn > button {
   border-radius: 99px;
   background: transparent;

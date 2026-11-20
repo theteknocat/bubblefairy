@@ -323,6 +323,23 @@ impl Ui {
     }
 }
 
+/// The header's name: the bubble-and-wand mark, then "Bubble" in blue and "Fairy" in pink.
+fn brand() -> gtk::Box {
+    let b = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let icon = gtk::Image::from_icon_name("bf-mark");
+    icon.set_pixel_size(32);
+    let name = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    for (text, class) in [("Bubble", "brand-b"), ("Fairy", "brand-f")] {
+        let l = gtk::Label::new(Some(text));
+        l.add_css_class("app-title");
+        l.add_css_class(class);
+        name.append(&l);
+    }
+    b.append(&icon);
+    b.append(&name);
+    b
+}
+
 pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::UnboundedSender<Cmd>, mut ev: mpsc::UnboundedReceiver<Event>) {
     let win = gtk::ApplicationWindow::builder().application(app).title("BubbleFairy").default_width(1120).default_height(740).build();
     win.add_css_class("bf");
@@ -330,9 +347,7 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // header: status pill, title, settings
     let head = gtk::HeaderBar::new();
     head.add_css_class("bf-head");
-    let title = gtk::Label::new(None);
-    title.set_markup("<span foreground='#7b5cff'>Bubble</span><span foreground='#ff5fa8'>Fairy</span> ✨");
-    title.add_css_class("app-title");
+    let title = brand();
     // the unread count sits in a round badge after the title; a spacer of the same width before it keeps the title
     // centred (they share a width)
     let title_badge = gtk::Label::new(None);
@@ -6569,10 +6584,7 @@ fn settings(u: &Rc<Ui>) {
     w.add_css_class("bf-settings");
     let head = gtk::HeaderBar::new();
     head.add_css_class("bf-head");
-    let brand = gtk::Label::new(None);
-    brand.set_markup("<span foreground='#7b5cff'>Bubble</span><span foreground='#ff5fa8'>Fairy</span> ✨");
-    brand.add_css_class("app-title");
-    head.set_title_widget(Some(&brand));
+    head.set_title_widget(Some(&brand()));
     w.set_titlebar(Some(&head));
     let grid = gtk::Grid::builder().row_spacing(10).column_spacing(12).margin_top(18).margin_bottom(18).margin_start(18).margin_end(18).build();
     let cfg = u.st.borrow().cfg.clone();

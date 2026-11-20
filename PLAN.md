@@ -130,7 +130,7 @@ The connection settings (host, user and imsg path) are entered once in a simple 
 
 Chosen: variant B3 — a glossy blue bubble on a lavender rounded tile with a gold star on a wand handle (down to the right), in the wizard fairy's style (navy outlines, gloss, glow). Files: `data/icons/hicolor/scalable/apps/io.github.theteknocat.BubbleFairy.svg` and `...-symbolic.svg` (checked at 16/32/64 px; the symbolic one is a bubble with a star cut-out). Other variants (fairy peeking, fairy holding the wand to the bubble) were made and set aside. Still to do: the Flatpak must install them, and the window/desktop entry must use the ID.
 
-The header's "BubbleFairy ✨" title (with the round unread-count badge after it) is a stand-in: revisit it together with the icon.
+Header title (done 2026-11-20): the cropped bubble-and-wand mark (`bf-mark.svg`, no tile) beside the word mark, "Bubble" in blue (reinforces Apple's blue bubbles without saying so) and "Fairy" in pink, also in the Settings header.
 
 ### Contacts integration (read-only; built except where noted)
 
