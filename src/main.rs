@@ -48,6 +48,7 @@ pub fn save_config(path: &Path, c: &mac::Config) {
 
 /// Image cache size cap. Everything in it can be fetched again from the Mac.
 const CACHE_MAX: u64 = 500 * 1024 * 1024;
+const FILES_DAYS: u64 = 30; // how long a copied attachment is kept
 
 /// Delete the oldest cached images until the folder is under `max` bytes.
 // ponytail: oldest by write time, not last use; fine while re-fetching is cheap
@@ -68,6 +69,18 @@ fn prune_cache(dir: &Path, max: u64) {
         }
         if std::fs::remove_file(&path).is_ok() {
             total -= len;
+        }
+    }
+}
+
+/// Opened attachments are kept one folder each under `files/`: remove the folders older than `days` (by the time the
+/// copy was made; opening it again after that just copies it from the Mac again).
+fn prune_old_dirs(dir: &Path, days: u64) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+    for e in rd.flatten() {
+        if e.metadata().is_ok_and(|m| m.is_dir() && m.modified().is_ok_and(|t| t < cutoff)) {
+            let _ = std::fs::remove_dir_all(e.path());
         }
     }
 }
@@ -105,7 +118,10 @@ fn main() -> glib::ExitCode {
     };
 
     let cache = store.image_cache.clone();
-    std::thread::spawn(move || prune_cache(&cache, CACHE_MAX));
+    std::thread::spawn(move || {
+        prune_cache(&cache, CACHE_MAX);
+        prune_old_dirs(&cache.with_file_name("files"), FILES_DAYS);
+    });
 
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio runtime");
     let _ = setup::RT.set(rt.handle().clone());
@@ -167,6 +183,20 @@ mod tests {
         }
         super::prune_cache(&d, 15);
         assert!(!d.join("a").exists() && !d.join("b").exists() && d.join("c").exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn old_attachment_folders_go_and_new_ones_stay() {
+        let d = std::env::temp_dir().join(format!("bf-files-{}", std::process::id()));
+        for (name, age_days) in [("old", 40u64), ("new", 2)] {
+            std::fs::create_dir_all(d.join(name)).unwrap();
+            std::fs::write(d.join(name).join("f.pdf"), b"x").unwrap();
+            let t = std::time::SystemTime::now() - std::time::Duration::from_secs(age_days * 86_400);
+            std::fs::File::open(d.join(name)).unwrap().set_modified(t).unwrap();
+        }
+        super::prune_old_dirs(&d, 30);
+        assert!(!d.join("old").exists() && d.join("new").exists());
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

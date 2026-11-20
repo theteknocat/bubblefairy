@@ -3663,6 +3663,20 @@ fn apply_search(u: &Rc<Ui>) {
 }
 
 /// Words of a search, lower case.
+/// Lower case for matching: A-Z and accented letters alike, but only where the lower-case letter takes as many bytes
+/// as the original, so byte offsets found in the result are valid in `s`.
+fn fold(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let mut l = c.to_lowercase();
+            match (l.next(), l.next()) {
+                (Some(x), None) if x.len_utf8() == c.len_utf8() => x,
+                _ => c,
+            }
+        })
+        .collect()
+}
+
 fn search_words(q: &str) -> Vec<String> {
     q.split_whitespace().map(str::to_lowercase).collect()
 }
@@ -3675,10 +3689,10 @@ fn highlight(l: &gtk::Label, words: &[String], strong: bool) {
         return;
     }
     let text = l.text().to_string();
-    let lower = text.to_ascii_lowercase(); // same byte offsets as `text`
+    let lower = fold(&text); // same byte offsets as `text`
     let list = gtk::pango::AttrList::new();
     let (r, g, b) = if strong { (0xffff, 0x8a8a, 0x1f1f) } else { (0xe8e8, 0xd4d4, 0x8a8a) };
-    for w in words.iter().filter(|w| w.is_ascii() && !w.is_empty()) {
+    for w in words.iter().filter(|w| !w.is_empty()) {
         for (at, _) in lower.match_indices(w.as_str()) {
             let (start, end) = (at as u32, (at + w.len()) as u32);
             let mut bg = gtk::pango::AttrColor::new_background(r, g, b);
@@ -3697,7 +3711,7 @@ fn highlight(l: &gtk::Label, words: &[String], strong: bool) {
 /// The part of a message around its first match, for a row's preview line.
 fn snippet(text: &str, words: &[String]) -> String {
     let flat: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    let lower = flat.to_ascii_lowercase();
+    let lower = fold(&flat);
     let at = words.iter().filter_map(|w| lower.find(w.as_str())).min().unwrap_or(0);
     let start = flat[..at].char_indices().rev().nth(6).map_or(0, |(i, _)| i);
     format!("{}{}", if start > 0 { "…" } else { "" }, &flat[start..])
@@ -5389,7 +5403,6 @@ fn show_texture(p: &bubble::Bubble, t: &gdk::Texture) {
 }
 
 /// `full`: the viewer's big copy (mac::FULL_PX) rather than the chat's.
-// ponytail: the cache never shrinks; prune by age if it gets big
 fn cache_path(u: &Ui, path: &str, full: bool) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -6310,7 +6323,7 @@ fn open_file(u: &Ui, path: &std::path::Path) {
 }
 
 /// Copy a chat file from the Mac (once; kept under the cache folder) and open it with the default app.
-// ponytail: the copies are never cleaned up; prune by age like the image cache would need to
+// the copies are pruned at startup by `prune_old_dirs` in main.rs (30 days)
 fn file_dest(u: &Ui, path: &str, name: &str) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -7988,6 +8001,14 @@ fn schedule_midnight(u: &Rc<Ui>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matching_ignores_case_for_accents_and_keeps_offsets() {
+        assert_eq!(fold("CAFÉ Ünï İ"), "café ünï İ"); // İ would change length, so it stays
+        assert_eq!(fold("CAFÉ").len(), "CAFÉ".len());
+        let text = format!("{} Café au lait", "long ".repeat(30));
+        assert!(snippet(&text, &["café".to_string()]).contains("Café"));
+    }
 
     #[test]
     fn times_are_written_relative_to_today() {
