@@ -11,7 +11,20 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 
 /// (name in the config, name shown in Settings)
-pub const BUNDLED: [(&str, &str); 6] = [("chime", "Chime"), ("bell", "Bell"), ("marimba", "Marimba"), ("pop", "Pop"), ("drop", "Drop"), ("ping", "Ping")];
+pub const BUNDLED: [(&str, &str); 12] = [
+    ("chime", "Chime"),
+    ("bell", "Bell"),
+    ("marimba", "Marimba"),
+    ("pop", "Pop"),
+    ("drop", "Drop"),
+    ("ping", "Ping"),
+    ("crystal", "Crystal"),
+    ("lift", "Lift"),
+    ("mellow", "Mellow"),
+    ("sparkle", "Sparkle"),
+    ("bloop", "Bloop"),
+    ("zip", "Zip"),
+];
 pub const DEFAULT: &str = "chime";
 
 /// Where the bundled sounds are: next to the sources when run from them, else where the Flatpak installs them.
