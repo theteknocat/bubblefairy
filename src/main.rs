@@ -6,6 +6,7 @@ mod player;
 mod setup;
 mod sound;
 mod tilegrid;
+mod tray;
 mod ui;
 mod viewer;
 mod webpreview;
@@ -35,6 +36,8 @@ fn load_config(path: &Path) -> mac::Config {
             Some(("dir_images", v)) => c.dir_images = v.trim().into(),
             Some(("dir_files", v)) => c.dir_files = v.trim().into(),
             Some(("skip_intro", v)) => c.skip_intro = v.trim() == "1",
+            Some(("tray", v)) => c.tray = v.trim() == "1",
+            Some(("autostart", v)) => c.autostart = v.trim() == "1",
             _ => {}
         }
     }
@@ -43,7 +46,7 @@ fn load_config(path: &Path) -> mac::Config {
 
 pub fn save_config(path: &Path, c: &mac::Config) {
     let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\nskip_intro={}\n", c.host, c.user, c.imsg, u8::from(c.map_previews), u8::from(c.link_previews), u8::from(c.notify), u8::from(c.notify_sound), c.sound, c.notify_text, c.dir_images, c.dir_files, u8::from(c.skip_intro)));
+    let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\nskip_intro={}\ntray={}\nautostart={}\n", c.host, c.user, c.imsg, u8::from(c.map_previews), u8::from(c.link_previews), u8::from(c.notify), u8::from(c.notify_sound), c.sound, c.notify_text, c.dir_images, c.dir_files, u8::from(c.skip_intro), u8::from(c.tray), u8::from(c.autostart)));
 }
 
 /// Image cache size cap. Everything in it can be fetched again from the Mac.
@@ -165,13 +168,26 @@ fn main() -> glib::ExitCode {
             }
         }
     });
-    let code = app.run();
+    // --tray (from the login entry) is ours, not GTK's
+    let args: Vec<String> = std::env::args().filter(|a| a != "--tray").collect();
+    let code = app.run_with_args(&args);
     drop(rt); // closes the SSH session; imsg on the Mac exits when its stdin closes
     code
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tray_settings_survive_a_save_and_load() {
+        let f = std::env::temp_dir().join(format!("bf-cfg-{}", std::process::id()));
+        super::save_config(&f, &crate::mac::Config { tray: true, autostart: true, ..Default::default() });
+        let c = super::load_config(&f);
+        assert!(c.tray && c.autostart);
+        super::save_config(&f, &crate::mac::Config::default());
+        assert!(!super::load_config(&f).tray, "off unless chosen");
+        std::fs::remove_file(&f).unwrap();
+    }
+
     #[test]
     fn prune_removes_oldest_first() {
         let d = std::env::temp_dir().join(format!("bf-prune-{}", std::process::id()));

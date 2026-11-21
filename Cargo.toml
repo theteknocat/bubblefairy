@@ -1,6 +1,6 @@
 [package]
 name = "bubblefairy"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Your iMessages on your Linux desktop, ferried over from your Mac"
 license = "MIT"
@@ -16,6 +16,8 @@ plist = "1"
 gstreamer = "0.25"
 webkit6 = "0.6"
 sha2 = "0.11"
+ksni = "0.3"
+ashpd = { version = "0.14", features = ["background"] }
 
 [profile.release]
 lto = "thin"

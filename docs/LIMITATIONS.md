@@ -84,6 +84,13 @@ copy on this computer, so it **doesn't sync** with your Apple devices:
   It never loads older history by itself.
 - **Name & Photo** pictures that people share through Messages aren't shown.
 
+## Tray icon
+
+- **The tray icon needs a desktop with a tray.** KDE Plasma has one. GNOME has none unless you install the
+  AppIndicator extension. With no tray, turning the setting on says so, and closing the window quits the app.
+- **Plasma 6.7 may show its own icon for the running app** when BubbleFairy's tray icon is off (a Plasma bug with Flatpak apps, [KDE bug 521540](https://bugs.kde.org/show_bug.cgi?id=521540)). With the tray icon on, only ours shows.
+- **"Start hidden in the tray when I log in" falls back to showing the window** if the tray isn't ready yet at login.
+
 ## Needs your Mac
 
 - The Mac has to be on, awake and reachable on your network (or through a VPN), and signed in to Messages. When

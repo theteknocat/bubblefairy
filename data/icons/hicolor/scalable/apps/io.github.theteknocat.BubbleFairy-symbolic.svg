@@ -1,12 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
-  <defs>
-    <path id="b" d="M36 14 H64 A26 26 0 0 1 90 40 V46 A26 26 0 0 1 64 72 H44 L14 92 L24 72 H36 A26 26 0 0 1 10 46 V40 A26 26 0 0 1 36 14Z"/>
-    <polygon id="s" points="0,-24 7,-6 27,-5 11,7 17,26 0,15 -17,26 -11,7 -27,-5 -7,-6"/>
-    <mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><use href="#s" transform="translate(11.6 4.4) scale(.15)" fill="#000" stroke="#000" stroke-width="14" stroke-linejoin="round"/></mask>
-  </defs>
-  <g mask="url(#m)">
-    <use href="#b" transform="translate(1 1.6) scale(.105)" fill="#bebebe"/>
-    <path d="M12.6 5.6 L15 8" stroke="#bebebe" stroke-width="1.5" stroke-linecap="round"/>
-  </g>
-  <use href="#s" transform="translate(11.6 4.4) scale(.15)" fill="#bebebe"/>
+  <style type="text/css" id="current-color-scheme">.ColorScheme-Text{color:#bebebe;}</style>
+  <path class="ColorScheme-Text" fill="currentColor" fill-rule="evenodd" d="M4.5 1.2 H11.5 A3.5 3.5 0 0 1 15 4.7 V8.3 A3.5 3.5 0 0 1 11.5 11.8 H7.6 L3.2 14.8 L4 11.7 A3.5 3.5 0 0 1 1 8.3 V4.7 A3.5 3.5 0 0 1 4.5 1.2Z M8.00 2.55 L8.97 5.12 L11.71 5.24 L9.57 6.96 L10.29 9.61 L8.00 8.10 L5.71 9.61 L6.43 6.96 L4.29 5.24 L7.03 5.12Z"/>
 </svg>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <style type="text/css" id="current-color-scheme">.ColorScheme-Text{color:#bebebe;}</style>
+  <defs><mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16"><rect width="16" height="16" fill="#fff"/><circle cx="12.7" cy="3.3" r="3.6" fill="#000"/></mask></defs>
+  <g mask="url(#m)"><path class="ColorScheme-Text" fill="currentColor" fill-rule="evenodd" d="M4.5 1.2 H11.5 A3.5 3.5 0 0 1 15 4.7 V8.3 A3.5 3.5 0 0 1 11.5 11.8 H7.6 L3.2 14.8 L4 11.7 A3.5 3.5 0 0 1 1 8.3 V4.7 A3.5 3.5 0 0 1 4.5 1.2Z M8.00 2.55 L8.97 5.12 L11.71 5.24 L9.57 6.96 L10.29 9.61 L8.00 8.10 L5.71 9.61 L6.43 6.96 L4.29 5.24 L7.03 5.12Z"/></g>
+  <circle fill="#3d8dff" cx="12.7" cy="3.3" r="2.4"/>
+</svg>

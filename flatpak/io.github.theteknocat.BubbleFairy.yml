@@ -15,6 +15,7 @@ finish-args:
   - --device=dri
   - --socket=pulseaudio                      # notification sounds, video and YouTube audio
   - --talk-name=org.freedesktop.Notifications  # asks whether do-not-disturb is on
+  - --talk-name=org.kde.StatusNotifierWatcher  # the tray icon
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   build-args:

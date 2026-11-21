@@ -208,6 +208,9 @@ pub struct Ui {
     cmd: mpsc::UnboundedSender<Cmd>,
     viewer: Rc<viewer::Viewer>,
     st: RefCell<State>,
+    /// the tray icon while it runs, and what keeps the app alive with no window showing
+    tray: RefCell<Option<ksni::Handle<crate::tray::Tray>>>,
+    hold: RefCell<Option<gio::ApplicationHoldGuard>>,
     // widgets
     chat_list: gtk::ListBox,
     /// "Retrieving more chats…" under the list while older chats are asked for
@@ -820,6 +823,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         search,
         side_none,
         title_badge: (title_badge, title_gap),
+        tray: RefCell::new(None),
+        hold: RefCell::new(None),
         search_slot,
         search_spin,
         msearch_gen: Cell::new(0),
@@ -1283,9 +1288,22 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
 
     // first run: only the setup wizard shows; the main window follows when it closes
     let first_run = ui.st.borrow().cfg.host.is_empty() || std::env::var_os("BF_SETUP").is_some() || std::env::var_os("BF_SETUP_TEST").is_some();
-    if !first_run {
+    let hidden = ui.st.borrow().cfg.tray && std::env::args().any(|a| a == "--tray");
+    if ui.st.borrow().cfg.tray {
+        start_tray(&ui, hidden, false);
+    }
+    if !first_run && !hidden {
         win.present();
     }
+    // with the tray running, closing the window only hides it
+    let u = ui.clone();
+    win.connect_close_request(move |w| {
+        if u.tray.borrow().is_none() {
+            return glib::Propagation::Proceed;
+        }
+        w.set_visible(false);
+        glib::Propagation::Stop
+    });
     if let Ok(t) = std::env::var("BF_TYPE") {
         // dev aid: type this into the composer one character every 25 ms (`\\n` = Shift+Enter)
         let chars: Vec<char> = t.replace("\\n", "\n").chars().collect();
@@ -3392,6 +3410,67 @@ fn update_title_soon(u: &Rc<Ui>) {
     }
 }
 
+/// Put the icon in the tray (once: a second item would be a second icon) and keep the app alive while it's there.
+/// `hidden`: the app was started into the tray, so if there is no tray after all the window has to show.
+/// `asked`: the user just turned it on, so say so when there is no tray.
+fn start_tray(u: &Rc<Ui>, hidden: bool, asked: bool) {
+    let Some(rt) = crate::setup::RT.get() else { return };
+    if u.tray.borrow().is_some() {
+        return;
+    }
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    rt.spawn(async move {
+        let _ = done_tx.send(crate::tray::start(tx).await);
+    });
+    let u = u.clone();
+    glib::MainContext::default().spawn_local(async move {
+        let handle = match done_rx.await {
+            Ok(Ok(h)) => h,
+            r => {
+                eprintln!("no tray icon: {:?}", r.err());
+                if hidden {
+                    u.win.present();
+                }
+                if asked {
+                    let mut cfg = u.st.borrow().cfg.clone();
+                    cfg.tray = false;
+                    cfg.autostart = false;
+                    crate::save_config(&u.store.config_file, &cfg);
+                    u.st.borrow_mut().cfg = cfg;
+                    gtk::AlertDialog::builder()
+                        .message("No system tray found")
+                        .detail("This desktop isn't showing a tray, so closing the window will still quit BubbleFairy. KDE Plasma has a tray; GNOME needs the AppIndicator extension.")
+                        .build()
+                        .show(Some(&u.win));
+                }
+                return;
+            }
+        };
+        if u.tray.borrow().is_some() {
+            return; // turned on twice while the first was starting
+        }
+        *u.tray.borrow_mut() = Some(handle);
+        *u.hold.borrow_mut() = Some(u.app.hold());
+        update_title(&u); // the tray starts with no unread dot
+        while let Some(e) = rx.recv().await {
+            match e {
+                crate::tray::Event::Show => u.win.present(),
+                crate::tray::Event::Toggle if u.win.is_visible() && u.win.is_active() => u.win.set_visible(false),
+                crate::tray::Event::Toggle => u.win.present(),
+                crate::tray::Event::Quit => u.app.quit(),
+            }
+        }
+    });
+}
+
+fn stop_tray(u: &Rc<Ui>) {
+    *u.hold.borrow_mut() = None;
+    if let (Some(h), Some(rt)) = (u.tray.borrow_mut().take(), crate::setup::RT.get()) {
+        rt.spawn(async move { h.shutdown().await });
+    }
+}
+
 /// The window's title (what a taskbar or window list shows) carries the number of unread conversations.
 fn update_title(u: &Ui) {
     let n = {
@@ -3403,6 +3482,9 @@ fn update_title(u: &Ui) {
     badge.set_text(&if n > 99 { "99+".to_string() } else { n.to_string() });
     badge.set_visible(n > 0);
     gap.set_visible(n > 0);
+    if let (Some(h), Some(rt)) = (u.tray.borrow().clone(), crate::setup::RT.get()) {
+        rt.spawn(async move { h.update(|t| t.unread = n > 0).await });
+    }
 }
 
 /// A chat's last message arrived: change its row's texts in place. Rebuilding the whole list for each of the
@@ -6781,6 +6863,31 @@ fn settings(u: &Rc<Ui>) {
     notify_frame.set_child(Some(&nb));
     grid.attach(&notify_frame, 0, 2, 2, 1);
 
+    let tray_on = gtk::CheckButton::with_label("Show an icon in the system tray");
+    tray_on.set_active(cfg.tray);
+    let auto_on = gtk::CheckButton::with_label("Start hidden in the tray when I log in");
+    auto_on.set_active(cfg.autostart);
+    auto_on.set_sensitive(cfg.tray);
+    let tr = auto_on.clone();
+    tray_on.connect_toggled(move |b| tr.set_sensitive(b.is_active()));
+    let tray_help = gtk::Label::new(Some(
+        "With the icon on, closing the window keeps BubbleFairy running in the tray, so notifications keep coming. The icon shows a dot while a chat is unread. Needs a desktop with a tray: KDE Plasma has one, GNOME needs the AppIndicator extension. Without a tray, closing the window quits the app.",
+    ));
+    tray_help.set_wrap(true);
+    tray_help.set_max_width_chars(58);
+    tray_help.set_xalign(0.0);
+    tray_help.add_css_class("dim");
+    let bg = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    for wd in [tray_on.upcast_ref::<gtk::Widget>(), auto_on.upcast_ref(), tray_help.upcast_ref()] {
+        bg.append(wd);
+    }
+    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
+        bg.set_property(m, 10);
+    }
+    let bg_frame = gtk::Frame::new(Some("Background"));
+    bg_frame.set_child(Some(&bg));
+    grid.attach(&bg_frame, 0, 3, 2, 1);
+
     let save = gtk::Button::with_label("Save");
     save.add_css_class("suggested-action");
     let cancel = gtk::Button::with_label("Cancel");
@@ -6817,9 +6924,17 @@ fn settings(u: &Rc<Ui>) {
     cancel.connect_clicked(move |_| w2.close());
     let (u2, w2) = (u.clone(), w.clone());
     save.connect_clicked(move |_| {
-        let cfg = Config { map_previews: previews.is_active(), link_previews: links.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone(), notify: notify_on.is_active(), notify_sound: sound_on.is_active(), sound: chosen.borrow().clone(), notify_text: text_pick.selected() as u8, ..u2.st.borrow().cfg.clone() };
+        let cfg = Config { map_previews: previews.is_active(), link_previews: links.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone(), notify: notify_on.is_active(), notify_sound: sound_on.is_active(), sound: chosen.borrow().clone(), notify_text: text_pick.selected() as u8, tray: tray_on.is_active(), autostart: tray_on.is_active() && auto_on.is_active(), ..u2.st.borrow().cfg.clone() };
         crate::save_config(&u2.store.config_file, &cfg);
-        u2.st.borrow_mut().cfg = cfg.clone();
+        let old = std::mem::replace(&mut u2.st.borrow_mut().cfg, cfg.clone());
+        if cfg.tray != old.tray {
+            if cfg.tray { start_tray(&u2, false, true) } else { stop_tray(&u2) }
+        }
+        if cfg.autostart != old.autostart
+            && let Some(rt) = crate::setup::RT.get()
+        {
+            rt.spawn(crate::tray::set_autostart(cfg.autostart));
+        }
         u2.send(Cmd::Configure(cfg)); // the connection is only redone if where we connect to changed
         w2.close();
     });

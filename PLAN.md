@@ -172,7 +172,9 @@ Flatpak needs found while building (not yet in a manifest): the PulseAudio socke
 
 ### Later
 
-Running in the background or in the tray, a privacy setting for YouTube (contacts a third party when used), photos people share through Messages' Name & Photo. A Mac companion app is a possibility. An iPhone-only route is unlikely, because iOS gives third-party apps no access to iMessage (not researched).
+Tray icon (built 2026-11-21, needs checking in the installed Flatpak on KDE): Settings > Background has "Show an icon in the system tray" (config `tray`, off by default) and "Start hidden in the tray when I log in" (`autostart`, only with the tray). `src/tray.rs`: a StatusNotifierItem through `ksni` (`disable_dbus_name` in a sandbox, Flatpak needs `--talk-name=org.kde.StatusNotifierWatcher`), a menu with Open / Quit, a click toggles the window, the unread dot is the NeedsAttention state with its own icon (`...-unread-symbolic`, set from `update_title`). `ui::start_tray` makes the item once and holds the app alive; the window's close hides it while the tray runs. Login entry through the Background portal (`ashpd`, command `bubblefairy --tray`; `--tray` is removed from the arguments before GTK sees them). No tray found: closing quits as before; a hidden start shows the window. Decided against a YouTube privacy setting (a click starts it, and the embedded player tells YouTube less than a browser).
+
+Photos people share through Messages' Name & Photo. A Mac companion app is a possibility. An iPhone-only route is unlikely, because iOS gives third-party apps no access to iMessage (not researched).
 
 ## Design direction
 
