@@ -146,6 +146,10 @@ struct State {
     waiting: HashMap<String, Vec<bubble::Bubble>>,
     /// notifications held until their picture has been fetched (key = the picture's Mac path)
     notify_wait: HashMap<String, Vec<(i64, Value)>>,
+    /// notifications held until Messages has downloaded the message's file (key = message guid)
+    notify_media: HashMap<String, (i64, Value)>,
+    /// messages already being re-checked for their files
+    media_watch: HashSet<String>,
     /// pictures to ask the Mac for, oldest first; sent newest-first once the chat has been built
     fetch_q: Vec<(String, bool)>,
     /// photo widgets of the open chat in display order (the viewer cycles through these)
@@ -1854,6 +1858,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             }
         }
         Event::Recent(id, msgs) => {
+            let fresh = msgs.clone();
             let is_sel = {
                 let mut st = u.st.borrow_mut();
                 if let Some(h) = st.hist.get_mut(&id) {
@@ -1866,6 +1871,9 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 }
                 st.sel == Some(id)
             };
+            for m in &fresh {
+                release_held(u, m);
+            }
             if is_sel {
                 render_conv(u);
             }
@@ -2145,6 +2153,8 @@ fn on_message(u: &Rc<Ui>, m: Value) {
         u.send(Cmd::Recent(cid)); // the target message's reaction list comes with its history row
     }
     watch_for_preview(u, cid, &m);
+    watch_for_media(u, cid, &m);
+    release_held(u, &m);
     // chat order and unread counts come from the Mac; coalesce bursts into one reload
     if !u.chats_queued.replace(true) {
         let u2 = u.clone();
@@ -2212,7 +2222,7 @@ fn learn_names(u: &Ui, msgs: &[Value]) {
     }
 }
 
-fn notify(u: &Ui, cid: i64, m: &Value) {
+fn notify(u: &Rc<Ui>, cid: i64, m: &Value) {
     {
         // a muted chat makes no sound and shows nothing
         let st = u.st.borrow();
@@ -2220,9 +2230,9 @@ fn notify(u: &Ui, cid: i64, m: &Value) {
             return;
         }
     }
-    let (show, sound, choice, text_level) = {
+    let (show, sound, choice) = {
         let c = &u.st.borrow().cfg;
-        (c.notify, c.notify_sound, c.sound.clone(), c.notify_text)
+        (c.notify, c.notify_sound, c.sound.clone())
     };
     // window in front: the in-app counterpart of the send swish, not the chosen notification sound
     let choice = if u.win.is_active() { "received".to_string() } else { choice };
@@ -2238,6 +2248,50 @@ fn notify(u: &Ui, cid: i64, m: &Value) {
     if !show || u.win.is_active() {
         return;
     }
+    deliver(u, cid, m);
+}
+
+/// A message's file is on the Mac only once Messages has downloaded it, which can lag the message row.
+fn awaiting_media(m: &Value) -> bool {
+    let atts = m["attachments"].as_array().map(Vec::as_slice).unwrap_or_default();
+    !atts.is_empty() && atts.iter().all(|a| a["missing"].as_bool() == Some(true))
+}
+
+/// Ask again a few times for a message whose pictures or files aren't on the Mac yet, so they appear when they land.
+fn watch_for_media(u: &Rc<Ui>, cid: i64, m: &Value) {
+    let Some(guid) = m["guid"].as_str() else { return };
+    if !awaiting_media(m) || !u.st.borrow_mut().media_watch.insert(guid.to_string()) {
+        return;
+    }
+    for secs in [2, 5, 10, 20, 40] {
+        let (u2, guid) = (u.clone(), guid.to_string());
+        glib::timeout_add_local_once(Duration::from_secs(secs), move || {
+            let (done, connected) = {
+                let st = u2.st.borrow();
+                let msg = st.hist.get(&cid).and_then(|h| h.iter().find(|x| x["guid"].as_str() == Some(&guid)));
+                (msg.is_none_or(|x| !awaiting_media(x)), st.connected)
+            };
+            if !done && connected {
+                u2.send(Cmd::Recent(cid));
+            }
+        });
+    }
+}
+
+/// A held notification can go once its message has its file (or has waited long enough).
+fn release_held(u: &Rc<Ui>, m: &Value) {
+    let Some(guid) = m["guid"].as_str() else { return };
+    if awaiting_media(m) {
+        return;
+    }
+    let held = u.st.borrow_mut().notify_media.remove(guid);
+    if let Some((cid, _)) = held {
+        deliver(u, cid, m);
+    }
+}
+
+fn deliver(u: &Rc<Ui>, cid: i64, m: &Value) {
+    let text_level = u.st.borrow().cfg.notify_text;
     // the first picture goes in the notification, but only when the text is shown too (it would give the message away)
     let pic = (text_level == 0)
         .then(|| m["attachments"].as_array().into_iter().flatten().find(|a| a["mime_type"].as_str().is_some_and(|t| t.starts_with("image/"))))
@@ -2245,6 +2299,17 @@ fn notify(u: &Ui, cid: i64, m: &Value) {
         .and_then(|a| a["original_path"].as_str().filter(|p| !p.is_empty()))
         .map(String::from);
     let Some(path) = pic else { return show_notification(u, cid, m, None) };
+    if let (true, Some(guid)) = (awaiting_media(m), m["guid"].as_str()) {
+        // Messages hasn't downloaded the picture yet: wait for it (up to 40 s) instead of showing "Photo"
+        u.st.borrow_mut().notify_media.insert(guid.to_string(), (cid, m.clone()));
+        let (u2, guid, m) = (u.clone(), guid.to_string(), m.clone());
+        glib::timeout_add_local_once(Duration::from_secs(40), move || {
+            if u2.st.borrow_mut().notify_media.remove(&guid).is_some() {
+                show_notification(&u2, cid, &m, None);
+            }
+        });
+        return;
+    }
     let file = cache_path(u, &path, false);
     if file.exists() {
         return show_notification(u, cid, m, Some(file));
@@ -2262,6 +2327,9 @@ fn notify(u: &Ui, cid: i64, m: &Value) {
 }
 
 fn show_notification(u: &Ui, cid: i64, m: &Value, picture: Option<PathBuf>) {
+    if u.win.is_active() {
+        return; // the message may have been held while you came to the window
+    }
     let (text_level, st) = (u.st.borrow().cfg.notify_text, u.st.borrow());
     let Some(chat) = st.chats.iter().find(|c| c["id"].as_i64() == Some(cid)) else { return };
     let mut title = chat_title(chat, &st.names);
