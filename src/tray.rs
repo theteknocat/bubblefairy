@@ -1,5 +1,6 @@
 //! The tray icon (a StatusNotifierItem) and the login entry that starts the app hidden in it.
 //! KDE Plasma shows it; GNOME needs the AppIndicator extension, and without a tray `start` fails.
+use gtk::prelude::*;
 use ksni::TrayMethods;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -61,4 +62,16 @@ pub async fn set_autostart(on: bool) {
     if let Err(e) = r {
         eprintln!("login entry: {e}");
     }
+}
+
+/// True when something on the session bus hosts tray icons (KDE Plasma, or GNOME with the AppIndicator extension).
+pub async fn host_present() -> bool {
+    use gtk::gio;
+    let Ok(conn) = gio::bus_get_future(gio::BusType::Session).await else { return false };
+    let args = ("org.kde.StatusNotifierWatcher",).to_variant();
+    conn.call_future(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner", Some(&args), None, gio::DBusCallFlags::NONE, 2000)
+        .await
+        .ok()
+        .and_then(|r| r.child_value(0).get::<bool>())
+        .unwrap_or(false)
 }

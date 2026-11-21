@@ -40,8 +40,6 @@ pub struct Config {
     pub dir_files: String,
     /// the setup wizard's welcome page is skipped (its "Don't show this again")
     pub skip_intro: bool,
-    /// a tray icon: closing the window hides it and the app keeps running
-    pub tray: bool,
     /// start hidden in the tray when you log in (only with `tray`)
     pub autostart: bool,
 }

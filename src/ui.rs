@@ -1288,11 +1288,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
 
     // first run: only the setup wizard shows; the main window follows when it closes
     let first_run = ui.st.borrow().cfg.host.is_empty() || std::env::var_os("BF_SETUP").is_some() || std::env::var_os("BF_SETUP_TEST").is_some();
-    let hidden = ui.st.borrow().cfg.tray && std::env::args().any(|a| a == "--tray");
-    if ui.st.borrow().cfg.tray {
-        start_tray(&ui, hidden, false);
-    }
-    if !first_run && !hidden {
+    let login = std::env::args().any(|a| a == "--tray");
+    start_tray(&ui, login); // a login start stays hidden if a tray turns up
+    if !first_run && !login {
         win.present();
     }
     // with the tray running, closing the window only hides it
@@ -1302,8 +1300,15 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             return glib::Propagation::Proceed;
         }
         w.set_visible(false);
+        tray_hint(&u);
         glib::Propagation::Stop
     });
+    // Ctrl+Q quits for real, even with the tray keeping the app alive
+    let quit = gio::SimpleAction::new("quit", None);
+    let a = ui.app.clone();
+    quit.connect_activate(move |_, _| a.quit());
+    ui.app.add_action(&quit);
+    ui.app.set_accels_for_action("app.quit", &["<Control>q"]);
     if let Ok(t) = std::env::var("BF_TYPE") {
         // dev aid: type this into the composer one character every 25 ms (`\\n` = Shift+Enter)
         let chars: Vec<char> = t.replace("\\n", "\n").chars().collect();
@@ -3411,17 +3416,26 @@ fn update_title_soon(u: &Rc<Ui>) {
 }
 
 /// Put the icon in the tray (once: a second item would be a second icon) and keep the app alive while it's there.
-/// `hidden`: the app was started into the tray, so if there is no tray after all the window has to show.
-/// `asked`: the user just turned it on, so say so when there is no tray.
-fn start_tray(u: &Rc<Ui>, hidden: bool, asked: bool) {
+/// `hidden`: the app was started at login, so if there is no tray after all the window opens minimized.
+fn start_tray(u: &Rc<Ui>, hidden: bool) {
     let Some(rt) = crate::setup::RT.get() else { return };
     if u.tray.borrow().is_some() {
         return;
     }
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    // started at login: the tray host may not be up yet, so keep trying for ~10 s before giving up
+    let tries = if hidden { 20 } else { 1 };
     rt.spawn(async move {
-        let _ = done_tx.send(crate::tray::start(tx).await);
+        let mut r = crate::tray::start(tx.clone()).await;
+        for _ in 1..tries {
+            if r.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            r = crate::tray::start(tx.clone()).await;
+        }
+        let _ = done_tx.send(r);
     });
     let u = u.clone();
     glib::MainContext::default().spawn_local(async move {
@@ -3431,18 +3445,7 @@ fn start_tray(u: &Rc<Ui>, hidden: bool, asked: bool) {
                 eprintln!("no tray icon: {:?}", r.err());
                 if hidden {
                     u.win.present();
-                }
-                if asked {
-                    let mut cfg = u.st.borrow().cfg.clone();
-                    cfg.tray = false;
-                    cfg.autostart = false;
-                    crate::save_config(&u.store.config_file, &cfg);
-                    u.st.borrow_mut().cfg = cfg;
-                    gtk::AlertDialog::builder()
-                        .message("No system tray found")
-                        .detail("This desktop isn't showing a tray, so closing the window will still quit BubbleFairy. KDE Plasma has a tray; GNOME needs the AppIndicator extension.")
-                        .build()
-                        .show(Some(&u.win));
+                    present_minimized(&u.win);
                 }
                 return;
             }
@@ -3464,11 +3467,23 @@ fn start_tray(u: &Rc<Ui>, hidden: bool, asked: bool) {
     });
 }
 
-fn stop_tray(u: &Rc<Ui>) {
-    *u.hold.borrow_mut() = None;
-    if let (Some(h), Some(rt)) = (u.tray.borrow_mut().take(), crate::setup::RT.get()) {
-        rt.spawn(async move { h.shutdown().await });
+/// Minimize a window that was just presented (Wayland has no "start minimized", so it shows for a moment first).
+fn present_minimized(win: &gtk::ApplicationWindow) {
+    let w = win.clone();
+    glib::timeout_add_local_once(Duration::from_millis(300), move || w.minimize());
+}
+
+/// The first time the window is closed into the tray, say where the app went (a notification: the desktop
+/// puts it by the tray and fades it); remembered in a file so it only happens once.
+fn tray_hint(u: &Rc<Ui>) {
+    let flag = u.store.seen_file.with_file_name("tray-hint");
+    if flag.exists() {
+        return;
     }
+    let n = gio::Notification::new("BubbleFairy is still running");
+    n.set_body(Some("It's in the system tray, so messages keep coming. Right-click the icon and choose Quit to close it."));
+    u.app.send_notification(Some("tray-hint"), &n);
+    let _ = std::fs::write(flag, "");
 }
 
 /// The window's title (what a taskbar or window list shows) carries the number of unread conversations.
@@ -6863,22 +6878,27 @@ fn settings(u: &Rc<Ui>) {
     notify_frame.set_child(Some(&nb));
     grid.attach(&notify_frame, 0, 2, 2, 1);
 
-    let tray_on = gtk::CheckButton::with_label("Show an icon in the system tray");
-    tray_on.set_active(cfg.tray);
     let auto_on = gtk::CheckButton::with_label("Start hidden in the tray when I log in");
     auto_on.set_active(cfg.autostart);
-    auto_on.set_sensitive(cfg.tray);
-    let tr = auto_on.clone();
-    tray_on.connect_toggled(move |b| tr.set_sensitive(b.is_active()));
-    let tray_help = gtk::Label::new(Some(
-        "With the icon on, closing the window keeps BubbleFairy running in the tray, so notifications keep coming. The icon shows a dot while a chat is unread. Needs a desktop with a tray: KDE Plasma has one, GNOME needs the AppIndicator extension. Without a tray, closing the window quits the app.",
-    ));
+    let tray_help = gtk::Label::new(Some("Looking for a system tray..."));
+    let (th, ao) = (tray_help.clone(), auto_on.clone());
+    glib::MainContext::default().spawn_local(async move {
+        let found = crate::tray::host_present().await;
+        if !found {
+            ao.set_label(Some("Start minimized when I log in"));
+        }
+        th.set_text(if found {
+            "BubbleFairy keeps an icon in the system tray. Closing the window keeps it running there, so notifications keep coming, and the icon shows a dot while a chat is unread. Quit from the icon's menu or with Ctrl+Q."
+        } else {
+            "I couldn't find a system tray on this desktop (KDE Plasma has one, GNOME needs the AppIndicator extension), so closing the window quits the app. Starting at login opens the window minimized instead, though you may see it for a moment first."
+        });
+    });
     tray_help.set_wrap(true);
     tray_help.set_max_width_chars(58);
     tray_help.set_xalign(0.0);
     tray_help.add_css_class("dim");
     let bg = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    for wd in [tray_on.upcast_ref::<gtk::Widget>(), auto_on.upcast_ref(), tray_help.upcast_ref()] {
+    for wd in [auto_on.upcast_ref::<gtk::Widget>(), tray_help.upcast_ref()] {
         bg.append(wd);
     }
     for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
@@ -6924,12 +6944,9 @@ fn settings(u: &Rc<Ui>) {
     cancel.connect_clicked(move |_| w2.close());
     let (u2, w2) = (u.clone(), w.clone());
     save.connect_clicked(move |_| {
-        let cfg = Config { map_previews: previews.is_active(), link_previews: links.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone(), notify: notify_on.is_active(), notify_sound: sound_on.is_active(), sound: chosen.borrow().clone(), notify_text: text_pick.selected() as u8, tray: tray_on.is_active(), autostart: tray_on.is_active() && auto_on.is_active(), ..u2.st.borrow().cfg.clone() };
+        let cfg = Config { map_previews: previews.is_active(), link_previews: links.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone(), notify: notify_on.is_active(), notify_sound: sound_on.is_active(), sound: chosen.borrow().clone(), notify_text: text_pick.selected() as u8, autostart: auto_on.is_active(), ..u2.st.borrow().cfg.clone() };
         crate::save_config(&u2.store.config_file, &cfg);
         let old = std::mem::replace(&mut u2.st.borrow_mut().cfg, cfg.clone());
-        if cfg.tray != old.tray {
-            if cfg.tray { start_tray(&u2, false, true) } else { stop_tray(&u2) }
-        }
         if cfg.autostart != old.autostart
             && let Some(rt) = crate::setup::RT.get()
         {

@@ -87,9 +87,9 @@ copy on this computer, so it **doesn't sync** with your Apple devices:
 ## Tray icon
 
 - **The tray icon needs a desktop with a tray.** KDE Plasma has one. GNOME has none unless you install the
-  AppIndicator extension. With no tray, turning the setting on says so, and closing the window quits the app.
-- **Plasma 6.7 may show its own icon for the running app** when BubbleFairy's tray icon is off (a Plasma bug with Flatpak apps, [KDE bug 521540](https://bugs.kde.org/show_bug.cgi?id=521540)). With the tray icon on, only ours shows.
-- **"Start hidden in the tray when I log in" falls back to showing the window** if the tray isn't ready yet at login.
+  AppIndicator extension. With no tray there is no icon, and closing the window quits the app.
+- **Plasma 6.7 may show its own icon for the running app** when BubbleFairy has no tray icon of its own (a Plasma bug with Flatpak apps, [KDE bug 521540](https://bugs.kde.org/show_bug.cgi?id=521540)). With our tray icon showing, only ours shows.
+- **"Start hidden in the tray when I log in" waits up to 10 s for the tray** at login. With no tray the window opens minimized instead, and may show for a moment first, because Wayland has no "start minimized".
 
 ## Needs your Mac
 
