@@ -3583,10 +3583,33 @@ fn tray_hint(u: &Rc<Ui>) {
     if flag.exists() {
         return;
     }
-    let n = gio::Notification::new("BubbleFairy is still running");
-    n.set_body(Some("It's in the system tray, so messages keep coming. Right-click the icon and choose Quit to close it."));
-    u.app.send_notification(Some("tray-hint"), &n);
-    let _ = std::fs::write(flag, "");
+    // Sent straight to the notification service (the Flatpak already may talk to it) because GNotification can't carry
+    // KDE's `x-kde-user-action-feedback` hint, which Plasma shows even in do-not-disturb (it's the answer to the user's own
+    // action, like Spectacle's "screenshot saved").
+    glib::spawn_future_local(async move {
+        let Ok(bus) = gio::bus_get_future(gio::BusType::Session).await else { return };
+        let hints = HashMap::from([
+            ("desktop-entry".to_string(), crate::APP_ID.to_variant()),
+            ("x-kde-user-action-feedback".to_string(), true.to_variant()),
+        ]);
+        let args = (
+            "BubbleFairy",
+            0u32,
+            crate::APP_ID,
+            "BubbleFairy is still running",
+            "It's in the system tray, so messages keep coming. Right-click the icon and choose Quit to close it.",
+            Vec::<String>::new(),
+            hints,
+            -1i32,
+        )
+            .to_variant();
+        let sent = bus
+            .call_future(Some("org.freedesktop.Notifications"), "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "Notify", Some(&args), None, gio::DBusCallFlags::NONE, 2000)
+            .await;
+        if sent.is_ok() {
+            let _ = std::fs::write(flag, "");
+        }
+    });
 }
 
 /// The window's title (what a taskbar or window list shows) carries the number of unread conversations.
