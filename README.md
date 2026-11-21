@@ -2,19 +2,20 @@
 
 **Your iMessages on your Linux desktop, ferried over from your Mac.** BubbleFairy is a native Linux app that brings Messages to your desktop: your conversations with photos, videos, links and files, live notifications with sound, and search across everything, in a fast, good-looking window.
 
-It's a front end for Messages on your Mac, which still does the actual messaging (BubbleFairy connects to it securely over your local network). Things you manage in Messages, like blocking numbers and filtering unknown senders, stay there, and a few features Apple keeps locked down, such as sending tapback reactions or typing indicators, aren't possible. See the [known limitations](docs/LIMITATIONS.md) for the full list.
+It's a front end for Messages on your Mac, which still does the actual messaging (BubbleFairy connects to it securely over your local network). Things you manage in Messages, like blocking numbers and filtering unknown senders, stay there. A few features Apple keeps locked down, such as sending tapback reactions or typing indicators, aren't possible. See the [known limitations](docs/LIMITATIONS.md) for the full list.
 
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-teknocat-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/teknocat)
 If BubbleFairy is useful to you, you can [buy me a coffee](https://buymeacoffee.com/teknocat).
 
 > **Status: early release.** Get the latest `.flatpak` from the [Releases](../../releases) page.
 
-> ### 🤖 Built with AI
-> **Every line of this project was written by AI** ([Claude Code](https://claude.com/claude-code), Anthropic's AI
-> coding tool). It wasn't one prompt: I design the app, review each piece, test it on my own Mac and conversations,
-> and decide what stays. Before release it had an AI code audit and has unit tests for the risky parts, but it has
-> not had a review by a human Rust developer, and some of the code will look like what it is. I'm not a Rust developer,
-> so reviews, bug reports and pull requests are very welcome. More on [how I work with AI](https://github.com/theteknocat/theteknocat/blob/main/AI.md).
+> ### 🤖 AI Disclosure
+> **I built BubbleFairy with AI, and every line of the code was written by [Claude Code](https://claude.com/claude-code)**
+> (Anthropic's AI coding tool). It wasn't one big prompt, though. I decide what the app does and how it should look and
+> feel, check each piece as it's built, test it on my own Mac and my own conversations, and decide what stays.
+> Before release it also had an AI code audit, and the risky parts have unit tests. What it hasn't had is a review
+> by a human Rust developer, and I'm not one myself, so some of the code will probably look like what it is.
+> Reviews, bug reports and pull requests are very welcome. More on [how I work with AI](https://github.com/theteknocat/theteknocat/blob/main/AI.md).
 
 ## How it works
 
