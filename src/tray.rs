@@ -10,8 +10,10 @@ pub enum Event {
     Quit,
 }
 
+/// Read by `status()` each time the icon refreshes, so updates that run out of order still end on the latest value.
+pub static UNREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub struct Tray {
-    pub unread: bool,
     pub tx: UnboundedSender<Event>,
 }
 
@@ -30,7 +32,7 @@ impl ksni::Tray for Tray {
         format!("{}-unread-symbolic", crate::APP_ID)
     }
     fn status(&self) -> ksni::Status {
-        if self.unread { ksni::Status::NeedsAttention } else { ksni::Status::Active }
+        if UNREAD.load(std::sync::atomic::Ordering::Relaxed) { ksni::Status::NeedsAttention } else { ksni::Status::Active }
     }
     fn activate(&mut self, _x: i32, _y: i32) {
         let _ = self.tx.send(Event::Toggle);
@@ -47,7 +49,7 @@ impl ksni::Tray for Tray {
 /// Put the icon in the tray. Fails when the desktop has no tray (or nothing showing one).
 pub async fn start(tx: UnboundedSender<Event>) -> Result<ksni::Handle<Tray>, ksni::Error> {
     // in a sandbox the app can't own the usual bus name, and doesn't need to
-    Tray { unread: false, tx }.disable_dbus_name(ashpd::is_sandboxed()).spawn().await
+    Tray { tx }.disable_dbus_name(ashpd::is_sandboxed()).spawn().await
 }
 
 /// Add or remove the login entry (through the Background portal, so it also works in the Flatpak).

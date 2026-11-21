@@ -3533,7 +3533,8 @@ fn update_title(u: &Ui) {
     badge.set_visible(n > 0);
     gap.set_visible(n > 0);
     if let (Some(h), Some(rt)) = (u.tray.borrow().clone(), crate::setup::RT.get()) {
-        rt.spawn(async move { h.update(|t| t.unread = n > 0).await });
+        crate::tray::UNREAD.store(n > 0, std::sync::atomic::Ordering::Relaxed);
+        rt.spawn(async move { h.update(|_| {}).await }); // makes the icon re-read the flag
     }
 }
 
