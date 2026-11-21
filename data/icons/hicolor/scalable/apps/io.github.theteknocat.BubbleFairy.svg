@@ -3,7 +3,7 @@
 <linearGradient id="green" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#58e08a"/><stop offset="1" stop-color="#2fbf63"/></linearGradient>
 <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe875"/><stop offset="1" stop-color="#ffc21f"/></linearGradient>
 <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8c7cf0"/><stop offset="1" stop-color="#5a46c8"/></linearGradient>
-<linearGradient id="tile2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e8defe"/><stop offset="1" stop-color="#c9b8ff"/></linearGradient>
+<linearGradient id="tile2" x1="0.33" y1="0" x2="0.67" y2="1"><stop offset="0" stop-color="#2d2659"/><stop offset=".55" stop-color="#1c2550"/><stop offset="1" stop-color="#3a2455"/></linearGradient>
 <radialGradient id="glow"><stop offset="0" stop-color="#fff6b0" stop-opacity="0.95"/><stop offset="1" stop-color="#fff6b0" stop-opacity="0"/></radialGradient>
 <clipPath id="tc"><rect x="8" y="8" width="240" height="240" rx="54"/></clipPath>
 <path id="bub" d="M36 14 H64 A26 26 0 0 1 90 40 V46 A26 26 0 0 1 64 72 H44 L14 92 L24 72 H36 A26 26 0 0 1 10 46 V40 A26 26 0 0 1 36 14Z"/>
