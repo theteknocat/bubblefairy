@@ -144,6 +144,8 @@ struct State {
     /// the chat open on a search hit: a window of its history around the hit, not its newest messages
     find_view: Option<FindView>,
     waiting: HashMap<String, Vec<bubble::Bubble>>,
+    /// notifications held until their picture has been fetched (key = the picture's Mac path)
+    notify_wait: HashMap<String, Vec<(i64, Value)>>,
     /// pictures to ask the Mac for, oldest first; sent newest-first once the chat has been built
     fetch_q: Vec<(String, bool)>,
     /// photo widgets of the open chat in display order (the viewer cycles through these)
@@ -1974,6 +1976,10 @@ fn image_done(u: &Rc<Ui>, path: String, full: bool, tex: Option<gdk::Texture>) {
         }
         return;
     }
+    let held = u.st.borrow_mut().notify_wait.remove(&path).unwrap_or_default();
+    for (cid, m) in held {
+        show_notification(u, cid, &m, tex.is_some().then(|| cache_path(u, &path, false)));
+    }
     let pics = u.st.borrow_mut().waiting.remove(&path).unwrap_or_default();
     if let Some(tex) = tex {
         for p in pics {
@@ -2232,7 +2238,31 @@ fn notify(u: &Ui, cid: i64, m: &Value) {
     if !show || u.win.is_active() {
         return;
     }
-    let st = u.st.borrow();
+    // the first picture goes in the notification, but only when the text is shown too (it would give the message away)
+    let pic = (text_level == 0)
+        .then(|| m["attachments"].as_array().into_iter().flatten().find(|a| a["mime_type"].as_str().is_some_and(|t| t.starts_with("image/"))))
+        .flatten()
+        .and_then(|a| a["original_path"].as_str().filter(|p| !p.is_empty()))
+        .map(String::from);
+    let Some(path) = pic else { return show_notification(u, cid, m, None) };
+    let file = cache_path(u, &path, false);
+    if file.exists() {
+        return show_notification(u, cid, m, Some(file));
+    }
+    // not fetched yet: ask the Mac and notify when it arrives (`image_done`), with or without the picture
+    let first = {
+        let mut st = u.st.borrow_mut();
+        let w = st.notify_wait.entry(path.clone()).or_default();
+        w.push((cid, m.clone()));
+        w.len() == 1
+    };
+    if first {
+        u.send(Cmd::Image { path, full: false });
+    }
+}
+
+fn show_notification(u: &Ui, cid: i64, m: &Value, picture: Option<PathBuf>) {
+    let (text_level, st) = (u.st.borrow().cfg.notify_text, u.st.borrow());
     let Some(chat) = st.chats.iter().find(|c| c["id"].as_i64() == Some(cid)) else { return };
     let mut title = chat_title(chat, &st.names);
     if chat["is_group"].as_bool() == Some(true) {
@@ -2246,6 +2276,11 @@ fn notify(u: &Ui, cid: i64, m: &Value) {
     let n = gio::Notification::new(&title);
     n.set_body(Some(&body));
     n.set_default_action_and_target_value("app.open-chat", Some(&cid.to_variant()));
+    // the picture if there is one, else our own icon (the desktop may only show it when the app is installed)
+    match picture.and_then(|f| std::fs::read(f).ok()) {
+        Some(b) => n.set_icon(&gio::BytesIcon::new(&glib::Bytes::from_owned(b))),
+        None => n.set_icon(&gio::ThemedIcon::new(crate::APP_ID)),
+    }
     // one per message: re-using an id per chat made the desktop update the old one quietly instead of popping up
     u.app.send_notification(Some(&format!("chat-{cid}-{}", m["id"].as_i64().unwrap_or_default())), &n);
 }
