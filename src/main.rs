@@ -2,6 +2,7 @@ mod bubble;
 mod chatscroll;
 mod demo;
 mod mac;
+mod pilllabel;
 mod player;
 mod setup;
 mod sound;

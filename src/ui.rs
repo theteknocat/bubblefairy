@@ -232,9 +232,21 @@ pub struct Ui {
     search: gtk::SearchEntry,
     web: webkit6::soup::Session,
     side_none: gtk::Label,
+    /// the empty search result: a spinner over "Searching…" while the messages are being searched, else the text alone
+    side_none_box: gtk::Box,
+    side_none_spin: gtk::Spinner,
     /// the unread count after the app's title in the header, and the spacer that balances it
     title_badge: (gtk::Label, gtk::Box),
-    search_slot: gtk::Overlay,
+    /// header search: the magnifier button, the field that grows out of it over the title, the layer they share, and the
+    /// settings button the field stops short of
+    search_btn: gtk::Button,
+    search_wrap: gtk::Overlay,
+    head_overlay: gtk::Overlay,
+    settings_btn: gtk::Button,
+    /// 0 = just the button, 1 = the field out over the title; moves toward `search_open`
+    search_p: Cell<f64>,
+    search_open: Cell<bool>,
+    search_tick: Cell<bool>,
     /// on the search field's right end while a message search runs
     search_spin: gtk::Spinner,
     /// bumped by each keystroke / search request: late answers and stale timers are dropped
@@ -394,7 +406,42 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     settings_btn.set_tooltip_text(Some("Settings"));
     settings_btn.add_css_class("head-btn");
     head.pack_end(&settings_btn);
-    win.set_titlebar(Some(&head));
+    let search_btn = gtk::Button::from_icon_name("system-search-symbolic");
+    search_btn.set_tooltip_text(Some("Search (Ctrl+F)"));
+    search_btn.add_css_class("head-btn");
+    head.pack_start(&search_btn);
+    // the field lives in a layer over the whole header, placed over the title between the status pill and the settings
+    // button (a header bar centres its title and can't give it that space)
+    let search = gtk::SearchEntry::builder().placeholder_text("Search conversations").build();
+    search.add_css_class("head-search");
+    search.set_valign(gtk::Align::Center);
+    let search_spin = gtk::Spinner::new();
+    search_spin.set_halign(gtk::Align::End);
+    search_spin.set_valign(gtk::Align::Center);
+    search_spin.set_margin_end(38);
+    search_spin.set_can_target(false);
+    search_spin.set_visible(false);
+    // always there while the field is out, empty or not (the field's own clear icon is hidden in the CSS)
+    let search_close = gtk::Button::from_icon_name("window-close-symbolic");
+    search_close.set_tooltip_text(Some("Close search (Esc)"));
+    search_close.add_css_class("head-btn");
+    search_close.add_css_class("search-close");
+    search_close.set_halign(gtk::Align::End);
+    search_close.set_valign(gtk::Align::Center);
+    search_close.set_margin_end(3);
+    let search_wrap = gtk::Overlay::new();
+    search_wrap.set_child(Some(&search));
+    search_wrap.add_overlay(&search_spin);
+    search_wrap.add_overlay(&search_close);
+    search_wrap.set_halign(gtk::Align::Start);
+    search_wrap.set_valign(gtk::Align::Center);
+    search_wrap.set_visible(false);
+    search_wrap.set_opacity(0.0);
+    let head_overlay = gtk::Overlay::new();
+    head_overlay.set_child(Some(&head));
+    head_overlay.add_overlay(&search_wrap);
+    let search_close_btn = search_close.clone();
+    win.set_titlebar(Some(&head_overlay));
 
     // sidebar
     let chat_list = gtk::ListBox::new();
@@ -414,9 +461,18 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // the list's own placeholder never showed for a filtered list
     let side_none = gtk::Label::new(Some("No conversations found"));
     side_none.add_css_class("loading-text");
-    side_none.set_margin_top(24);
-    side_none.set_visible(false);
-    side_inner.append(&side_none);
+    side_none.set_wrap(true);
+    side_none.set_justify(gtk::Justification::Center);
+    let side_none_spin = gtk::Spinner::new();
+    side_none_spin.set_size_request(24, 24);
+    side_none_spin.set_visible(false);
+    let side_none_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    side_none_box.set_halign(gtk::Align::Center);
+    side_none_box.set_margin_top(24);
+    side_none_box.append(&side_none_spin);
+    side_none_box.append(&side_none);
+    side_none_box.set_visible(false);
+    side_inner.append(&side_none_box);
     let side_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&side_inner).build();
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar.add_css_class("sidebar");
@@ -451,29 +507,6 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     side_head.append(&title_slot);
     side_head.append(&new_btn);
     sidebar.append(&side_head);
-    // filter the list by name or number; in a slot that measures nothing, like the title, so it can't hold the
-    // sidebar wide
-    let search = gtk::SearchEntry::builder().placeholder_text("Search conversations").build();
-    search.add_css_class("side-search");
-    search.set_margin_start(14);
-    search.set_margin_end(14);
-    search.set_margin_bottom(8);
-    search.set_valign(gtk::Align::Start);
-    let search_slot = gtk::Overlay::new();
-    let strut = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    strut.set_size_request(-1, 42);
-    search_slot.set_child(Some(&strut));
-    search_slot.add_overlay(&search);
-    search_slot.set_clip_overlay(&search, true);
-    let search_spin = gtk::Spinner::new();
-    search_spin.set_halign(gtk::Align::End);
-    search_spin.set_valign(gtk::Align::Start);
-    search_spin.set_margin_end(46);
-    search_spin.set_margin_top(10);
-    search_spin.set_can_target(false);
-    search_spin.set_visible(false);
-    search_slot.add_overlay(&search_spin);
-    sidebar.append(&search_slot);
     let side_loading = gtk::Box::new(gtk::Orientation::Vertical, 10);
     side_loading.set_valign(gtk::Align::Center);
     side_loading.set_halign(gtk::Align::Center);
@@ -836,10 +869,18 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         side_more,
         search,
         side_none,
+        side_none_box,
+        side_none_spin,
         title_badge: (title_badge, title_gap),
         tray: RefCell::new(None),
         hold: RefCell::new(None),
-        search_slot,
+        search_btn,
+        search_wrap,
+        head_overlay,
+        settings_btn: settings_btn.clone(),
+        search_p: Cell::new(0.0),
+        search_open: Cell::new(false),
+        search_tick: Cell::new(false),
         search_spin,
         msearch_gen: Cell::new(0),
         goto_gen: Cell::new(0),
@@ -946,17 +987,39 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     }
     let search_action = gio::SimpleAction::new("search", None);
     let u = ui.clone();
-    search_action.connect_activate(move |_, _| {
-        if !u.collapsed.get() {
-            u.search.grab_focus();
+    search_action.connect_activate(move |_, _| open_search(&u));
+    let u = ui.clone();
+    ui.search_btn.connect_clicked(move |_| open_search(&u));
+    let u = ui.clone();
+    ui.search.connect_stop_search(move |_| close_search(&u)); // Esc
+    let u = ui.clone();
+    search_close_btn.connect_clicked(move |_| close_search(&u));
+    // the magnifier inside the field sits where the header button was: pressing it again closes the field too
+    let g = gtk::GestureClick::new();
+    g.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let u = ui.clone();
+    g.connect_pressed(move |g, _, x, _| {
+        if x < 34.0 {
+            g.set_state(gtk::EventSequenceState::Claimed);
+            close_search(&u);
         }
     });
+    ui.search.add_controller(g);
+    // focus leaves an empty field: back to the button (not when the whole window lost the focus)
+    let fc = gtk::EventControllerFocus::new();
+    let u = ui.clone();
+    fc.connect_leave(move |_| {
+        if u.search.text().is_empty() && u.search_open.get() && u.win.is_active() {
+            search_to(&u, false);
+        }
+    });
+    ui.search.add_controller(fc);
     app.add_action(&search_action);
     app.set_accels_for_action("app.search", &["<Control>f"]);
 
     if let Ok(q) = std::env::var("BF_SEARCH") {
         let u = ui.clone();
-        glib::timeout_add_local_once(Duration::from_millis(5000), move || u.search.set_text(&q)); // dev aid (after the connection is up)
+        glib::timeout_add_local_once(Duration::from_millis(5000), move || if q.is_empty() { open_search(&u) } else { u.search.set_text(&q) }); // dev aid (after the connection is up; empty = just open the field)
     }
     if let Ok(id) = std::env::var("BF_FIND_OPEN").map(|v| v.parse::<i64>().unwrap_or(1)) {
         // dev aid: open this chat from the search results, 9 s in
@@ -2817,13 +2880,21 @@ fn match_y(ws: &[gtk::Widget], words: &[String], to: &gtk::Widget) -> Option<f32
 }
 
 fn mark_labels(w: &gtk::Widget, words: &[String], strong: bool) {
-    if let Some(l) = w.downcast_ref::<gtk::Label>() {
-        highlight(l, words, strong);
+    // Collected first: highlighting may move a label into an overlay, which would disturb a walk of the tree.
+    fn walk(w: &gtk::Widget, out: &mut Vec<gtk::Label>) {
+        if let Some(l) = w.downcast_ref::<gtk::Label>() {
+            out.push(l.clone());
+        }
+        let mut c = w.first_child();
+        while let Some(x) = c {
+            walk(&x, out);
+            c = x.next_sibling();
+        }
     }
-    let mut c = w.first_child();
-    while let Some(x) = c {
-        mark_labels(&x, words, strong);
-        c = x.next_sibling();
+    let mut labels = Vec::new();
+    walk(w, &mut labels);
+    for l in labels {
+        highlight(&l, words, strong);
     }
 }
 
@@ -3753,6 +3824,9 @@ struct RowParts {
     stack: gtk::Box,
     short: gtk::Label,
     prev: gtk::Label,
+    /// "N matches" in the preview line (wide sidebar) and the number over the avatar's corner (avatars-only sidebar)
+    pill: gtk::Label,
+    badge: gtk::Label,
     dot: gtk::Box,
 }
 
@@ -3811,12 +3885,20 @@ fn render_chats_inner(u: &Rc<Ui>) {
         prev.set_xalign(0.0);
         prev.set_ellipsize(gtk::pango::EllipsizeMode::End);
         prev.set_single_line_mode(true);
+        prev.set_hexpand(true);
+        let pill = gtk::Label::new(None);
+        pill.add_css_class("count-pill");
+        pill.set_valign(gtk::Align::Center);
+        pill.set_visible(false);
+        let prev_line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        prev_line.append(&pill);
+        prev_line.append(&prev);
         let texts = gtk::Box::new(gtk::Orientation::Vertical, 2);
         texts.set_hexpand(true);
         texts.add_css_class("chat-texts");
         texts.set_valign(gtk::Align::Center);
         texts.append(&top);
-        texts.append(&prev);
+        texts.append(&prev_line);
         // The avatar is the row's only measured content, so the row can be as narrow as a circle round it;
         // the texts sit beside it at a width of their own and are cropped by the row as the sidebar narrows.
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -3847,12 +3929,19 @@ fn render_chats_inner(u: &Rc<Ui>) {
         row_box.set_child(Some(&stack));
         row_box.add_overlay(&slot);
         row_box.set_clip_overlay(&slot, true);
+        let badge = gtk::Label::new(None);
+        badge.add_css_class("count-pill");
+        badge.add_css_class("count-badge");
+        badge.set_halign(gtk::Align::End);
+        badge.set_valign(gtk::Align::Start);
+        badge.set_visible(false);
+        row_box.add_overlay(&badge);
         let row = gtk::ListBoxRow::new();
         if u.collapsed.get() {
             row.set_tooltip_text(Some(&title));
         }
         new_rows.push((row.clone(), slot, title.clone()));
-        u.row_parts.borrow_mut().insert(id, RowParts { row: row.clone(), time_unix, time: time.clone(), name: name.clone(), stack: stack.clone(), short: short.clone(), prev: prev.clone(), dot: dot.clone() });
+        u.row_parts.borrow_mut().insert(id, RowParts { row: row.clone(), time_unix, time: time.clone(), name: name.clone(), stack: stack.clone(), short: short.clone(), prev: prev.clone(), pill: pill.clone(), badge: badge.clone(), dot: dot.clone() });
         row.add_css_class("chat-row");
         if unread {
             row.add_css_class("unread");
@@ -3911,6 +4000,70 @@ fn row_matches(u: &Ui, row: &gtk::ListBoxRow) -> bool {
         })
 }
 
+const SEARCH_MS: f64 = 200.0;
+
+/// Put the field over the title: from the magnifier button's left edge to the settings button. `p` is how far it has
+/// grown (0 = the button's own size and invisible, 1 = full width), so the button fades out as the field fades in.
+fn search_place(u: &Ui, p: f64) {
+    let (Some(b), Some(s)) = (u.search_btn.compute_bounds(&u.head_overlay), u.settings_btn.compute_bounds(&u.head_overlay)) else { return };
+    let (x, w0) = (b.x() as f64, b.width() as f64);
+    let full = (s.x() as f64 - 10.0 - x).max(w0);
+    let e = 1.0 - (1.0 - p).powi(3);
+    u.search_wrap.set_margin_start(x.round() as i32);
+    u.search_wrap.set_width_request((w0 + (full - w0) * e).round() as i32);
+    u.search_wrap.set_opacity(e);
+    u.search_btn.set_opacity(1.0 - e);
+    u.search_btn.set_can_target(p < 0.5);
+    // the title gives way to the field (it would show through its translucent fill)
+    if let Some(t) = u.head_overlay.child().and_then(|h| h.downcast::<gtk::HeaderBar>().ok()).and_then(|h| h.title_widget()) {
+        t.set_opacity(1.0 - e);
+    }
+}
+
+/// Open or fold the header search field, with a short fade-and-grow.
+fn search_to(u: &Rc<Ui>, open: bool) {
+    u.search_open.set(open);
+    if open {
+        u.search_wrap.set_visible(true);
+    }
+    if u.search_tick.replace(true) {
+        return; // already moving: it turns round
+    }
+    let (u2, last) = (u.clone(), Cell::new(0_i64));
+    u.head_overlay.add_tick_callback(move |_, clock| {
+        let now = clock.frame_time();
+        let dt = if last.get() == 0 { 16_000.0 } else { (now - last.get()) as f64 };
+        last.set(now);
+        let target = if u2.search_open.get() { 1.0 } else { 0.0 };
+        let p = u2.search_p.get();
+        let p = if p < target { (p + dt / 1000.0 / SEARCH_MS).min(target) } else { (p - dt / 1000.0 / SEARCH_MS).max(target) };
+        u2.search_p.set(p);
+        search_place(&u2, p);
+        if p == target {
+            u2.search_tick.set(false);
+            if !u2.search_open.get() {
+                u2.search_wrap.set_visible(false);
+            }
+            return glib::ControlFlow::Break;
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+fn open_search(u: &Rc<Ui>) {
+    search_to(u, true);
+    u.search.grab_focus();
+}
+
+/// Esc: the text goes and the field folds back into the button.
+fn close_search(u: &Rc<Ui>) {
+    u.search.set_text("");
+    search_to(u, false);
+    if u.st.borrow().sel.is_some() {
+        u.compose.grab_focus();
+    }
+}
+
 /// What is typed in the search box has changed.
 fn apply_search(u: &Rc<Ui>) {
     let t0 = std::time::Instant::now();
@@ -3943,8 +4096,11 @@ fn apply_search_inner(u: &Rc<Ui>) {
     }
     let any = (0..u.st.borrow().chats.len()).any(|i| u.chat_list.row_at_index(i as i32).is_some_and(|r| row_matches(u, &r)));
     // a message search can take several seconds: say so instead of "nothing found"
-    u.side_none.set_text(if u.search_spin.is_visible() { "Searching messages…" } else { "No conversations found" });
-    u.side_none.set_visible(searching && !any);
+    let waiting = u.search_spin.is_visible();
+    u.side_none.set_text(if waiting { "Searching…" } else { "No conversations found" });
+    u.side_none_spin.set_visible(waiting);
+    u.side_none_spin.set_spinning(waiting);
+    u.side_none_box.set_visible(searching && !any);
     style_rows(u);
 }
 
@@ -3967,31 +4123,73 @@ fn search_words(q: &str) -> Vec<String> {
     q.split_whitespace().map(str::to_lowercase).collect()
 }
 
-/// Mark every occurrence of the words in the label's text: dark text on a sand-coloured ground, or on a bright
-/// orange one (`strong`) for the match you have just jumped to. Both are dark-on-light, so they read on any bubble.
+/// Mark every occurrence of the words in the label's text: bold dark text on a pink ground, or on a vivid
+/// pink one (`strong`) for the match you have just jumped to. Both are dark-on-light, so they read on any bubble.
+/// Whole words get rounded pills (consecutive matched words share one) drawn under the label by `pilllabel`; a
+/// label that can't sit on that layer gets plain rectangles over just the matched letters.
 fn highlight(l: &gtk::Label, words: &[String], strong: bool) {
+    let (r, g, b) = if strong { (0xffff_u16, 0x7e7e_u16, 0xb9b9_u16) } else { (0xffff, 0xb8b8, 0xdcdc) };
+    let rgb = (r as f64 / 65535.0, g as f64 / 65535.0, b as f64 / 65535.0);
     if words.is_empty() {
         l.set_attributes(None);
+        crate::pilllabel::set_pills(l, Vec::new(), rgb);
         return;
     }
     let text = l.text().to_string();
     let lower = fold(&text); // same byte offsets as `text`
+    let spans = word_spans(&text, &lower, words);
+    let pilled = crate::pilllabel::set_pills(l, spans.clone(), rgb);
     let list = gtk::pango::AttrList::new();
-    let (r, g, b) = if strong { (0xffff, 0x8a8a, 0x1f1f) } else { (0xe8e8, 0xd4d4, 0x8a8a) };
-    for w in words.iter().filter(|w| !w.is_empty()) {
-        for (at, _) in lower.match_indices(w.as_str()) {
-            let (start, end) = (at as u32, (at + w.len()) as u32);
+    let plain: Vec<(usize, usize)> = if pilled {
+        spans
+    } else {
+        words.iter().filter(|w| !w.is_empty()).flat_map(|w| lower.match_indices(w.as_str()).map(|(at, _)| (at, at + w.len())).collect::<Vec<_>>()).collect()
+    };
+    for (s, e) in plain {
+        let (start, end) = (s as u32, e as u32);
+        if !pilled {
             let mut bg = gtk::pango::AttrColor::new_background(r, g, b);
             bg.set_start_index(start);
             bg.set_end_index(end);
             list.insert(bg);
-            let mut fg = gtk::pango::AttrColor::new_foreground(0x1a1a, 0x1515, 0x3030);
-            fg.set_start_index(start);
-            fg.set_end_index(end);
-            list.insert(fg);
         }
+        let mut fg = gtk::pango::AttrColor::new_foreground(0x2a2a, 0x2424, 0x4242);
+        fg.set_start_index(start);
+        fg.set_end_index(end);
+        list.insert(fg);
+        let mut bold = gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold);
+        bold.set_start_index(start);
+        bold.set_end_index(end);
+        list.insert(bold);
     }
     l.set_attributes(Some(&list));
+}
+
+/// Where the search words are, grown to whole words, with words that follow one another (only blanks between)
+/// joined into one span: "hi abas" is one pill, not two.
+fn word_spans(text: &str, lower: &str, words: &[String]) -> Vec<(usize, usize)> {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for w in words.iter().filter(|w| !w.is_empty()) {
+        for (at, _) in lower.match_indices(w.as_str()) {
+            let (mut s, mut e) = (at, at + w.len());
+            while let Some(c) = text[..s].chars().next_back().filter(|c| c.is_alphanumeric()) {
+                s -= c.len_utf8();
+            }
+            while let Some(c) = text[e..].chars().next().filter(|c| c.is_alphanumeric()) {
+                e += c.len_utf8();
+            }
+            spans.push((s, e));
+        }
+    }
+    spans.sort_unstable();
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for (s, e) in spans {
+        match out.last_mut() {
+            Some(last) if s <= last.1 || text[last.1..s].chars().all(char::is_whitespace) => last.1 = last.1.max(e),
+            _ => out.push((s, e)),
+        }
+    }
+    out
 }
 
 /// The part of a message around its first match, for a row's preview line.
@@ -4021,19 +4219,23 @@ fn style_rows(u: &Rc<Ui>) {
     }
 }
 
-/// One row's name and preview while a search is on (or back to plain when it isn't).
+/// One row's name and preview while a search is on (or back to plain when it isn't), and its match count: a pill
+/// beside the preview in the wide sidebar, a badge on the avatar's corner in the avatars-only one.
 fn style_row(st: &State, words: &[String], searching: bool, id: i64, p: &RowParts, chat: Option<&Value>) {
     highlight(&p.name, if searching { words } else { &[] }, false);
     let hits = if searching { st.find_hits.get(&id) } else { None };
-    let text = match hits.and_then(|h| h.first().map(|m| (m, st.find_counts.get(&id).copied().unwrap_or(h.len())))) {
-        Some((m, n)) => {
-            let s = snippet(m["text"].as_str().unwrap_or(""), words);
-            if n > 1 { format!("{n} matches · {s}") } else { s }
-        }
+    let count = if searching { st.find_counts.get(&id).copied().or(hits.map(Vec::len)) } else { None };
+    let text = match hits.and_then(|h| h.first()) {
+        Some(m) => snippet(m["text"].as_str().unwrap_or(""), words),
         None => chat.map(|c| row_info(st, c).1).unwrap_or_default(),
     };
     p.prev.set_text(&text);
     highlight(&p.prev, if hits.is_some() { words } else { &[] }, false);
+    let n = count.unwrap_or(0);
+    p.pill.set_text(&format!("{n} matches"));
+    p.pill.set_visible(n > 1);
+    p.badge.set_text(&if n > 99 { "99+".to_string() } else { n.to_string() });
+    p.badge.set_visible(n > 0);
 }
 
 /// The search box changed: filter the list by name at once, and (after a pause) look through the messages.
@@ -4090,6 +4292,10 @@ fn search_changed(u: &Rc<Ui>) {
 
 fn search_changed_inner(u: &Rc<Ui>) {
     let q = u.search.text().trim().to_string();
+    if !q.is_empty() && !u.search_open.get() {
+        search_to(u, true); // the text was set from elsewhere
+    }
+
     let gen_ = u.msearch_gen.get().wrapping_add(1);
     u.msearch_gen.set(gen_);
     if q.chars().count() < 2 {
@@ -6033,6 +6239,9 @@ fn relayout(u: &Rc<Ui>, total: i32) {
     if total <= 0 {
         return;
     }
+    if u.search_p.get() > 0.0 {
+        search_place(u, u.search_p.get());
+    }
     let narrow = total < SIDEBAR_MIN + CHAT_MIN;
     let crossed = narrow != u.narrow.replace(narrow);
     if crossed {
@@ -6089,9 +6298,7 @@ fn relayout(u: &Rc<Ui>, total: i32) {
 /// Avatars only, or names too: the CSS classes (circle round the avatar, unread tint) and the tooltips.
 fn show_collapsed(u: &Rc<Ui>, collapsed: bool) {
     u.collapsed.set(collapsed);
-    u.search_slot.set_visible(!collapsed);
     if collapsed {
-        u.search.set_text("");
         u.sidebar.add_css_class("collapsed");
     } else {
         u.sidebar.remove_css_class("collapsed");
@@ -8563,3 +8770,17 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod pill_tests {
+    use super::{fold, word_spans};
+
+    #[test]
+    fn words_grow_and_neighbours_join() {
+        let t = "say hi abas there";
+        let w = vec!["hi".to_string(), "aba".to_string()];
+        assert_eq!(word_spans(t, &fold(t), &w), vec![(4, 11)]);
+        let t = "xx thing, other";
+        assert_eq!(word_spans(t, &fold(t), &["th".to_string()]), vec![(3, 8), (10, 15)]);
+    }
+}
