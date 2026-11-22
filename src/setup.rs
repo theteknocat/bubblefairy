@@ -2,6 +2,10 @@
 //! check that Messages can be read, and (optionally) send a test message. The backend half (this file's top) runs on
 //! tokio; the wizard window (below) runs on the GTK thread and calls it through `rt`.
 
+// A poisoned Mutex means another thread panicked mid-update; crashing on `lock().unwrap()` surfaces that bug
+// instead of running on with half-updated state.
+#![allow(clippy::unwrap_used)]
+
 use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::path::PathBuf;

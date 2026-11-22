@@ -1,6 +1,10 @@
 //! Talking to the Mac: one SSH session (russh) running `imsg rpc` (JSON-RPC, one JSON object per line),
 //! plus short extra exec channels for fetching images. Runs on tokio; the UI only sees `Cmd` and `Event`.
 
+// A poisoned Mutex means another thread panicked mid-update; crashing on `lock().unwrap()` surfaces that bug
+// instead of running on with half-updated state.
+#![allow(clippy::unwrap_used)]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -391,7 +395,9 @@ pub fn ensure_key(path: &PathBuf) -> std::io::Result<String> {
         std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut seed)?;
         let key = PrivateKey::new(Ed25519Keypair::from_seed(&seed).into(), "BubbleFairy")
             .map_err(std::io::Error::other)?;
-        std::fs::create_dir_all(path.parent().unwrap())?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         let pem = key
             .to_openssh(LineEnding::LF)
             .map_err(std::io::Error::other)?;

@@ -7503,6 +7503,8 @@ fn bg<T: Send + 'static>(
             let rx = rx.clone();
             std::thread::spawn(move || {
                 loop {
+                    // a poisoned lock means a job panicked: crash so the bug shows (see mac.rs)
+                    #[allow(clippy::unwrap_used)]
                     let job = rx.lock().unwrap().recv(); // the lock is released before the job runs
                     match job {
                         Ok(job) => job(),
