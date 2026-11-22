@@ -22,7 +22,13 @@ pub const APP_ID: &str = "io.github.theteknocat.BubbleFairy";
 pub const DEFAULT_IMSG: &str = "/opt/homebrew/bin/imsg";
 
 fn load_config(path: &Path) -> mac::Config {
-    let mut c = mac::Config { imsg: DEFAULT_IMSG.into(), notify: true, notify_sound: true, sound: sound::DEFAULT.into(), ..Default::default() };
+    let mut c = mac::Config {
+        imsg: DEFAULT_IMSG.into(),
+        notify: true,
+        notify_sound: true,
+        sound: sound::DEFAULT.into(),
+        ..Default::default()
+    };
     for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
         match line.split_once('=') {
             Some(("host", v)) => c.host = v.trim().into(),
@@ -46,7 +52,25 @@ fn load_config(path: &Path) -> mac::Config {
 
 pub fn save_config(path: &Path, c: &mac::Config) {
     let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let _ = std::fs::write(path, format!("host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\nskip_intro={}\nautostart={}\n", c.host, c.user, c.imsg, u8::from(c.map_previews), u8::from(c.link_previews), u8::from(c.notify), u8::from(c.notify_sound), c.sound, c.notify_text, c.dir_images, c.dir_files, u8::from(c.skip_intro), u8::from(c.autostart)));
+    let _ = std::fs::write(
+        path,
+        format!(
+            "host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\nskip_intro={}\nautostart={}\n",
+            c.host,
+            c.user,
+            c.imsg,
+            u8::from(c.map_previews),
+            u8::from(c.link_previews),
+            u8::from(c.notify),
+            u8::from(c.notify_sound),
+            c.sound,
+            c.notify_text,
+            c.dir_images,
+            c.dir_files,
+            u8::from(c.skip_intro),
+            u8::from(c.autostart)
+        ),
+    );
 }
 
 /// Image cache size cap. Everything in it can be fetched again from the Mac.
@@ -56,7 +80,9 @@ const FILES_DAYS: u64 = 30; // how long a copied attachment is kept
 /// Delete the oldest cached images until the folder is under `max` bytes.
 // ponytail: oldest by write time, not last use; fine while re-fetching is cheap
 fn prune_cache(dir: &Path, max: u64) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut files: Vec<_> = rd
         .flatten()
         .filter_map(|e| {
@@ -79,10 +105,14 @@ fn prune_cache(dir: &Path, max: u64) {
 /// Opened attachments are kept one folder each under `files/`: remove the folders older than `days` (by the time the
 /// copy was made; opening it again after that just copies it from the Mac again).
 fn prune_old_dirs(dir: &Path, days: u64) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
     for e in rd.flatten() {
-        if e.metadata().is_ok_and(|m| m.is_dir() && m.modified().is_ok_and(|t| t < cutoff)) {
+        if e.metadata()
+            .is_ok_and(|m| m.is_dir() && m.modified().is_ok_and(|t| t < cutoff))
+        {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
@@ -92,11 +122,17 @@ fn main() -> glib::ExitCode {
     let _ = gstreamer::init(); // for the video player
     let config_file = glib::user_config_dir().join("bubblefairy/config");
     let data = glib::user_data_dir().join("bubblefairy");
-    let paths = mac::Paths { key: data.join("id_ed25519"), known_host: data.join("mac_host_key") };
+    let paths = mac::Paths {
+        key: data.join("id_ed25519"),
+        known_host: data.join("mac_host_key"),
+    };
     let public_key = match mac::ensure_key(&paths.key) {
         Ok(k) => k,
         Err(e) => {
-            eprintln!("can't create BubbleFairy's SSH key at {}: {e}", paths.key.display());
+            eprintln!(
+                "can't create BubbleFairy's SSH key at {}: {e}",
+                paths.key.display()
+            );
             return glib::ExitCode::FAILURE;
         }
     };
@@ -126,7 +162,11 @@ fn main() -> glib::ExitCode {
         prune_old_dirs(&cache.with_file_name("files"), FILES_DAYS);
     });
 
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio runtime");
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
     let _ = setup::RT.set(rt.handle().clone());
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     let (ev_tx, ev_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -140,17 +180,24 @@ fn main() -> glib::ExitCode {
     if std::env::var_os("BF_SHOT").is_some() {
         flags |= gtk::gio::ApplicationFlags::NON_UNIQUE; // don't hand off to a running copy
     }
-    let app = gtk::Application::builder().application_id(APP_ID).flags(flags).build();
+    let app = gtk::Application::builder()
+        .application_id(APP_ID)
+        .flags(flags)
+        .build();
     app.connect_startup(|_| {
         if std::env::var_os("BF_DARK").is_some() {
             // dev aid for screenshots
-            gtk::Settings::default().unwrap().set_gtk_interface_color_scheme(gtk::InterfaceColorScheme::Dark);
+            gtk::Settings::default()
+                .unwrap()
+                .set_gtk_interface_color_scheme(gtk::InterfaceColorScheme::Dark);
         } else if std::env::var_os("BF_LIGHT").is_some() {
-            gtk::Settings::default().unwrap().set_gtk_interface_color_scheme(gtk::InterfaceColorScheme::Light);
-            
+            gtk::Settings::default()
+                .unwrap()
+                .set_gtk_interface_color_scheme(gtk::InterfaceColorScheme::Light);
         }
         // our own icons (the chat bubble); installed under share/icons in the Flatpak, found here when run from source
-        gtk::IconTheme::for_display(&gdk::Display::default().expect("display")).add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/data/icons"));
+        gtk::IconTheme::for_display(&gdk::Display::default().expect("display"))
+            .add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/data/icons"));
         let css = gtk::CssProvider::new();
         css.load_from_string(include_str!("style.css"));
         gtk::style_context_add_provider_for_display(
@@ -180,7 +227,13 @@ mod tests {
     #[test]
     fn autostart_survives_a_save_and_load() {
         let f = std::env::temp_dir().join(format!("bf-cfg-{}", std::process::id()));
-        super::save_config(&f, &crate::mac::Config { autostart: true, ..Default::default() });
+        super::save_config(
+            &f,
+            &crate::mac::Config {
+                autostart: true,
+                ..Default::default()
+            },
+        );
         assert!(super::load_config(&f).autostart);
         super::save_config(&f, &crate::mac::Config::default());
         assert!(!super::load_config(&f).autostart, "off unless chosen");
@@ -193,8 +246,14 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         for (i, name) in ["a", "b", "c"].iter().enumerate() {
             std::fs::write(d.join(name), [0u8; 10]).unwrap();
-            let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + i as u64);
-            std::fs::File::options().write(true).open(d.join(name)).unwrap().set_modified(t).unwrap();
+            let t = std::time::SystemTime::UNIX_EPOCH
+                + std::time::Duration::from_secs(1_000 + i as u64);
+            std::fs::File::options()
+                .write(true)
+                .open(d.join(name))
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
         }
         super::prune_cache(&d, 15);
         assert!(!d.join("a").exists() && !d.join("b").exists() && d.join("c").exists());
@@ -207,8 +266,12 @@ mod tests {
         for (name, age_days) in [("old", 40u64), ("new", 2)] {
             std::fs::create_dir_all(d.join(name)).unwrap();
             std::fs::write(d.join(name).join("f.pdf"), b"x").unwrap();
-            let t = std::time::SystemTime::now() - std::time::Duration::from_secs(age_days * 86_400);
-            std::fs::File::open(d.join(name)).unwrap().set_modified(t).unwrap();
+            let t =
+                std::time::SystemTime::now() - std::time::Duration::from_secs(age_days * 86_400);
+            std::fs::File::open(d.join(name))
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
         }
         super::prune_old_dirs(&d, 30);
         assert!(!d.join("old").exists() && d.join("new").exists());

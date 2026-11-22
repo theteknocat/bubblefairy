@@ -52,7 +52,11 @@ pub fn yt_key(id: &str, n: usize) -> String {
 }
 
 fn ready(item: &Item) -> bool {
-    yt_id(&item.0).is_some() || item.1.downcast_ref::<Bubble>().is_some_and(|b| b.texture().is_some())
+    yt_id(&item.0).is_some()
+        || item
+            .1
+            .downcast_ref::<Bubble>()
+            .is_some_and(|b| b.texture().is_some())
 }
 
 pub struct Viewer {
@@ -108,7 +112,11 @@ pub struct Viewer {
 fn clock(secs: f64) -> String {
     let t = secs.max(0.0).round() as i64;
     let (h, m, s) = (t / 3600, t / 60 % 60, t % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
 }
 
 fn icon_btn(icon: &str, tip: &str) -> gtk::Button {
@@ -138,12 +146,20 @@ impl Viewer {
             root.add_overlay(&b);
             b
         };
-        let prev = nav("go-previous-symbolic", gtk::Align::Start, "Previous photo (←)");
+        let prev = nav(
+            "go-previous-symbolic",
+            gtk::Align::Start,
+            "Previous photo (←)",
+        );
         let next = nav("go-next-symbolic", gtk::Align::End, "Next photo (→)");
         let close = nav("window-close-symbolic", gtk::Align::End, "Close (Esc)");
         close.set_valign(gtk::Align::Start);
         close.add_css_class("viewer-close");
-        let full_btn = nav("view-fullscreen-symbolic", gtk::Align::End, "Full screen (F)");
+        let full_btn = nav(
+            "view-fullscreen-symbolic",
+            gtk::Align::End,
+            "Full screen (F)",
+        );
         full_btn.set_valign(gtk::Align::Start);
         full_btn.add_css_class("viewer-close");
         full_btn.set_margin_end(14 + 32 + 8); // beside the close button
@@ -171,7 +187,14 @@ impl Viewer {
         bar.set_halign(gtk::Align::Fill);
         bar.set_valign(gtk::Align::End);
         bar.set_visible(false);
-        for w in [play_btn.upcast_ref::<gtk::Widget>(), time_l.upcast_ref(), seek.upcast_ref(), len_l.upcast_ref(), mute_btn.upcast_ref(), vol.upcast_ref()] {
+        for w in [
+            play_btn.upcast_ref::<gtk::Widget>(),
+            time_l.upcast_ref(),
+            seek.upcast_ref(),
+            len_l.upcast_ref(),
+            mute_btn.upcast_ref(),
+            vol.upcast_ref(),
+        ] {
             bar.append(w);
         }
         root.add_overlay(&bar);
@@ -298,7 +321,9 @@ impl Viewer {
         v.root.add_controller(motion);
 
         // one photo per wheel notch (DISCRETE turns smooth touchpad scrolling into whole steps)
-        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::DISCRETE);
+        let wheel = gtk::EventControllerScroll::new(
+            gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::DISCRETE,
+        );
         let w = v.clone();
         wheel.connect_scroll(move |_, _, dy| {
             if dy > 0.0 {
@@ -349,7 +374,9 @@ impl Viewer {
 
     /// Open on the photo at `path` (it must have its texture), with `items` to walk through.
     pub fn open(&self, items: Vec<Item>, path: &str) {
-        let Some(i) = items.iter().position(|it| it.0 == path && ready(it)) else { return };
+        let Some(i) = items.iter().position(|it| it.0 == path && ready(it)) else {
+            return;
+        };
         let from = self.source_rect(&items[i].1);
         *self.items.borrow_mut() = items;
         self.idx.set(i);
@@ -368,7 +395,9 @@ impl Viewer {
             return;
         }
         let cur = self.current_path();
-        let i = cur.and_then(|c| items.iter().position(|(p, _)| *p == c)).unwrap_or(0);
+        let i = cur
+            .and_then(|c| items.iter().position(|(p, _)| *p == c))
+            .unwrap_or(0);
         *self.items.borrow_mut() = items;
         self.idx.set(i);
         self.show_current();
@@ -392,7 +421,11 @@ impl Viewer {
         if !self.is_open() || self.canvas.imp().closing.get() {
             return;
         }
-        let cur = self.items.borrow().get(self.idx.get()).map(|(_, b)| b.clone());
+        let cur = self
+            .items
+            .borrow()
+            .get(self.idx.get())
+            .map(|(_, b)| b.clone());
         let from = match cur {
             Some(b) if b.is_mapped() => self.source_rect(&b),
             _ => {
@@ -438,15 +471,26 @@ impl Viewer {
         } else {
             self.root.remove_css_class("full");
         }
-        self.full_btn.set_icon_name(if on { "view-restore-symbolic" } else { "view-fullscreen-symbolic" });
-        self.full_btn.set_tooltip_text(Some(if on { "Leave full screen (F, Esc)" } else { "Full screen (F)" }));
+        self.full_btn.set_icon_name(if on {
+            "view-restore-symbolic"
+        } else {
+            "view-fullscreen-symbolic"
+        });
+        self.full_btn.set_tooltip_text(Some(if on {
+            "Leave full screen (F, Esc)"
+        } else {
+            "Full screen (F)"
+        }));
         if let Some(h) = self.hooks.borrow().as_ref() {
             (h.set_fullscreen)(on);
         }
     }
 
     fn current_path(&self) -> Option<String> {
-        self.items.borrow().get(self.idx.get()).map(|(p, _)| p.clone())
+        self.items
+            .borrow()
+            .get(self.idx.get())
+            .map(|(p, _)| p.clone())
     }
 
     /// Move by one photo, stopping at the ends; skips photos whose chat copy hasn't arrived yet.
@@ -478,7 +522,9 @@ impl Viewer {
 
     /// Show the photo at `idx`: the big version if we have it, else the chat copy plus a fetch.
     fn show_current(&self) {
-        let Some((path, b)) = self.items.borrow().get(self.idx.get()).cloned() else { return };
+        let Some((path, b)) = self.items.borrow().get(self.idx.get()).cloned() else {
+            return;
+        };
         if let Some(id) = yt_id(&path) {
             // the chat re-rendering under us must not reload the video
             if self.yt_key.borrow().as_deref() != Some(&path) {
@@ -529,7 +575,12 @@ impl Viewer {
         }
         self.stop_video();
         *self.want_video.borrow_mut() = Some(path.to_string());
-        let local = self.local.borrow().get(path).filter(|p| p.exists()).cloned();
+        let local = self
+            .local
+            .borrow()
+            .get(path)
+            .filter(|p| p.exists())
+            .cloned();
         match local {
             Some(l) => self.start_player(path, &l),
             None => {
@@ -557,8 +608,13 @@ impl Viewer {
         // no cookies or storage survive the viewer
         let session = webkit6::NetworkSession::new_ephemeral();
         // WebKit's default lets only silent video start by itself; the one just clicked should play with sound
-        let policies = webkit6::WebsitePolicies::builder().autoplay(webkit6::AutoplayPolicy::Allow).build();
-        let web = webkit6::WebView::builder().network_session(&session).website_policies(&policies).build();
+        let policies = webkit6::WebsitePolicies::builder()
+            .autoplay(webkit6::AutoplayPolicy::Allow)
+            .build();
+        let web = webkit6::WebView::builder()
+            .network_session(&session)
+            .website_policies(&policies)
+            .build();
         if let Some(s) = webkit6::prelude::WebViewExt::settings(&web) {
             s.set_media_playback_requires_user_gesture(false);
         }
@@ -582,11 +638,21 @@ impl Viewer {
         web.connect_title_notify(move |w| {
             // started from here, not from the page: script run through WebKit's API counts as the user's own action
             if ap && w.title().as_deref() == Some("ready") {
-                w.evaluate_javascript("window.bfp.playVideo()", None, None, gtk::gio::Cancellable::NONE, |_| {});
+                w.evaluate_javascript(
+                    "window.bfp.playVideo()",
+                    None,
+                    None,
+                    gtk::gio::Cancellable::NONE,
+                    |_| {},
+                );
             }
         });
         // a strip of its own above the player for our close and full screen buttons, while they show
-        web.set_margin_top(if self.root.has_css_class("controls") { WEB_TOP } else { 0 });
+        web.set_margin_top(if self.root.has_css_class("controls") {
+            WEB_TOP
+        } else {
+            0
+        });
         web.load_html(&html, Some("https://bubblefairy.app/"));
         self.root.add_overlay(&web);
         web.insert_after(&self.root, Some(&self.canvas)); // sibling order = draw order: under the buttons
@@ -617,17 +683,25 @@ impl Viewer {
         }
         let mb = |b: f64| b / 1024.0 / 1024.0;
         if total > 0 {
-            self.busy_bar.set_fraction((got as f64 / total as f64).clamp(0.0, 1.0));
-            self.busy_label.set_text(&format!("Copying from the Mac… {:.1} of {:.1} MB", mb(got as f64), mb(total as f64)));
+            self.busy_bar
+                .set_fraction((got as f64 / total as f64).clamp(0.0, 1.0));
+            self.busy_label.set_text(&format!(
+                "Copying from the Mac… {:.1} of {:.1} MB",
+                mb(got as f64),
+                mb(total as f64)
+            ));
         } else {
             self.busy_bar.pulse();
-            self.busy_label.set_text(&format!("Copying from the Mac… {:.1} MB", mb(got as f64)));
+            self.busy_label
+                .set_text(&format!("Copying from the Mac… {:.1} MB", mb(got as f64)));
         }
     }
 
     /// The copy is done.
     pub fn video_ready(&self, path: &str, local: PathBuf) {
-        self.local.borrow_mut().insert(path.to_string(), local.clone());
+        self.local
+            .borrow_mut()
+            .insert(path.to_string(), local.clone());
         if self.want_video.borrow().as_deref() == Some(path) {
             self.start_player(path, &local);
         }
@@ -637,7 +711,8 @@ impl Viewer {
         if self.want_video.borrow().as_deref() == Some(path) {
             self.busy_bar.set_visible(false);
             self.busy_btn.set_visible(false);
-            self.busy_label.set_text(&format!("Couldn't copy the video: {why}"));
+            self.busy_label
+                .set_text(&format!("Couldn't copy the video: {why}"));
             self.busy.set_visible(true);
         }
     }
@@ -660,7 +735,8 @@ impl Viewer {
                     v.canvas.imp().video.take();
                     v.bar.set_visible(false);
                     v.busy_bar.set_visible(false);
-                    v.busy_label.set_text(&format!("This video can't be played here: {e}"));
+                    v.busy_label
+                        .set_text(&format!("This video can't be played here: {e}"));
                     v.busy_btn.set_visible(true);
                     v.busy.set_visible(true);
                     v.canvas.queue_draw();
@@ -697,7 +773,9 @@ impl Viewer {
                 self.poll_gen.set(g);
                 let me = self.me.borrow().clone();
                 glib::timeout_add_local(Duration::from_millis(250), move || {
-                    let Some(v) = me.upgrade() else { return glib::ControlFlow::Break };
+                    let Some(v) = me.upgrade() else {
+                        return glib::ControlFlow::Break;
+                    };
                     if v.poll_gen.get() != g {
                         return glib::ControlFlow::Break;
                     }
@@ -707,7 +785,8 @@ impl Viewer {
             }
             Err(e) => {
                 self.busy_bar.set_visible(false);
-                self.busy_label.set_text(&format!("This video can't be played here: {e}"));
+                self.busy_label
+                    .set_text(&format!("This video can't be played here: {e}"));
                 self.busy_btn.set_visible(true);
                 self.busy.set_visible(true);
             }
@@ -729,13 +808,19 @@ impl Viewer {
             p.set_volume(self.volume.get());
         }
         let muted = self.muted.get() || self.volume.get() == 0.0;
-        let img = gtk::Image::from_icon_name(if muted { "bf-muted-symbolic" } else { "bf-volume-symbolic" });
+        let img = gtk::Image::from_icon_name(if muted {
+            "bf-muted-symbolic"
+        } else {
+            "bf-volume-symbolic"
+        });
         self.mute_btn.set_child(Some(&img));
     }
 
     /// The times, the seek bar and the play/pause icon follow the player.
     fn update_times(&self) {
-        let Some(p) = self.player.borrow().clone() else { return };
+        let Some(p) = self.player.borrow().clone() else {
+            return;
+        };
         let (pos, len) = p.times();
         self.time_l.set_text(&clock(pos));
         if let Some(l) = len {
@@ -746,7 +831,11 @@ impl Viewer {
                 self.syncing.set(false);
             }
         }
-        let icon = gtk::Image::from_icon_name(if p.is_playing() { "bf-pause-symbolic" } else { "bf-play-symbolic" });
+        let icon = gtk::Image::from_icon_name(if p.is_playing() {
+            "bf-pause-symbolic"
+        } else {
+            "bf-play-symbolic"
+        });
         self.play_btn.set_child(Some(&icon));
     }
 
@@ -777,8 +866,14 @@ impl Viewer {
     /// A YouTube player keeps clear of the buttons while they show (the embed's own controls sit under them), and
     /// grows to fill the panel when they hide: its top margin eases between the two.
     fn fit_web(&self) {
-        let Some(web) = self.web.borrow().clone() else { return };
-        let to = if self.root.has_css_class("controls") { WEB_TOP } else { 0 };
+        let Some(web) = self.web.borrow().clone() else {
+            return;
+        };
+        let to = if self.root.has_css_class("controls") {
+            WEB_TOP
+        } else {
+            0
+        };
         let from = web.margin_top();
         let g = self.margin_gen.get().wrapping_add(1);
         self.margin_gen.set(g);
@@ -788,7 +883,9 @@ impl Viewer {
         let me = self.me.borrow().clone();
         let began = Cell::new(None::<i64>);
         web.add_tick_callback(move |w, clock| {
-            let Some(v) = me.upgrade() else { return glib::ControlFlow::Break };
+            let Some(v) = me.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
             if v.margin_gen.get() != g {
                 return glib::ControlFlow::Break; // turned round: the newer one takes over from here
             }
@@ -798,23 +895,39 @@ impl Viewer {
             });
             let p = (((clock.frame_time() - t0) as f64 / 1000.0) / 250.0).min(1.0);
             w.set_margin_top(from + ((to - from) as f64 * ease(p)).round() as i32);
-            if p >= 1.0 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+            if p >= 1.0 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
         });
     }
 
     fn pointer_on_control(&self) -> bool {
         let (x, y) = self.ptr.get();
         let pt = graphene::Point::new(x as f32, y as f32);
-        [self.prev.upcast_ref::<gtk::Widget>(), self.next.upcast_ref(), self.close.upcast_ref(), self.bar.upcast_ref(), self.busy.upcast_ref()]
-            .into_iter()
-            .any(|w| w.is_visible() && w.compute_bounds(&self.root).is_some_and(|r| r.contains_point(&pt)))
+        [
+            self.prev.upcast_ref::<gtk::Widget>(),
+            self.next.upcast_ref(),
+            self.close.upcast_ref(),
+            self.bar.upcast_ref(),
+            self.busy.upcast_ref(),
+        ]
+        .into_iter()
+        .any(|w| {
+            w.is_visible()
+                && w.compute_bounds(&self.root)
+                    .is_some_and(|r| r.contains_point(&pt))
+        })
     }
 
     /// Where the photo sits in the chat (or the info panel), in the viewer's coordinates.
     fn source_rect(&self, w: &gtk::Widget) -> graphene::Rect {
         let Some(b) = w.downcast_ref::<Bubble>() else {
             // not a picture bubble (a link tile or card): its whole box
-            return w.compute_bounds(&self.canvas).unwrap_or_else(|| graphene::Rect::new(0.0, 0.0, 1.0, 1.0));
+            return w
+                .compute_bounds(&self.canvas)
+                .unwrap_or_else(|| graphene::Rect::new(0.0, 0.0, 1.0, 1.0));
         };
         let body = b.body();
         b.compute_point(&self.canvas, &graphene::Point::new(body.x(), body.y()))
@@ -849,10 +962,21 @@ impl Canvas {
     /// Where the photo sits when fully open: longest side to the edges, keeping its shape.
     fn fit_rect(&self) -> graphene::Rect {
         let (w, h) = (self.width() as f32, self.height() as f32);
-        let (tw, th) = match self.imp().video.borrow().as_ref().filter(|v| v.intrinsic_width() > 0) {
-            Some(v) => (v.intrinsic_width() as f32, v.intrinsic_height().max(1) as f32),
+        let (tw, th) = match self
+            .imp()
+            .video
+            .borrow()
+            .as_ref()
+            .filter(|v| v.intrinsic_width() > 0)
+        {
+            Some(v) => (
+                v.intrinsic_width() as f32,
+                v.intrinsic_height().max(1) as f32,
+            ),
             None => {
-                let Some(t) = self.imp().tex.borrow().clone() else { return graphene::Rect::new(0.0, 0.0, w, h) };
+                let Some(t) = self.imp().tex.borrow().clone() else {
+                    return graphene::Rect::new(0.0, 0.0, w, h);
+                };
                 (t.width().max(1) as f32, t.height().max(1) as f32)
             }
         };
@@ -900,7 +1024,12 @@ impl Canvas {
     fn photo_rect(&self) -> graphene::Rect {
         let t = ease(self.imp().t.get()) as f32;
         let (a, b) = (self.imp().from.get(), self.fit_rect());
-        graphene::Rect::new(lerp(a.x(), b.x(), t), lerp(a.y(), b.y(), t), lerp(a.width(), b.width(), t), lerp(a.height(), b.height(), t))
+        graphene::Rect::new(
+            lerp(a.x(), b.x(), t),
+            lerp(a.y(), b.y(), t),
+            lerp(a.width(), b.width(), t),
+            lerp(a.height(), b.height(), t),
+        )
     }
 
     /// Show or hide the "fetching the big version" spinner; it turns on the frame clock while shown.
@@ -910,7 +1039,11 @@ impl Canvas {
         if on && !was {
             self.add_tick_callback(|w, _| {
                 w.queue_draw();
-                if w.imp().loading.get() { glib::ControlFlow::Continue } else { glib::ControlFlow::Break }
+                if w.imp().loading.get() {
+                    glib::ControlFlow::Continue
+                } else {
+                    glib::ControlFlow::Break
+                }
             });
         }
     }
@@ -971,13 +1104,22 @@ mod imp {
             let w = self.obj();
             let (width, height) = (w.width() as f32, w.height() as f32);
             let t = ease(self.t.get()) as f32;
-            s.append_color(&gdk::RGBA::new(0.0, 0.0, 0.0, t), &graphene::Rect::new(0.0, 0.0, width, height));
-            let Some(tex) = self.tex.borrow().clone() else { return };
+            s.append_color(
+                &gdk::RGBA::new(0.0, 0.0, 0.0, t),
+                &graphene::Rect::new(0.0, 0.0, width, height),
+            );
+            let Some(tex) = self.tex.borrow().clone() else {
+                return;
+            };
             let r = w.photo_rect();
             // sliding between pictures: both move by the eased progress, a full panel width apart
             let slide = self.prev_tex.borrow().clone().map(|p| {
                 let x = self.slide.get();
-                let e = (if x < 0.5 { 4.0 * x * x * x } else { 1.0 - (-2.0 * x + 2.0).powi(3) / 2.0 }) as f32;
+                let e = (if x < 0.5 {
+                    4.0 * x * x * x
+                } else {
+                    1.0 - (-2.0 * x + 2.0).powi(3) / 2.0
+                }) as f32;
                 (p, e, self.dir.get())
             });
             if let Some((prev, e, dir)) = &slide {
@@ -993,7 +1135,12 @@ mod imp {
             }
             // corners go from the chat's rounded card to square as it opens
             s.push_rounded_clip(&gtk::gsk::RoundedRect::from_rect(r, lerp(18.0, 0.0, t)));
-            match self.video.borrow().as_ref().filter(|v| v.intrinsic_width() > 0) {
+            match self
+                .video
+                .borrow()
+                .as_ref()
+                .filter(|v| v.intrinsic_width() > 0)
+            {
                 Some(video) => {
                     s.save();
                     s.translate(&graphene::Point::new(r.x(), r.y()));
@@ -1009,9 +1156,19 @@ mod imp {
 
             if self.loading.get() && t > 0.9 {
                 // small spinner near the photo's top-left, kept inside the panel
-                let (cx, cy) = ((r.x().max(0.0) + 30.0) as f64, (r.y().max(0.0) + 30.0) as f64);
-                let angle = w.frame_clock().map_or(0.0, |c| c.frame_time() as f64 / 1_000_000.0 * 6.0);
-                let cr = s.append_cairo(&graphene::Rect::new(cx as f32 - 16.0, cy as f32 - 16.0, 32.0, 32.0));
+                let (cx, cy) = (
+                    (r.x().max(0.0) + 30.0) as f64,
+                    (r.y().max(0.0) + 30.0) as f64,
+                );
+                let angle = w
+                    .frame_clock()
+                    .map_or(0.0, |c| c.frame_time() as f64 / 1_000_000.0 * 6.0);
+                let cr = s.append_cairo(&graphene::Rect::new(
+                    cx as f32 - 16.0,
+                    cy as f32 - 16.0,
+                    32.0,
+                    32.0,
+                ));
                 cr.arc(cx, cy, 14.0, 0.0, std::f64::consts::TAU);
                 cr.set_source_rgba(0.0, 0.0, 0.0, 0.55);
                 let _ = cr.fill();

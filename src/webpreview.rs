@@ -13,30 +13,70 @@ pub struct Page {
 /// Only addresses on the public internet are fetched: a link to a router or a local service stays a plain card.
 // ponytail: judged by the address as written; a name that resolves to a private address gets through
 pub fn public_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else { return false };
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
     let host = host.rsplit('@').next().unwrap_or("");
-    let name = if host.starts_with('[') { host.trim_matches(['[', ']']).split("]:").next().unwrap_or("") } else { host.split(':').next().unwrap_or("") };
+    let name = if host.starts_with('[') {
+        host.trim_matches(['[', ']'])
+            .split("]:")
+            .next()
+            .unwrap_or("")
+    } else {
+        host.split(':').next().unwrap_or("")
+    };
     let name = name.to_ascii_lowercase();
-    if name.is_empty() || name == "localhost" || name.ends_with(".local") || name.ends_with(".internal") || name.ends_with(".lan") {
+    if name.is_empty()
+        || name == "localhost"
+        || name.ends_with(".local")
+        || name.ends_with(".internal")
+        || name.ends_with(".lan")
+    {
         return false;
     }
     match name.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(a)) => !(a.is_private() || a.is_loopback() || a.is_link_local() || a.is_unspecified() || a.is_broadcast()),
-        Ok(std::net::IpAddr::V6(a)) => !(a.is_loopback() || a.is_unspecified() || (a.segments()[0] & 0xfe00) == 0xfc00 || (a.segments()[0] & 0xffc0) == 0xfe80),
+        Ok(std::net::IpAddr::V4(a)) => {
+            !(a.is_private()
+                || a.is_loopback()
+                || a.is_link_local()
+                || a.is_unspecified()
+                || a.is_broadcast())
+        }
+        Ok(std::net::IpAddr::V6(a)) => {
+            !(a.is_loopback()
+                || a.is_unspecified()
+                || (a.segments()[0] & 0xfe00) == 0xfc00
+                || (a.segments()[0] & 0xffc0) == 0xfe80)
+        }
         Err(_) => name.contains('.'), // a bare name ("printer") is on the local network
     }
 }
 
 /// Width and height of a PNG, JPEG, GIF or WebP from its header (the GNOME runtime has no gdk-pixbuf loaders to ask).
 pub fn image_size(b: &[u8]) -> Option<(i32, i32)> {
-    let be16 = |i: usize| b.get(i..i + 2).map(|x| i32::from(u16::from_be_bytes([x[0], x[1]])));
-    let le16 = |i: usize| b.get(i..i + 2).map(|x| i32::from(u16::from_le_bytes([x[0], x[1]])));
-    let le24 = |i: usize| b.get(i..i + 3).map(|x| i32::from(x[0]) | i32::from(x[1]) << 8 | i32::from(x[2]) << 16);
+    let be16 = |i: usize| {
+        b.get(i..i + 2)
+            .map(|x| i32::from(u16::from_be_bytes([x[0], x[1]])))
+    };
+    let le16 = |i: usize| {
+        b.get(i..i + 2)
+            .map(|x| i32::from(u16::from_le_bytes([x[0], x[1]])))
+    };
+    let le24 = |i: usize| {
+        b.get(i..i + 3)
+            .map(|x| i32::from(x[0]) | i32::from(x[1]) << 8 | i32::from(x[2]) << 16)
+    };
     if b.starts_with(b"\x89PNG") {
         let w = b.get(16..20)?;
         let h = b.get(20..24)?;
-        return Some((i32::from_be_bytes(w.try_into().ok()?), i32::from_be_bytes(h.try_into().ok()?)));
+        return Some((
+            i32::from_be_bytes(w.try_into().ok()?),
+            i32::from_be_bytes(h.try_into().ok()?),
+        ));
     }
     if b.starts_with(b"GIF8") {
         return Some((le16(6)?, le16(8)?));
@@ -75,7 +115,11 @@ pub fn image_size(b: &[u8]) -> Option<(i32, i32)> {
 
 /// The host of a URL without "www.".
 pub fn host(url: &str) -> String {
-    url.split('/').nth(2).unwrap_or(url).trim_start_matches("www.").to_string()
+    url.split('/')
+        .nth(2)
+        .unwrap_or(url)
+        .trim_start_matches("www.")
+        .to_string()
 }
 
 /// Read the title, site name and picture out of a page's HTML (only its head matters).
@@ -92,13 +136,20 @@ pub fn parse(html: &str, page_url: &str) -> Page {
         let end = lower[start..].find('>').map_or(lower.len(), |e| start + e);
         let tag = &head[start..end];
         at = end;
-        let key = attr(tag, "property").or_else(|| attr(tag, "name")).map(|k| k.to_ascii_lowercase());
-        let content = attr(tag, "content").map(|c| decode(&c)).filter(|c| !c.trim().is_empty());
+        let key = attr(tag, "property")
+            .or_else(|| attr(tag, "name"))
+            .map(|k| k.to_ascii_lowercase());
+        let content = attr(tag, "content")
+            .map(|c| decode(&c))
+            .filter(|c| !c.trim().is_empty());
         match (key.as_deref(), content) {
             (Some("og:title"), Some(c)) => og_title = og_title.or(Some(c)),
             (Some("twitter:title"), Some(c)) => tw_title = tw_title.or(Some(c)),
             (Some("og:site_name"), Some(c)) => site = site.or(Some(c)),
-            (Some("og:image" | "og:image:url" | "og:image:secure_url" | "twitter:image"), Some(c)) => image = image.or(Some(c)),
+            (
+                Some("og:image" | "og:image:url" | "og:image:secure_url" | "twitter:image"),
+                Some(c),
+            ) => image = image.or(Some(c)),
             _ => {}
         }
     }
@@ -108,7 +159,13 @@ pub fn parse(html: &str, page_url: &str) -> Page {
         Some(decode(head[from..to].trim()))
     });
     Page {
-        title: og_title.or(tw_title).or(page_title).unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" "),
+        title: og_title
+            .or(tw_title)
+            .or(page_title)
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
         site: site.unwrap_or_else(|| host(page_url)),
         image: image.map(|i| resolve(page_url, i.trim())),
     }
@@ -120,13 +177,19 @@ fn attr(tag: &str, name: &str) -> Option<String> {
     let mut from = 0;
     while let Some(i) = lower[from..].find(name) {
         let at = from + i;
-        let before_ok = at == 0 || lower.as_bytes()[at - 1].is_ascii_whitespace() || lower.as_bytes()[at - 1] == b'"' || lower.as_bytes()[at - 1] == b'\'';
+        let before_ok = at == 0
+            || lower.as_bytes()[at - 1].is_ascii_whitespace()
+            || lower.as_bytes()[at - 1] == b'"'
+            || lower.as_bytes()[at - 1] == b'\'';
         let after = tag[at + name.len()..].trim_start();
         if before_ok && let Some(v) = after.strip_prefix('=') {
             let v = v.trim_start();
             return Some(match v.chars().next()? {
                 q @ ('"' | '\'') => v[1..].split(q).next()?.to_string(),
-                _ => v.split(|c: char| c.is_whitespace() || c == '>').next()?.to_string(),
+                _ => v
+                    .split(|c: char| c.is_whitespace() || c == '>')
+                    .next()?
+                    .to_string(),
             });
         }
         from = at + name.len();
@@ -139,7 +202,11 @@ fn resolve(base: &str, rel: &str) -> String {
     if rel.starts_with("http://") || rel.starts_with("https://") {
         return rel.to_string();
     }
-    let scheme = if base.starts_with("http://") { "http:" } else { "https:" };
+    let scheme = if base.starts_with("http://") {
+        "http:"
+    } else {
+        "https:"
+    };
     if let Some(r) = rel.strip_prefix("//") {
         return format!("{scheme}//{r}");
     }
@@ -148,7 +215,10 @@ fn resolve(base: &str, rel: &str) -> String {
         return format!("{origin}{rel}");
     }
     let dir = base.split(['?', '#']).next().unwrap_or(base);
-    let dir = dir.rfind('/').filter(|i| *i >= origin.len()).map_or(origin.as_str(), |i| &dir[..i]);
+    let dir = dir
+        .rfind('/')
+        .filter(|i| *i >= origin.len())
+        .map_or(origin.as_str(), |i| &dir[..i]);
     format!("{dir}/{rel}")
 }
 
@@ -172,7 +242,11 @@ fn decode(s: &str) -> String {
             "quot" => Some('"'),
             "apos" | "#39" => Some('\''),
             "nbsp" => Some(' '),
-            _ => ent.strip_prefix("#x").and_then(|h| u32::from_str_radix(h, 16).ok()).or_else(|| ent.strip_prefix('#').and_then(|d| d.parse().ok())).and_then(char::from_u32),
+            _ => ent
+                .strip_prefix("#x")
+                .and_then(|h| u32::from_str_radix(h, 16).ok())
+                .or_else(|| ent.strip_prefix('#').and_then(|d| d.parse().ok()))
+                .and_then(char::from_u32),
         };
         match ch {
             Some(c) => {
@@ -202,9 +276,18 @@ mod tests {
         let p = parse(html, "https://www.example.com/deals/page?x=1");
         assert_eq!(p.title, "Theme Park Ticket Deals – Universal");
         assert_eq!(p.site, "Universal Studios Hollywood");
-        assert_eq!(p.image.as_deref(), Some("https://www.example.com/img/a.jpg"));
-        let q = parse("<head><title> Just a\n title </title></head>", "http://www.site.org/x");
-        assert_eq!((q.title.as_str(), q.site.as_str(), q.image), ("Just a title", "site.org", None));
+        assert_eq!(
+            p.image.as_deref(),
+            Some("https://www.example.com/img/a.jpg")
+        );
+        let q = parse(
+            "<head><title> Just a\n title </title></head>",
+            "http://www.site.org/x",
+        );
+        assert_eq!(
+            (q.title.as_str(), q.site.as_str(), q.image),
+            ("Just a title", "site.org", None)
+        );
     }
 
     #[test]
@@ -213,24 +296,46 @@ mod tests {
         png.extend_from_slice(&[0, 0, 4, 176, 0, 0, 2, 88]); // 1200 x 600
         assert_eq!(image_size(&png), Some((1200, 600)));
         // SOI, an APP0 segment (length 4), then SOF0 with height 630 and width 1200
-        let jpg = [0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 11, 8, 2, 118, 4, 176, 3, 0, 0];
+        let jpg = [
+            0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 11, 8, 2, 118, 4, 176, 3, 0, 0,
+        ];
         assert_eq!(image_size(&jpg), Some((1200, 630)));
         assert_eq!(image_size(b"not an image at all"), None);
     }
 
     #[test]
     fn resolves_addresses() {
-        assert_eq!(resolve("https://a.com/x/y.html", "z.png"), "https://a.com/x/z.png");
+        assert_eq!(
+            resolve("https://a.com/x/y.html", "z.png"),
+            "https://a.com/x/z.png"
+        );
         assert_eq!(resolve("https://a.com", "z.png"), "https://a.com/z.png");
-        assert_eq!(resolve("https://a.com/x/", "//cdn.b.com/i.jpg"), "https://cdn.b.com/i.jpg");
+        assert_eq!(
+            resolve("https://a.com/x/", "//cdn.b.com/i.jpg"),
+            "https://cdn.b.com/i.jpg"
+        );
     }
 
     #[test]
     fn only_public_addresses() {
-        for ok in ["https://example.com/a", "http://93.184.216.34/x", "https://user@example.org:8443/p"] {
+        for ok in [
+            "https://example.com/a",
+            "http://93.184.216.34/x",
+            "https://user@example.org:8443/p",
+        ] {
             assert!(public_url(ok), "{ok}");
         }
-        for no in ["http://localhost:3000", "http://192.168.1.1/", "http://10.0.0.5", "http://127.0.0.1", "http://[::1]/", "http://printer/", "http://nas.local/", "ftp://example.com", "http://169.254.1.1"] {
+        for no in [
+            "http://localhost:3000",
+            "http://192.168.1.1/",
+            "http://10.0.0.5",
+            "http://127.0.0.1",
+            "http://[::1]/",
+            "http://printer/",
+            "http://nas.local/",
+            "ftp://example.com",
+            "http://169.254.1.1",
+        ] {
             assert!(!public_url(no), "{no}");
         }
     }

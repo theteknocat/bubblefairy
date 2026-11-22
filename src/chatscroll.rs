@@ -132,7 +132,9 @@ mod imp {
 
     impl WidgetImpl for ChatScroll {
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
-            let Some(c) = self.child.borrow().clone() else { return (0, 0, -1, -1) };
+            let Some(c) = self.child.borrow().clone() else {
+                return (0, 0, -1, -1);
+            };
             if orientation == gtk::Orientation::Horizontal {
                 let (min, nat, _, _) = c.measure(orientation, for_size);
                 (min, nat, -1, -1)
@@ -142,7 +144,9 @@ mod imp {
         }
 
         fn size_allocate(&self, width: i32, height: i32, _baseline: i32) {
-            let Some(c) = self.child.borrow().clone() else { return };
+            let Some(c) = self.child.borrow().clone() else {
+                return;
+            };
             // natural height: pictures can shrink to nothing, so their minimum would understate the content
             let (_, nat, _, _) = c.measure(gtk::Orientation::Vertical, width);
             let page = height as f64;
@@ -154,7 +158,11 @@ mod imp {
                 self.gap.set((max - a.value()).max(0.0));
                 self.stuck.borrow().set(false);
             }
-            let value = if self.stuck.borrow().get() { max } else { (max - self.gap.get()).clamp(0.0, max) };
+            let value = if self.stuck.borrow().get() {
+                max
+            } else {
+                (max - self.gap.get()).clamp(0.0, max)
+            };
             // the gap is only ever changed by the user's scrolling: while the content is briefly shorter (a re-render)
             // the view is clamped, but the gap to return to is kept
 
@@ -167,8 +175,17 @@ mod imp {
             }
             self.adjusting.set(false);
             // configure may have settled on a slightly different value (clamping)
-            let value = self.vadjustment.borrow().as_ref().map_or(value, |a| a.value());
-            c.allocate(width, upper.ceil() as i32, -1, Some(gsk::Transform::new().translate(&graphene::Point::new(0.0, -value as f32))));
+            let value = self
+                .vadjustment
+                .borrow()
+                .as_ref()
+                .map_or(value, |a| a.value());
+            c.allocate(
+                width,
+                upper.ceil() as i32,
+                -1,
+                Some(gsk::Transform::new().translate(&graphene::Point::new(0.0, -value as f32))),
+            );
         }
     }
 }

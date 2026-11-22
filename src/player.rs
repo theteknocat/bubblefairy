@@ -23,10 +23,15 @@ impl Player {
     /// A paused player for the file at `path`; `on_msg` hears about the end and about errors.
     pub fn new(path: &std::path::Path, on_msg: impl Fn(Msg) + 'static) -> Result<Self, String> {
         let uri = gtk::gio::File::for_path(path).uri();
-        let sink = gst::ElementFactory::make("gtk4paintablesink").build().map_err(|_| "the video output isn't available".to_string())?;
+        let sink = gst::ElementFactory::make("gtk4paintablesink")
+            .build()
+            .map_err(|_| "the video output isn't available".to_string())?;
         let paintable = sink.property::<gdk::Paintable>("paintable");
         // with OpenGL available the frames stay on the graphics card
-        let video_sink = gst::ElementFactory::make("glsinkbin").property("sink", &sink).build().unwrap_or(sink);
+        let video_sink = gst::ElementFactory::make("glsinkbin")
+            .property("sink", &sink)
+            .build()
+            .unwrap_or(sink);
         let pipeline = gst::ElementFactory::make("playbin")
             .property("uri", uri.as_str())
             .property("video-sink", &video_sink)
@@ -43,8 +48,14 @@ impl Player {
                 glib_continue()
             })
             .map_err(|e| e.to_string())?;
-        pipeline.set_state(gst::State::Paused).map_err(|_| "couldn't start the player".to_string())?;
-        Ok(Self { pipeline, paintable, _watch: watch })
+        pipeline
+            .set_state(gst::State::Paused)
+            .map_err(|_| "couldn't start the player".to_string())?;
+        Ok(Self {
+            pipeline,
+            paintable,
+            _watch: watch,
+        })
     }
 
     pub fn play(&self) {
@@ -61,14 +72,22 @@ impl Player {
 
     /// (position, length) in seconds, once known
     pub fn times(&self) -> (f64, Option<f64>) {
-        let pos = self.pipeline.query_position::<gst::ClockTime>().map_or(0.0, |t| t.seconds_f64());
-        let len = self.pipeline.query_duration::<gst::ClockTime>().map(|t| t.seconds_f64());
+        let pos = self
+            .pipeline
+            .query_position::<gst::ClockTime>()
+            .map_or(0.0, |t| t.seconds_f64());
+        let len = self
+            .pipeline
+            .query_duration::<gst::ClockTime>()
+            .map(|t| t.seconds_f64());
         (pos, len)
     }
 
     pub fn seek(&self, secs: f64) {
         let t = gst::ClockTime::from_nseconds((secs.max(0.0) * 1e9) as u64);
-        let _ = self.pipeline.seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, t);
+        let _ = self
+            .pipeline
+            .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, t);
     }
 
     pub fn set_volume(&self, v: f64) {

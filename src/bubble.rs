@@ -25,7 +25,10 @@ glib::wrapper! {
 
 impl Bubble {
     pub fn new(look: Look) -> Self {
-        let b: Self = glib::Object::builder().property("orientation", gtk::Orientation::Vertical).property("spacing", 6).build();
+        let b: Self = glib::Object::builder()
+            .property("orientation", gtk::Orientation::Vertical)
+            .property("spacing", 6)
+            .build();
         b.imp().look.set(look);
         // inner spacing set here rather than in CSS: CSS padding didn't apply to this subclass
         let inner = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -147,7 +150,10 @@ pub fn draw_cover(s: &gtk::Snapshot, t: &gdk::Texture, r: &graphene::Rect) {
     let (dw, dh) = (tw * k, th * k);
     s.push_clip(r);
     s.save();
-    s.translate(&graphene::Point::new(r.x() + (r.width() - dw) / 2.0, r.y() + (r.height() - dh) / 2.0));
+    s.translate(&graphene::Point::new(
+        r.x() + (r.width() - dw) / 2.0,
+        r.y() + (r.height() - dh) / 2.0,
+    ));
     t.snapshot(s, dw as f64, dh as f64);
     s.restore();
     s.pop();
@@ -155,21 +161,56 @@ pub fn draw_cover(s: &gtk::Snapshot, t: &gdk::Texture, r: &graphene::Rect) {
 
 /// Link-preview cards: soft off-white in light and dark mode alike (dark grey text, set in CSS).
 fn card_palette() -> (gdk::RGBA, gdk::RGBA, gdk::RGBA, f32, Option<gdk::RGBA>) {
-    (rgba(0xfbfaf6, 1.0), rgba(0xeeece6, 1.0), rgba(0x0a0528, 0.30), 0.7, Some(rgba(0x000000, 0.10)))
+    (
+        rgba(0xfbfaf6, 1.0),
+        rgba(0xeeece6, 1.0),
+        rgba(0x0a0528, 0.30),
+        0.7,
+        Some(rgba(0x000000, 0.10)),
+    )
 }
 
 fn rgba(hex: u32, a: f32) -> gdk::RGBA {
-    gdk::RGBA::new(((hex >> 16) & 255) as f32 / 255.0, ((hex >> 8) & 255) as f32 / 255.0, (hex & 255) as f32 / 255.0, a)
+    gdk::RGBA::new(
+        ((hex >> 16) & 255) as f32 / 255.0,
+        ((hex >> 8) & 255) as f32 / 255.0,
+        (hex & 255) as f32 / 255.0,
+        a,
+    )
 }
 
 /// (gradient top, gradient bottom, shadow, highlight alpha, border)
 fn palette(look: Look, dark: bool) -> (gdk::RGBA, gdk::RGBA, gdk::RGBA, f32, Option<gdk::RGBA>) {
     match (look.me, look.sms, dark) {
         // deep enough for white text: about 4.7 to 6:1 (blue) and 4.4 to 6:1 (green) contrast
-        (true, false, _) => (rgba(0x1f6bf2, 1.0), rgba(0x1456e0, 1.0), rgba(0x1456e0, 0.32), 0.40, None),
-        (true, true, _) => (rgba(0x0f8a3e, 1.0), rgba(0x0a6b2e, 1.0), rgba(0x0a6b2e, 0.32), 0.38, None),
-        (false, _, false) => (rgba(0xffffff, 1.0), rgba(0xf2f0fa, 1.0), rgba(0x4c3c96, 0.16), 0.6, Some(rgba(0x7a6eb4, 0.20))),
-        (false, _, true) => (rgba(0x544d93, 1.0), rgba(0x453f80, 1.0), rgba(0x08041e, 0.40), 0.18, Some(rgba(0xffffff, 0.10))),
+        (true, false, _) => (
+            rgba(0x1f6bf2, 1.0),
+            rgba(0x1456e0, 1.0),
+            rgba(0x1456e0, 0.32),
+            0.40,
+            None,
+        ),
+        (true, true, _) => (
+            rgba(0x0f8a3e, 1.0),
+            rgba(0x0a6b2e, 1.0),
+            rgba(0x0a6b2e, 0.32),
+            0.38,
+            None,
+        ),
+        (false, _, false) => (
+            rgba(0xffffff, 1.0),
+            rgba(0xf2f0fa, 1.0),
+            rgba(0x4c3c96, 0.16),
+            0.6,
+            Some(rgba(0x7a6eb4, 0.20)),
+        ),
+        (false, _, true) => (
+            rgba(0x544d93, 1.0),
+            rgba(0x453f80, 1.0),
+            rgba(0x08041e, 0.40),
+            0.18,
+            Some(rgba(0xffffff, 0.10)),
+        ),
     }
 }
 
@@ -184,21 +225,56 @@ pub fn outline(look: Look, w: f32, h: f32) -> gsk::Path {
     let p = gsk::PathBuilder::new();
     p.move_to(x(x0 + tl), y0);
     p.line_to(x(x1 - tr), y0);
-    p.cubic_to(x(x1 - tr + tr * k), y0, x(x1), y0 + tr - tr * k, x(x1), y0 + tr);
+    p.cubic_to(
+        x(x1 - tr + tr * k),
+        y0,
+        x(x1),
+        y0 + tr - tr * k,
+        x(x1),
+        y0 + tr,
+    );
     if look.tail {
         let start = (y1 - 16.0).max(y0 + tr);
         p.line_to(x(x1), start);
         // outer edge flicks out to the tip, the underside curls back into the bottom edge
         p.cubic_to(x(x1), y1 - 6.0, x(x1 + 2.5), y1 - 1.5, x(x1 + TAIL), y1);
-        p.cubic_to(x(x1 + 2.0), y1 + 0.4, x(x1 - 4.0), y1 - 1.0, x(x1 - 9.0), y1);
+        p.cubic_to(
+            x(x1 + 2.0),
+            y1 + 0.4,
+            x(x1 - 4.0),
+            y1 - 1.0,
+            x(x1 - 9.0),
+            y1,
+        );
     } else {
         p.line_to(x(x1), y1 - br);
-        p.cubic_to(x(x1), y1 - br + br * k, x(x1 - br + br * k), y1, x(x1 - br), y1);
+        p.cubic_to(
+            x(x1),
+            y1 - br + br * k,
+            x(x1 - br + br * k),
+            y1,
+            x(x1 - br),
+            y1,
+        );
     }
     p.line_to(x(x0 + bl), y1);
-    p.cubic_to(x(x0 + bl - bl * k), y1, x(x0), y1 - bl + bl * k, x(x0), y1 - bl);
+    p.cubic_to(
+        x(x0 + bl - bl * k),
+        y1,
+        x(x0),
+        y1 - bl + bl * k,
+        x(x0),
+        y1 - bl,
+    );
     p.line_to(x(x0), y0 + tl);
-    p.cubic_to(x(x0), y0 + tl - tl * k, x(x0 + tl - tl * k), y0, x(x0 + tl), y0);
+    p.cubic_to(
+        x(x0),
+        y0 + tl - tl * k,
+        x(x0 + tl - tl * k),
+        y0,
+        x(x0 + tl),
+        y0,
+    );
     p.close();
     p.to_path()
 }
@@ -249,7 +325,10 @@ mod imp {
                 let bounds = graphene::Rect::new(0.0, 0.0, width, height);
                 let b = gsk::PathBuilder::new();
                 let disc = self.disc.get();
-                b.add_rounded_rect(&gsk::RoundedRect::from_rect(bounds, if disc { width.min(height) / 2.0 } else { 12.0 }));
+                b.add_rounded_rect(&gsk::RoundedRect::from_rect(
+                    bounds,
+                    if disc { width.min(height) / 2.0 } else { 12.0 },
+                ));
                 let path = b.to_path();
                 s.push_fill(&path, gsk::FillRule::Winding);
                 let kids = |s: &gtk::Snapshot| {
@@ -275,7 +354,10 @@ mod imp {
                     let (tw, th) = (t.width().max(1) as f32 / sf, t.height().max(1) as f32 / sf);
                     let k = ((width - 8.0) / tw).min((height - 8.0) / th).min(1.0);
                     s.save();
-                    s.translate(&graphene::Point::new((width - tw * k) / 2.0, (height - th * k) / 2.0));
+                    s.translate(&graphene::Point::new(
+                        (width - tw * k) / 2.0,
+                        (height - th * k) / 2.0,
+                    ));
                     t.snapshot(s, (tw * k) as f64, (th * k) as f64);
                     s.restore();
                 }
@@ -300,10 +382,18 @@ mod imp {
                 s.push_fill(&path, gsk::FillRule::Winding);
                 s.save();
                 s.translate(&graphene::Point::new(0.0, 1.2));
-                s.append_stroke(&path, &gsk::Stroke::new(1.5), &gdk::RGBA::new(1.0, 1.0, 1.0, 0.30));
+                s.append_stroke(
+                    &path,
+                    &gsk::Stroke::new(1.5),
+                    &gdk::RGBA::new(1.0, 1.0, 1.0, 0.30),
+                );
                 s.restore();
                 s.pop();
-                s.append_stroke(&path, &gsk::Stroke::new(1.0), &gdk::RGBA::new(1.0, 1.0, 1.0, 0.22));
+                s.append_stroke(
+                    &path,
+                    &gsk::Stroke::new(1.0),
+                    &gdk::RGBA::new(1.0, 1.0, 1.0, 0.22),
+                );
                 // the loading spinner (see ui::load_texture) is the only child
                 let mut c = w.first_child();
                 while let Some(ch) = c {
@@ -315,7 +405,11 @@ mod imp {
             if width > TAIL && height > 0.0 {
                 let look = self.look.get();
                 let dark = w.root().is_some_and(|r| r.has_css_class("dark"));
-                let (top, bottom, shadow, hi, border) = if self.is_card.get() { card_palette() } else { palette(look, dark) };
+                let (top, bottom, shadow, hi, border) = if self.is_card.get() {
+                    card_palette()
+                } else {
+                    palette(look, dark)
+                };
                 let path = outline(look, width, height);
                 let bounds = graphene::Rect::new(0.0, 0.0, width, height);
 
@@ -325,7 +419,10 @@ mod imp {
                     &bounds,
                     &graphene::Point::new(0.0, 0.0),
                     &graphene::Point::new(0.0, height),
-                    &[gsk::ColorStop::new(0.0, top), gsk::ColorStop::new(1.0, bottom)],
+                    &[
+                        gsk::ColorStop::new(0.0, top),
+                        gsk::ColorStop::new(1.0, bottom),
+                    ],
                 );
                 s.pop();
                 s.pop();
@@ -346,7 +443,11 @@ mod imp {
                 s.push_fill(&path, gsk::FillRule::Winding);
                 s.save();
                 s.translate(&graphene::Point::new(0.0, 1.2));
-                s.append_stroke(&path, &gsk::Stroke::new(1.5), &gdk::RGBA::new(1.0, 1.0, 1.0, hi));
+                s.append_stroke(
+                    &path,
+                    &gsk::Stroke::new(1.5),
+                    &gdk::RGBA::new(1.0, 1.0, 1.0, hi),
+                );
                 s.restore();
                 s.pop();
 

@@ -45,7 +45,12 @@ mod imp {
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
             let (host, label) = (self.obj(), self.label.borrow().clone());
             if let Some(l) = label.as_ref().filter(|_| !self.pills.borrow().0.is_empty()) {
-                let cr = snapshot.append_cairo(&graphene::Rect::new(0.0, 0.0, host.width() as f32, host.height() as f32));
+                let cr = snapshot.append_cairo(&graphene::Rect::new(
+                    0.0,
+                    0.0,
+                    host.width() as f32,
+                    host.height() as f32,
+                ));
                 draw(host.upcast_ref(), l, &cr, &self.pills.borrow());
             }
             self.parent_snapshot(snapshot);
@@ -93,11 +98,18 @@ fn wrap(l: &gtk::Label) -> Option<Host> {
     Some(host)
 }
 
-fn draw(area: &gtk::Widget, l: &gtk::Label, cr: &gtk::cairo::Context, pills: &(Vec<(usize, usize)>, (f64, f64, f64))) {
+fn draw(
+    area: &gtk::Widget,
+    l: &gtk::Label,
+    cr: &gtk::cairo::Context,
+    pills: &(Vec<(usize, usize)>, (f64, f64, f64)),
+) {
     if pills.0.is_empty() {
         return;
     }
-    let Some(origin) = l.compute_point(area, &graphene::Point::new(0.0, 0.0)) else { return };
+    let Some(origin) = l.compute_point(area, &graphene::Point::new(0.0, 0.0)) else {
+        return;
+    };
     let (ox, oy) = l.layout_offsets();
     let (ox, oy) = (origin.x() as f64 + ox as f64, origin.y() as f64 + oy as f64);
     let layout = l.layout();
@@ -113,7 +125,9 @@ fn draw(area: &gtk::Widget, l: &gtk::Label, cr: &gtk::cairo::Context, pills: &(V
     });
     let mut iter = layout.iter();
     loop {
-        let Some(line) = iter.line_readonly() else { break };
+        let Some(line) = iter.line_readonly() else {
+            break;
+        };
         let (line_start, line_end) = (line.start_index(), line.start_index() + line.length());
         let (top, bottom) = iter.line_yrange();
         for &(s, e) in &pills.0 {
@@ -122,7 +136,12 @@ fn draw(area: &gtk::Widget, l: &gtk::Label, cr: &gtk::cairo::Context, pills: &(V
                 continue;
             }
             if let Some(f) = &full {
-                let width = |l: &gtk::pango::LayoutLine| l.x_ranges(s, e).chunks(2).map(|p| p[p.len() - 1] - p[0]).sum::<i32>();
+                let width = |l: &gtk::pango::LayoutLine| {
+                    l.x_ranges(s, e)
+                        .chunks(2)
+                        .map(|p| p[p.len() - 1] - p[0])
+                        .sum::<i32>()
+                };
                 let whole = f.line_readonly(0).map(|fl| width(&fl)).unwrap_or(0);
                 if (width(&line) - whole).abs() > gtk::pango::SCALE / 2 || whole == 0 {
                     continue;
@@ -131,15 +150,33 @@ fn draw(area: &gtk::Widget, l: &gtk::Label, cr: &gtk::cairo::Context, pills: &(V
             for pair in line.x_ranges(s, e).chunks(2) {
                 let (x1, x2) = (pair[0], pair[pair.len() - 1]);
                 // A little wider and taller than the text, but never past the label's own box: its row clips there.
-                let (x0, y0) = ((ox + x1 as f64 / scale - 3.0).max(0.0), (oy + top as f64 / scale - 1.0).max(0.0));
-                let (x1_, y1_) = ((ox + x2 as f64 / scale + 3.0).min(aw), (oy + bottom as f64 / scale + 1.0).min(ah));
+                let (x0, y0) = (
+                    (ox + x1 as f64 / scale - 3.0).max(0.0),
+                    (oy + top as f64 / scale - 1.0).max(0.0),
+                );
+                let (x1_, y1_) = (
+                    (ox + x2 as f64 / scale + 3.0).min(aw),
+                    (oy + bottom as f64 / scale + 1.0).min(ah),
+                );
                 let (x, y, w, h) = (x0, y0, x1_ - x0, y1_ - y0);
                 let r = h / 2.0;
                 let path = |dy: f64, grow: f64| {
                     let (x, y, w, r) = (x - grow, y + dy - grow, w + 2.0 * grow, r + grow);
                     cr.new_sub_path();
-                    cr.arc(x + w - r, y + r, r, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
-                    cr.arc(x + r, y + r, r, std::f64::consts::FRAC_PI_2, 3.0 * std::f64::consts::FRAC_PI_2);
+                    cr.arc(
+                        x + w - r,
+                        y + r,
+                        r,
+                        -std::f64::consts::FRAC_PI_2,
+                        std::f64::consts::FRAC_PI_2,
+                    );
+                    cr.arc(
+                        x + r,
+                        y + r,
+                        r,
+                        std::f64::consts::FRAC_PI_2,
+                        3.0 * std::f64::consts::FRAC_PI_2,
+                    );
                     cr.close_path();
                 };
                 // A soft shadow: a few faint, growing, lowered copies under the pill (cairo has no blur).
@@ -148,7 +185,7 @@ fn draw(area: &gtk::Widget, l: &gtk::Label, cr: &gtk::cairo::Context, pills: &(V
                     path(1.5, grow);
                     let _ = cr.fill();
                 }
-                cr.set_source_rgb(pills.1 .0, pills.1 .1, pills.1 .2);
+                cr.set_source_rgb(pills.1.0, pills.1.1, pills.1.2);
                 path(0.0, 0.0);
                 let _ = cr.fill();
             }

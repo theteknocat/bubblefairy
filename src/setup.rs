@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};
+use russh::ChannelMsg;
 use russh::client::{self, KeyboardInteractiveAuthResponse};
 use russh::keys::PrivateKeyWithHashAlg;
-use russh::ChannelMsg;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
@@ -57,8 +57,15 @@ fn discover(tx: mpsc::UnboundedSender<Option<Found>>) {
             while let Some(left) = end.checked_duration_since(Instant::now()) {
                 match rx.recv_timeout(left) {
                     Ok(mdns_sd::ServiceEvent::ServiceResolved(r)) => {
-                        let name = r.fullname.strip_suffix("._ssh._tcp.local.").unwrap_or(&r.fullname).to_string();
-                        let _ = tx.send(Some(Found { name, host: r.host.trim_end_matches('.').to_string() }));
+                        let name = r
+                            .fullname
+                            .strip_suffix("._ssh._tcp.local.")
+                            .unwrap_or(&r.fullname)
+                            .to_string();
+                        let _ = tx.send(Some(Found {
+                            name,
+                            host: r.host.trim_end_matches('.').to_string(),
+                        }));
                     }
                     Ok(_) => {}
                     Err(_) => break,
@@ -75,7 +82,9 @@ async fn probe(host: &str) -> Result<(), String> {
     let addr = crate::mac::resolve(host).await?;
     match tokio::time::timeout(Duration::from_secs(4), tokio::net::TcpStream::connect(addr)).await {
         Ok(Ok(_)) => Ok(()),
-        _ => Err(format!("{host} is on the network but doesn't answer on the SSH port. Is Remote Login turned on?")),
+        _ => Err(format!(
+            "{host} is on the network but doesn't answer on the SSH port. Is Remote Login turned on?"
+        )),
     }
 }
 
@@ -91,10 +100,26 @@ pub struct Link {
 async fn open(host: &str) -> Result<Link, String> {
     let addr = crate::mac::resolve(host).await?;
     let seen = Arc::new(Mutex::new(None));
-    let config = client::Config { keepalive_interval: Some(Duration::from_secs(15)), nodelay: true, ..Default::default() };
-    let handler = Handler { known: None, seen: seen.clone() }; // the person decides on the fingerprint
-    let session = match tokio::time::timeout(Duration::from_secs(10), client::connect(Arc::new(config), addr, handler)).await {
-        Err(_) => return Err(format!("{host} didn't answer. Is Remote Login on, and is the Mac awake?")),
+    let config = client::Config {
+        keepalive_interval: Some(Duration::from_secs(15)),
+        nodelay: true,
+        ..Default::default()
+    };
+    let handler = Handler {
+        known: None,
+        seen: seen.clone(),
+    }; // the person decides on the fingerprint
+    let session = match tokio::time::timeout(
+        Duration::from_secs(10),
+        client::connect(Arc::new(config), addr, handler),
+    )
+    .await
+    {
+        Err(_) => {
+            return Err(format!(
+                "{host} didn't answer. Is Remote Login on, and is the Mac awake?"
+            ));
+        }
         Ok(Err(e)) => return Err(format!("couldn't connect: {e}")),
         Ok(Ok(s)) => s,
     };
@@ -106,19 +131,31 @@ impl Link {
     /// Sign in with the Mac account's password (once; it is not kept).
     async fn login(&mut self, user: &str, password: &str) -> Result<(), String> {
         let bad = || "The Mac didn't accept that user name and password.".to_string();
-        let r = self.session.authenticate_password(user, password).await.map_err(|e| format!("sign-in failed: {e}"))?;
+        let r = self
+            .session
+            .authenticate_password(user, password)
+            .await
+            .map_err(|e| format!("sign-in failed: {e}"))?;
         if r.success() {
             return Ok(());
         }
         // some Macs only offer "keyboard-interactive" (the same password, asked as a prompt)
-        let mut r = self.session.authenticate_keyboard_interactive_start(user, None).await.map_err(|e| format!("sign-in failed: {e}"))?;
+        let mut r = self
+            .session
+            .authenticate_keyboard_interactive_start(user, None)
+            .await
+            .map_err(|e| format!("sign-in failed: {e}"))?;
         for _ in 0..4 {
             match r {
                 KeyboardInteractiveAuthResponse::Success => return Ok(()),
                 KeyboardInteractiveAuthResponse::Failure { .. } => return Err(bad()),
                 KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
                     let answers = prompts.iter().map(|_| password.to_string()).collect();
-                    r = self.session.authenticate_keyboard_interactive_respond(answers).await.map_err(|e| format!("sign-in failed: {e}"))?;
+                    r = self
+                        .session
+                        .authenticate_keyboard_interactive_respond(answers)
+                        .await
+                        .map_err(|e| format!("sign-in failed: {e}"))?;
                 }
             }
         }
@@ -128,15 +165,34 @@ impl Link {
     /// Dev aid (`BF_SETUP_KEYLOGIN`): sign in with an existing key instead of a password, to try the later steps.
     async fn login_key(&mut self, user: &str, key_path: &std::path::Path) -> Result<(), String> {
         let key = russh::keys::load_secret_key(key_path, None).map_err(|e| e.to_string())?;
-        let r = self.session.authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), None)).await.map_err(|e| e.to_string())?;
-        if r.success() { Ok(()) } else { Err("the key was refused".into()) }
+        let r = self
+            .session
+            .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), None))
+            .await
+            .map_err(|e| e.to_string())?;
+        if r.success() {
+            Ok(())
+        } else {
+            Err("the key was refused".into())
+        }
     }
 
     /// Run a command; `input` goes to its stdin. Returns the exit status and everything it printed.
-    async fn run(&self, cmd: &str, input: Option<&[u8]>, wait: Duration) -> Result<(u32, String), String> {
+    async fn run(
+        &self,
+        cmd: &str,
+        input: Option<&[u8]>,
+        wait: Duration,
+    ) -> Result<(u32, String), String> {
         let work = async {
-            let mut ch = self.session.channel_open_session().await.map_err(|e| e.to_string())?;
-            ch.exec(true, cmd.to_string()).await.map_err(|e| e.to_string())?;
+            let mut ch = self
+                .session
+                .channel_open_session()
+                .await
+                .map_err(|e| e.to_string())?;
+            ch.exec(true, cmd.to_string())
+                .await
+                .map_err(|e| e.to_string())?;
             if let Some(bytes) = input {
                 ch.data(bytes).await.map_err(|e| e.to_string())?;
                 ch.eof().await.map_err(|e| e.to_string())?;
@@ -153,7 +209,9 @@ impl Link {
             }
             Ok::<_, String>((code, String::from_utf8_lossy(&out).trim().to_string()))
         };
-        tokio::time::timeout(wait, work).await.map_err(|_| "the Mac took too long to answer".to_string())?
+        tokio::time::timeout(wait, work)
+            .await
+            .map_err(|_| "the Mac took too long to answer".to_string())?
     }
 
     /// macOS version, home folder, and the tools BubbleFairy needs.
@@ -165,12 +223,18 @@ impl Link {
         let home = lines.next().unwrap_or("").to_string();
         let name = lines.next().unwrap_or("").to_string();
         let missing: Vec<&str> = lines.filter_map(|l| l.strip_prefix("MISSING ")).collect();
-        let major: u32 = version.split('.').next().and_then(|m| m.parse().ok()).unwrap_or(0);
+        let major: u32 = version
+            .split('.')
+            .next()
+            .and_then(|m| m.parse().ok())
+            .unwrap_or(0);
         if major == 0 || home.is_empty() {
             return Err("this doesn't look like a Mac".into());
         }
         if major < 14 {
-            return Err(format!("this Mac runs macOS {version}; BubbleFairy needs macOS 14 or newer"));
+            return Err(format!(
+                "this Mac runs macOS {version}; BubbleFairy needs macOS 14 or newer"
+            ));
         }
         if !missing.is_empty() {
             return Err(format!("this Mac is missing {}", missing.join(", ")));
@@ -203,7 +267,9 @@ impl Link {
         if code != 0 || !out.contains(IMSG_VERSION) {
             return Err(format!("couldn't install imsg on the Mac: {out}"));
         }
-        Ok(format!("{home}/Library/Application Support/{folder}/imsg/imsg"))
+        Ok(format!(
+            "{home}/Library/Application Support/{folder}/imsg/imsg"
+        ))
     }
 
     /// Can the Messages database (and the Contacts) be read from here? (The "full disk access for remote users" switch.)
@@ -217,10 +283,21 @@ impl Link {
     /// macOS ask for permission, so this waits for the person to answer on the Mac.
     async fn test_send(&self, imsg: &str, to: &str) -> Result<(), String> {
         const TEXT: &str = "BubbleFairy setup test";
-        let cmd = format!("{} send --to {} --text {} --service auto 2>&1", sh_quote(imsg), sh_quote(to), sh_quote(TEXT));
+        let cmd = format!(
+            "{} send --to {} --text {} --service auto 2>&1",
+            sh_quote(imsg),
+            sh_quote(to),
+            sh_quote(TEXT)
+        );
         match self.run(&cmd, None, Duration::from_secs(180)).await? {
             (0, _) => {}
-            (_, out) => return Err(if out.is_empty() { "the Mac didn't send it".into() } else { out }),
+            (_, out) => {
+                return Err(if out.is_empty() {
+                    "the Mac didn't send it".into()
+                } else {
+                    out
+                });
+            }
         }
         // imsg is done once Messages took the message; the database says whether it went out
         let q = format!(
@@ -229,7 +306,11 @@ impl Link {
         for _ in 0..8 {
             let (_, out) = self.run(&q, None, Duration::from_secs(15)).await?;
             if let Ok(code) = out.trim().parse::<i64>() {
-                return if code == 0 { Ok(()) } else { Err(format!("Messages couldn't send it (error {code}).")) };
+                return if code == 0 {
+                    Ok(())
+                } else {
+                    Err(format!("Messages couldn't send it (error {code})."))
+                };
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -240,7 +321,9 @@ impl Link {
     async fn remove_key(&self, key: &str) {
         let id = key.split_whitespace().nth(1).unwrap_or("").to_string();
         if id.len() > 20 {
-            let _ = self.run(&remove_key_cmd(&id), None, Duration::from_secs(20)).await;
+            let _ = self
+                .run(&remove_key_cmd(&id), None, Duration::from_secs(20))
+                .await;
         }
     }
 }
@@ -248,7 +331,10 @@ impl Link {
 /// Shell line that drops the lines containing `id` from the Mac's authorized_keys. grep exits 1 when nothing is left
 /// (fine) and 2 on an error: then the file must be left alone, never overwritten by a half-written copy.
 fn remove_key_cmd(id: &str) -> String {
-    format!("grep -vF {} ~/.ssh/authorized_keys > ~/.ssh/ak.tmp; [ $? -le 1 ] && cat ~/.ssh/ak.tmp > ~/.ssh/authorized_keys; rm -f ~/.ssh/ak.tmp", sh_quote(id))
+    format!(
+        "grep -vF {} ~/.ssh/authorized_keys > ~/.ssh/ak.tmp; [ $? -le 1 ] && cat ~/.ssh/ak.tmp > ~/.ssh/authorized_keys; rm -f ~/.ssh/ak.tmp",
+        sh_quote(id)
+    )
 }
 
 /// Does signing in with the key work now? Tried a few times: right after the key was added, the first sign-in has
@@ -269,21 +355,37 @@ async fn verify_key(host: &str, user: &str, key_path: PathBuf) -> Result<Link, S
 
 async fn verify_key_once(host: &str, user: &str, key_path: PathBuf) -> Result<Link, String> {
     let mut link = open(host).await?;
-    let key = russh::keys::load_secret_key(&key_path, None).map_err(|e| format!("can't read the key: {e}"))?;
-    let r = link.session.authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), None)).await.map_err(|e| format!("{e}"))?;
-    if r.success() { Ok(link) } else { Err("the Mac didn't accept BubbleFairy's key (is the Mac set to allow key sign-in?)".into()) }
+    let key = russh::keys::load_secret_key(&key_path, None)
+        .map_err(|e| format!("can't read the key: {e}"))?;
+    let r = link
+        .session
+        .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), None))
+        .await
+        .map_err(|e| format!("{e}"))?;
+    if r.success() {
+        Ok(link)
+    } else {
+        Err("the Mac didn't accept BubbleFairy's key (is the Mac set to allow key sign-in?)".into())
+    }
 }
 
 /// Where a bundled copy of the imsg zip is, if this build has one (the Flatpak does).
 fn bundled_zip() -> Option<PathBuf> {
-    ["/app/share/bubblefairy/imsg-macos.zip", "/usr/share/bubblefairy/imsg-macos.zip", concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/imsg-macos.zip")]
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.is_file())
+    [
+        "/app/share/bubblefairy/imsg-macos.zip",
+        "/usr/share/bubblefairy/imsg-macos.zip",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/imsg-macos.zip"),
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .find(|p| p.is_file())
 }
 
 fn sha256_hex(b: &[u8]) -> String {
-    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+    Sha256::digest(b)
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect()
 }
 
 /// The imsg zip: the bundled copy, else downloaded; either way it must match the hash built into the app.
@@ -295,7 +397,10 @@ async fn imsg_zip() -> Result<Vec<u8>, String> {
             let session = webkit6::soup::Session::new();
             session.set_timeout(60);
             let msg = webkit6::soup::Message::new("GET", IMSG_URL).map_err(|e| e.to_string())?;
-            let bytes = session.send_and_read_future(&msg, glib::Priority::DEFAULT).await.map_err(|e| format!("couldn't download imsg: {e}"))?;
+            let bytes = session
+                .send_and_read_future(&msg, glib::Priority::DEFAULT)
+                .await
+                .map_err(|e| format!("couldn't download imsg: {e}"))?;
             if msg.status() != webkit6::soup::Status::Ok {
                 return Err("couldn't download imsg (the download page didn't answer)".into());
             }
@@ -390,11 +495,24 @@ struct W {
 }
 
 const PAGES: [&str; 3] = ["mac", "work", "test"];
-const STEPS: [&str; 6] = ["Signing in", "Checking the Mac", "Adding BubbleFairy's key", "Checking that the key works", "Installing imsg", "Checking that Messages can be read"];
+const STEPS: [&str; 6] = [
+    "Signing in",
+    "Checking the Mac",
+    "Adding BubbleFairy's key",
+    "Checking that the key works",
+    "Installing imsg",
+    "Checking that Messages can be read",
+];
 
 /// Open the wizard over `parent`.
 pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ctx) {
-    let win = gtk::Window::builder().application(app).title("Set up BubbleFairy").default_width(720).default_height(540).resizable(false).build();
+    let win = gtk::Window::builder()
+        .application(app)
+        .title("Set up BubbleFairy")
+        .default_width(720)
+        .default_height(540)
+        .resizable(false)
+        .build();
     if let Some(p) = parent {
         win.set_transient_for(Some(p));
         win.set_modal(true);
@@ -405,7 +523,9 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     let head = gtk::HeaderBar::new();
     head.add_css_class("bf-head");
     let brand = gtk::Label::new(None);
-    brand.set_markup("<span foreground='#7b5cff'>Bubble</span><span foreground='#ff5fa8'>Fairy</span> ✨");
+    brand.set_markup(
+        "<span foreground='#7b5cff'>Bubble</span><span foreground='#ff5fa8'>Fairy</span> ✨",
+    );
     brand.add_css_class("app-title");
     head.set_title_widget(Some(&brand));
     win.set_titlebar(Some(&head));
@@ -432,7 +552,15 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         outer.append(&label(title, "setup-title"));
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 22);
         // a Picture keeps the artwork's own shape (a gtk::Image draws icons into a square)
-        let icon = gtk::IconTheme::for_display(&gtk::gdk::Display::default().expect("display")).lookup_icon("bf-intro", &[], 260, 1, gtk::TextDirection::Ltr, gtk::IconLookupFlags::empty());
+        let icon = gtk::IconTheme::for_display(&gtk::gdk::Display::default().expect("display"))
+            .lookup_icon(
+                "bf-intro",
+                &[],
+                260,
+                1,
+                gtk::TextDirection::Ltr,
+                gtk::IconLookupFlags::empty(),
+            );
         let art = gtk::Picture::for_file(&icon.file().expect("icon file"));
         art.set_content_fit(gtk::ContentFit::Contain);
         art.set_valign(gtk::Align::Start);
@@ -494,10 +622,26 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     };
     let steps = gtk::Box::new(gtk::Orientation::Vertical, 0);
     p0.append(&steps);
-    steps.append(&step(1, "On the Mac, open <b>System Settings → General → Sharing</b>.", None));
-    steps.append(&step(2, "Turn on <b>Remote Login</b>.", Some("Scroll down if you don't see it; some versions keep it under Advanced.")));
-    steps.append(&step(3, "Turn on <b>Allow full disk access for remote users</b>.", Some("It sits just under Remote Login; on some versions it's behind the ⓘ next to it.")));
-    steps.append(&step(4, "Come back here and click <b>Get started</b>.", None));
+    steps.append(&step(
+        1,
+        "On the Mac, open <b>System Settings → General → Sharing</b>.",
+        None,
+    ));
+    steps.append(&step(
+        2,
+        "Turn on <b>Remote Login</b>.",
+        Some("Scroll down if you don't see it; some versions keep it under Advanced."),
+    ));
+    steps.append(&step(
+        3,
+        "Turn on <b>Allow full disk access for remote users</b>.",
+        Some("It sits just under Remote Login; on some versions it's behind the ⓘ next to it."),
+    ));
+    steps.append(&step(
+        4,
+        "Come back here and click <b>Get started</b>.",
+        None,
+    ));
     let skip_cb = gtk::CheckButton::with_label("Don't show this again");
     skip_cb.set_halign(gtk::Align::Start);
     skip_cb.set_margin_top(6);
@@ -506,7 +650,11 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     // 1: the Mac
     let p1 = page("Connect to your Mac");
     p1.append(&label("On the Mac, open System Settings → General → Sharing and turn on Remote Login. Then pick the Mac here (or type its name or address) and sign in with its user name and password. The password is used once, for the setup, and then forgotten.", "dim"));
-    let host = gtk::Entry::builder().placeholder_text("my-mac.local").hexpand(true).css_classes(["wiz-field"]).build();
+    let host = gtk::Entry::builder()
+        .placeholder_text("my-mac.local")
+        .hexpand(true)
+        .css_classes(["wiz-field"])
+        .build();
     // the button at the right end is a real, focusable button: the list's arrow, or "clear" once a Mac is chosen
     let drop_btn = gtk::Button::from_icon_name("pan-down-symbolic");
     drop_btn.add_css_class("wiz-drop-btn");
@@ -550,9 +698,22 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     host_msg.set_justify(gtk::Justification::Center);
     p1.append(&host_msg);
     // the account: unavailable until a Mac is chosen and found; changing the Mac clears the password
-    let user = gtk::Entry::builder().text(&ctx.default_user).placeholder_text("Mac user name").css_classes(["wiz-field"]).sensitive(false).build();
-    let pass = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("Mac password").css_classes(["wiz-field"]).sensitive(false).build();
-    for f in [user.upcast_ref::<gtk::Widget>(), pass.upcast_ref::<gtk::Widget>()] {
+    let user = gtk::Entry::builder()
+        .text(&ctx.default_user)
+        .placeholder_text("Mac user name")
+        .css_classes(["wiz-field"])
+        .sensitive(false)
+        .build();
+    let pass = gtk::PasswordEntry::builder()
+        .show_peek_icon(true)
+        .placeholder_text("Mac password")
+        .css_classes(["wiz-field"])
+        .sensitive(false)
+        .build();
+    for f in [
+        user.upcast_ref::<gtk::Widget>(),
+        pass.upcast_ref::<gtk::Widget>(),
+    ] {
         f.set_halign(gtk::Align::Center);
         f.set_size_request(340, -1);
     }
@@ -582,7 +743,12 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     pick_box.append(&pick);
     pick_box.append(&scan_row);
     // a drop-down: as wide as the field, directly under it, no arrow
-    let pick_pop = gtk::Popover::builder().child(&pick_box).autohide(true).has_arrow(false).css_classes(["wiz-drop"]).build();
+    let pick_pop = gtk::Popover::builder()
+        .child(&pick_box)
+        .autohide(true)
+        .has_arrow(false)
+        .css_classes(["wiz-drop"])
+        .build();
     pick_pop.set_parent(&host);
     pick_pop.set_position(gtk::PositionType::Bottom);
     pick_pop.set_offset(0, 2);
@@ -615,9 +781,17 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
 
     // 5: the test message
     let p5 = page("Send a test message");
-    let test_title = outers.borrow().last().and_then(|o| o.first_child()).and_downcast::<gtk::Label>().expect("page title");
+    let test_title = outers
+        .borrow()
+        .last()
+        .and_then(|o| o.first_child())
+        .and_downcast::<gtk::Label>()
+        .expect("page title");
     p5.append(&label("This sends a short message through Messages on your Mac, so you know sending works. Have your Mac in view: the first time, macOS asks whether to allow control of Messages. Click Allow. You can send it to yourself: use your own phone number or Apple ID email.", "dim"));
-    let to = gtk::Entry::builder().placeholder_text("your phone number or email").css_classes(["wiz-field", "with-action"]).build();
+    let to = gtk::Entry::builder()
+        .placeholder_text("your phone number or email")
+        .css_classes(["wiz-field", "with-action"])
+        .build();
     // the send button sits inside the right end of the field; it becomes a spinner while sending, then a check
     let test_btn = gtk::Button::from_icon_name("bf-send-symbolic");
     test_btn.add_css_class("wiz-drop-btn");
@@ -651,7 +825,10 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     test_msg.set_halign(gtk::Align::Center);
     test_msg.set_justify(gtk::Justification::Center);
     p5.append(&test_msg);
-    let skip_note = label("You can skip this. Reading your messages works without it. But the first time you send a message from BubbleFairy, macOS will ask you to allow control of Messages on the Mac, so have it handy then.", "dim");
+    let skip_note = label(
+        "You can skip this. Reading your messages works without it. But the first time you send a message from BubbleFairy, macOS will ask you to allow control of Messages on the Mac, so have it handy then.",
+        "dim",
+    );
     skip_note.set_margin_top(14);
     p5.append(&skip_note);
     let stop_btn = gtk::Button::with_label("Stop waiting");
@@ -746,19 +923,30 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     wire_host(&w);
     wire_nav(&w);
     show_page(&w, 0);
-    let dev_skip = ["BF_SETUP_PAGE", "BF_SETUP_AUTO"].iter().any(|k| std::env::var_os(k).is_some());
-    let intro_shown = (!w.ctx.skip_intro && !dev_skip) || std::env::var_os("BF_SETUP_INTRO").is_some();
+    let dev_skip = ["BF_SETUP_PAGE", "BF_SETUP_AUTO"]
+        .iter()
+        .any(|k| std::env::var_os(k).is_some());
+    let intro_shown =
+        (!w.ctx.skip_intro && !dev_skip) || std::env::var_os("BF_SETUP_INTRO").is_some();
     w.dots[0].set_visible(intro_shown); // no dot for a welcome page that's switched off
     if intro_shown {
         show_intro(&w);
     }
     win.present();
     // dev aids: BF_SETUP_PAGE=<n> starts on that page; BF_SETUP_SHOT=<file.png> saves the wizard after BF_SETUP_MS (default 3 s)
-    if let Some(n) = std::env::var("BF_SETUP_PAGE").ok().and_then(|v| v.parse::<usize>().ok()) {
+    if let Some(n) = std::env::var("BF_SETUP_PAGE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
         show_page(&w, n.min(PAGES.len() - 1));
     }
     // dev aid BF_SETUP_POP=<png>: open the Mac list, hover its first entry, and save the list's own picture
-    if let (Some(out), Some(ms)) = (std::env::var_os("BF_SETUP_POP"), std::env::var("BF_SETUP_MS").ok().and_then(|v| v.parse::<u64>().ok())) {
+    if let (Some(out), Some(ms)) = (
+        std::env::var_os("BF_SETUP_POP"),
+        std::env::var("BF_SETUP_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok()),
+    ) {
         let w2 = w.clone();
         glib::timeout_add_local_once(Duration::from_millis(ms.saturating_sub(1500)), move || {
             open_list(&w2, false);
@@ -769,7 +957,11 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
             glib::timeout_add_local_once(Duration::from_millis(600), move || {
                 let p = gtk::WidgetPaintable::new(Some(&w3.pick_pop));
                 let snap = gtk::Snapshot::new();
-                p.snapshot(&snap, w3.pick_pop.width() as f64, w3.pick_pop.height() as f64);
+                p.snapshot(
+                    &snap,
+                    w3.pick_pop.width() as f64,
+                    w3.pick_pop.height() as f64,
+                );
                 if let (Some(node), Some(r)) = (snap.to_node(), w3.win.renderer()) {
                     let _ = r.render_texture(&node, None).save_to_png(&out);
                 }
@@ -777,7 +969,10 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         });
     }
     if let Some(out) = std::env::var_os("BF_SETUP_SHOT") {
-        let ms = std::env::var("BF_SETUP_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
+        let ms = std::env::var("BF_SETUP_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3000);
         let win = w.win.clone();
         glib::timeout_add_local_once(Duration::from_millis(ms), move || {
             let p = gtk::WidgetPaintable::new(Some(&win));
@@ -805,7 +1000,11 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
             if w2.page.get() == 0 && w2.next.is_sensitive() {
                 w2.next.emit_clicked();
             }
-            if w2.page.get() >= 1 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+            if w2.page.get() >= 1 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
         });
     }
 }
@@ -814,7 +1013,11 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
 fn show_intro(w: &Rc<W>) {
     w.intro.set(true);
     for (n, d) in w.dots.iter().enumerate() {
-        if n == 0 { d.add_css_class("on") } else { d.remove_css_class("on") }
+        if n == 0 {
+            d.add_css_class("on")
+        } else {
+            d.remove_css_class("on")
+        }
     }
     w.pages.set_visible_child_name("intro");
     w.back.set_visible(false);
@@ -826,7 +1029,11 @@ fn show_intro(w: &Rc<W>) {
 fn show_page(w: &Rc<W>, i: usize) {
     w.page.set(i);
     for (n, d) in w.dots.iter().enumerate() {
-        if n == i + 1 { d.add_css_class("on") } else { d.remove_css_class("on") }
+        if n == i + 1 {
+            d.add_css_class("on")
+        } else {
+            d.remove_css_class("on")
+        }
     }
     w.pages.set_visible_child_name(PAGES[i]);
     if i == 2 {
@@ -899,7 +1106,8 @@ fn unlock_host(w: &Rc<W>) {
     w.host.set_text("");
     w.editing.set(false);
     w.drop_btn.set_icon_name("pan-down-symbolic");
-    w.drop_btn.set_tooltip_text(Some("Macs found on the network"));
+    w.drop_btn
+        .set_tooltip_text(Some("Macs found on the network"));
     set_host_status(w, "none", "");
     w.host.grab_focus();
 }
@@ -910,7 +1118,11 @@ fn check_host(w: &Rc<W>, move_focus: bool) {
     if host.is_empty() || w.locked.get() {
         return;
     }
-    if w.found.borrow().iter().any(|f| f.host.eq_ignore_ascii_case(&host)) {
+    if w.found
+        .borrow()
+        .iter()
+        .any(|f| f.host.eq_ignore_ascii_case(&host))
+    {
         lock_host(w, &host, move_focus);
         return;
     }
@@ -989,7 +1201,8 @@ fn wire_host(w: &Rc<W>) {
         w2.scan.stop();
         w2.scan.set_visible(false);
         if w2.found.borrow().is_empty() {
-            w2.scan_text.set_text("No Macs found. Type its name in the field.");
+            w2.scan_text
+                .set_text("No Macs found. Type its name in the field.");
         }
     });
     // the list opens from the arrow in the field
@@ -1010,7 +1223,12 @@ fn wire_host(w: &Rc<W>) {
     let w2 = w.clone();
     btn_keys.connect_key_pressed(move |_, key, _, _| {
         w2.btn_key.set(true);
-        if w2.locked.get() && matches!(key, gdk::Key::BackSpace | gdk::Key::Delete | gdk::Key::Escape) {
+        if w2.locked.get()
+            && matches!(
+                key,
+                gdk::Key::BackSpace | gdk::Key::Delete | gdk::Key::Escape
+            )
+        {
             unlock_host(&w2);
             return glib::Propagation::Stop;
         }
@@ -1029,7 +1247,15 @@ fn wire_host(w: &Rc<W>) {
             return;
         }
         let lower = typed.to_lowercase();
-        let hit = w2.found.borrow().iter().find(|f| f.host.to_lowercase().starts_with(&lower) || f.name.to_lowercase().starts_with(&lower)).cloned();
+        let hit = w2
+            .found
+            .borrow()
+            .iter()
+            .find(|f| {
+                f.host.to_lowercase().starts_with(&lower)
+                    || f.name.to_lowercase().starts_with(&lower)
+            })
+            .cloned();
         if let Some(f) = hit.filter(|f| f.host.to_lowercase().starts_with(&lower)) {
             // fill in the rest, selected, so the next key replaces it
             w2.editing.set(true);
@@ -1043,7 +1269,10 @@ fn wire_host(w: &Rc<W>) {
     let w2 = w.clone();
     keys.connect_key_pressed(move |_, key, _, _| {
         if w2.locked.get() {
-            if matches!(key, gdk::Key::BackSpace | gdk::Key::Delete | gdk::Key::Escape) {
+            if matches!(
+                key,
+                gdk::Key::BackSpace | gdk::Key::Delete | gdk::Key::Escape
+            ) {
                 unlock_host(&w2);
                 return glib::Propagation::Stop;
             }
@@ -1092,7 +1321,10 @@ fn wire_nav(w: &Rc<W>) {
             connect(&w2);
         }
     });
-    for e in [w.user.clone().upcast::<gtk::Editable>(), w.pass.clone().upcast::<gtk::Editable>()] {
+    for e in [
+        w.user.clone().upcast::<gtk::Editable>(),
+        w.pass.clone().upcast::<gtk::Editable>(),
+    ] {
         let w2 = w.clone();
         e.connect_changed(move |_| {
             if w2.page.get() == 0 {
@@ -1110,7 +1342,9 @@ fn wire_nav(w: &Rc<W>) {
     w.stop_btn.connect_clicked(move |_| {
         w2.test_gen.set(w2.test_gen.get() + 1); // the answer, if it still comes, is ignored
         end_sending(&w2);
-        w2.test_msg.set_text("Stopped waiting. If you click Allow on the Mac later, the message will still be sent.");
+        w2.test_msg.set_text(
+            "Stopped waiting. If you click Allow on the Mac later, the message will still be sent.",
+        );
     });
 }
 
@@ -1130,14 +1364,30 @@ fn connect(w: &Rc<W>) {
     }
     set_acct(w, "");
     w.next.set_sensitive(false);
-    let name = w.found.borrow().iter().find(|f| f.host.eq_ignore_ascii_case(w.host.text().trim())).map(|f| f.name.clone()).unwrap_or_else(|| w.host.text().trim().to_string());
-    w.connecting_text.set_text(&format!("Connecting to {name}…"));
+    let name = w
+        .found
+        .borrow()
+        .iter()
+        .find(|f| f.host.eq_ignore_ascii_case(w.host.text().trim()))
+        .map(|f| f.name.clone())
+        .unwrap_or_else(|| w.host.text().trim().to_string());
+    w.connecting_text
+        .set_text(&format!("Connecting to {name}…"));
     w.connecting.set_visible(true);
-    for f in [w.user.upcast_ref::<gtk::Widget>(), w.pass.upcast_ref::<gtk::Widget>(), w.drop_btn.upcast_ref::<gtk::Widget>()] {
+    for f in [
+        w.user.upcast_ref::<gtk::Widget>(),
+        w.pass.upcast_ref::<gtk::Widget>(),
+        w.drop_btn.upcast_ref::<gtk::Widget>(),
+    ] {
         f.set_sensitive(false);
     }
-    let (host, user, pass) = (w.host.text().trim().to_string(), w.user.text().trim().to_string(), w.pass.text().to_string());
-    let dev_key = std::env::var_os("BF_SETUP_KEYLOGIN").map(|_| glib::user_data_dir().join("bubblefairy/id_ed25519"));
+    let (host, user, pass) = (
+        w.host.text().trim().to_string(),
+        w.user.text().trim().to_string(),
+        w.pass.text().to_string(),
+    );
+    let dev_key = std::env::var_os("BF_SETUP_KEYLOGIN")
+        .map(|_| glib::user_data_dir().join("bubblefairy/id_ed25519"));
     let w2 = w.clone();
     glib::spawn_future_local(async move {
         let r = rt(async move {
@@ -1163,7 +1413,11 @@ fn connect(w: &Rc<W>) {
             }
             Err(e) => {
                 w2.connecting.set_visible(false);
-                for f in [w2.user.upcast_ref::<gtk::Widget>(), w2.pass.upcast_ref::<gtk::Widget>(), w2.drop_btn.upcast_ref::<gtk::Widget>()] {
+                for f in [
+                    w2.user.upcast_ref::<gtk::Widget>(),
+                    w2.pass.upcast_ref::<gtk::Widget>(),
+                    w2.drop_btn.upcast_ref::<gtk::Widget>(),
+                ] {
                     f.set_sensitive(true);
                 }
                 w2.next.set_sensitive(ready(&w2));
@@ -1219,9 +1473,18 @@ fn provision(w: &Rc<W>) {
 
 /// Steps 1.. : check the Mac, add the key, check the key, install imsg, check access.
 async fn provision_from(w: &Rc<W>, from: usize) {
-    let Some(link) = w.online.borrow().clone() else { return };
-    let (host, user) = (w.host.text().trim().to_string(), w.user.text().trim().to_string());
-    let folder = if w.ctx.test { "BubbleFairy-test" } else { "BubbleFairy" };
+    let Some(link) = w.online.borrow().clone() else {
+        return;
+    };
+    let (host, user) = (
+        w.host.text().trim().to_string(),
+        w.user.text().trim().to_string(),
+    );
+    let folder = if w.ctx.test {
+        "BubbleFairy-test"
+    } else {
+        "BubbleFairy"
+    };
     for i in from..STEPS.len() {
         set_step(w, i, Step::Run);
     }
@@ -1231,10 +1494,12 @@ async fn provision_from(w: &Rc<W>, from: usize) {
         let r: Result<(), String> = match i {
             1 => {
                 let l = link.clone();
-                rt(async move { l.check_mac().await }).await.map(|(h, about)| {
-                    home = h;
-                    w.work_info.set_text(&about); // which Mac this is, in words the person knows
-                })
+                rt(async move { l.check_mac().await })
+                    .await
+                    .map(|(h, about)| {
+                        home = h;
+                        w.work_info.set_text(&about); // which Mac this is, in words the person knows
+                    })
             }
             2 => {
                 let (l, key) = (link.clone(), w.ctx.public_key.clone());
@@ -1301,7 +1566,8 @@ fn explain(e: &str) -> String {
     let low = e.to_lowercase();
     if low.contains("took too long") {
         "The Mac didn't answer. If a permission question is waiting on its screen, click Allow, then try again.".into()
-    } else if low.contains("1743") || low.contains("not authorized") || low.contains("not allowed") {
+    } else if low.contains("1743") || low.contains("not authorized") || low.contains("not allowed")
+    {
         "The Mac didn't allow it. On the Mac, open System Settings → Privacy & Security → Automation, allow the app that runs imsg to control Messages, then try again.".into()
     } else {
         format!("It didn't go: {e}")
@@ -1322,7 +1588,8 @@ fn test_send(w: &Rc<W>) {
     }
     let to = w.to.text().trim().to_string();
     let (Some(link), false) = (w.online.borrow().clone(), to.is_empty()) else {
-        w.test_msg.set_text("Enter a phone number or email to send it to.");
+        w.test_msg
+            .set_text("Enter a phone number or email to send it to.");
         return;
     };
     let gen_ = w.test_gen.get() + 1;
@@ -1335,7 +1602,9 @@ fn test_send(w: &Rc<W>) {
     // after a while: say what to look for, and offer a way out
     let w2 = w.clone();
     glib::timeout_add_local_once(Duration::from_secs(12), move || {
-        if w2.test_gen.get() == gen_ && w2.test_stack.visible_child_name().as_deref() == Some("spin") {
+        if w2.test_gen.get() == gen_
+            && w2.test_stack.visible_child_name().as_deref() == Some("spin")
+        {
             w2.test_msg.set_text("Waiting for the Mac. Look at its screen: macOS may be asking you to allow control of Messages. Click Allow.");
             w2.stop_btn.set_visible(true);
         }
@@ -1363,9 +1632,16 @@ fn test_send(w: &Rc<W>) {
 }
 
 fn finish(w: &Rc<W>) {
-    let (host, user, imsg) = (w.host.text().trim().to_string(), w.user.text().trim().to_string(), w.imsg.borrow().clone());
+    let (host, user, imsg) = (
+        w.host.text().trim().to_string(),
+        w.user.text().trim().to_string(),
+        w.imsg.borrow().clone(),
+    );
     let online = w.online.borrow().clone();
-    let host_key = online.as_ref().map(|l| l.host_key.clone()).unwrap_or_default();
+    let host_key = online
+        .as_ref()
+        .map(|l| l.host_key.clone())
+        .unwrap_or_default();
     if w.ctx.test {
         // dev profile: take the throwaway key off the Mac again and keep nothing
         if let Some(l) = online {
@@ -1392,7 +1668,10 @@ pub fn default_user() -> String {
 mod tests {
     #[test]
     fn hash_helper_matches_known_value() {
-        assert_eq!(super::sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            super::sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]
@@ -1400,18 +1679,31 @@ mod tests {
         let home = std::env::temp_dir().join(format!("bf-ak-{}", std::process::id()));
         let ssh = home.join(".ssh");
         std::fs::create_dir_all(&ssh).unwrap();
-        let run = |cmd: String| std::process::Command::new("sh").env("HOME", &home).arg("-c").arg(cmd).status().unwrap();
+        let run = |cmd: String| {
+            std::process::Command::new("sh")
+                .env("HOME", &home)
+                .arg("-c")
+                .arg(cmd)
+                .status()
+                .unwrap()
+        };
         let f = ssh.join("authorized_keys");
         std::fs::write(&f, "ssh-ed25519 AAAAkeep one\nssh-ed25519 AAAAdropme two\n").unwrap();
         run(super::remove_key_cmd("AAAAdropme"));
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "ssh-ed25519 AAAAkeep one\n");
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "ssh-ed25519 AAAAkeep one\n"
+        );
         run(super::remove_key_cmd("AAAAkeep")); // the last key goes: an empty file is right
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "");
         std::fs::write(&f, "ssh-ed25519 AAAAkeep one\n").unwrap();
         std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o200)).unwrap(); // write-only: grep can't read it (exit 2) but a blind overwrite would work
         run(super::remove_key_cmd("AAAAdropme"));
         std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "ssh-ed25519 AAAAkeep one\n");
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "ssh-ed25519 AAAAkeep one\n"
+        );
         std::fs::remove_dir_all(&home).ok();
     }
 }

@@ -30,7 +30,11 @@ impl TileGrid {
     pub fn append(&self, w: &impl IsA<gtk::Widget>) {
         let w = w.clone().upcast::<gtk::Widget>();
         w.set_parent(self);
-        self.imp().items.borrow_mut().push(imp::Item { w, pos: (0.0, 0.0), placed: false });
+        self.imp().items.borrow_mut().push(imp::Item {
+            w,
+            pos: (0.0, 0.0),
+            placed: false,
+        });
         self.queue_resize();
     }
 
@@ -44,7 +48,12 @@ impl TileGrid {
 
     /// The tiles in their present order.
     pub fn tiles(&self) -> Vec<gtk::Widget> {
-        self.imp().items.borrow().iter().map(|i| i.w.clone()).collect()
+        self.imp()
+            .items
+            .borrow()
+            .iter()
+            .map(|i| i.w.clone())
+            .collect()
     }
 
     /// Called with the tiles in their new order after one was dragged somewhere else.
@@ -56,12 +65,17 @@ impl TileGrid {
     pub fn dev_drag(&self, from: usize, cells: f64) {
         let imp = self.imp();
         let (cw, ch) = imp.cell_size();
-        let (x0, y0) = (cw * (from % imp.col_count()) as f64 + cw / 2.0, ch * (from / imp.col_count()) as f64 + ch / 2.0);
+        let (x0, y0) = (
+            cw * (from % imp.col_count()) as f64 + cw / 2.0,
+            ch * (from / imp.col_count()) as f64 + ch / 2.0,
+        );
         imp.press.set(Some((from, x0, y0)));
         imp.start_drag(self, from, x0, y0);
         let (me, n) = (self.downgrade(), Cell::new(0));
         glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
-            let Some(me) = me.upgrade() else { return glib::ControlFlow::Break };
+            let Some(me) = me.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
             n.set(n.get() + 1);
             let f = (n.get() as f64 / 30.0).min(1.0);
             me.imp().drag_to(&me, x0 + cells * cw * f, y0);
@@ -79,14 +93,18 @@ impl TileGrid {
         let me = self.downgrade();
         drag.connect_drag_begin(move |_, x, y| {
             if let Some(me) = me.upgrade() {
-                me.imp().press.set(me.imp().item_at(x, y).map(|i| (i, x, y)));
+                me.imp()
+                    .press
+                    .set(me.imp().item_at(x, y).map(|i| (i, x, y)));
             }
         });
         let me = self.downgrade();
         drag.connect_drag_update(move |g, dx, dy| {
             let Some(me) = me.upgrade() else { return };
             let imp = me.imp();
-            let Some((i, x0, y0)) = imp.press.get() else { return };
+            let Some((i, x0, y0)) = imp.press.get() else {
+                return;
+            };
             if !imp.dragging() {
                 if dx * dx + dy * dy < 36.0 {
                     return; // still a click
@@ -175,7 +193,14 @@ mod imp {
 
         /// How many columns fit `width`: as many as there is room for, up to three.
         fn cols_for(&self, width: i32) -> usize {
-            let min = self.items.borrow().iter().map(|i| i.w.measure(gtk::Orientation::Horizontal, -1).0).max().unwrap_or(1).max(1);
+            let min = self
+                .items
+                .borrow()
+                .iter()
+                .map(|i| i.w.measure(gtk::Orientation::Horizontal, -1).0)
+                .max()
+                .unwrap_or(1)
+                .max(1);
             ((width / min).max(1) as usize).min(MAX_COLS)
         }
 
@@ -188,7 +213,9 @@ mod imp {
         /// The tile drawn under (x, y).
         pub fn item_at(&self, x: f64, y: f64) -> Option<usize> {
             let (cw, ch) = self.cell.get();
-            self.items.borrow().iter().position(|it| x >= it.pos.0 && x < it.pos.0 + cw && y >= it.pos.1 && y < it.pos.1 + ch)
+            self.items.borrow().iter().position(|it| {
+                x >= it.pos.0 && x < it.pos.0 + cw && y >= it.pos.1 && y < it.pos.1 + ch
+            })
         }
 
         pub fn start_drag(&self, obj: &super::TileGrid, i: usize, x: f64, y: f64) {
@@ -197,7 +224,12 @@ mod imp {
                 (items[i].pos, items[i].w.clone())
             };
             let before = self.items.borrow().iter().map(|i| i.w.clone()).collect();
-            self.drag.replace(Some(Drag { at: i, grab: (x - pos.0, y - pos.1), before, pointer: (x, y) }));
+            self.drag.replace(Some(Drag {
+                at: i,
+                grab: (x - pos.0, y - pos.1),
+                before,
+                pointer: (x, y),
+            }));
             w.add_css_class("dragging");
             w.insert_before(obj, None::<&gtk::Widget>); // drawn on top of the others
             self.ensure_tick(obj);
@@ -264,7 +296,11 @@ mod imp {
             let id = obj.add_tick_callback(|obj, clock| {
                 let imp = obj.imp();
                 let now = clock.frame_time();
-                let dt = if imp.last_frame.get() == 0 { 16_000.0 } else { (now - imp.last_frame.get()) as f64 };
+                let dt = if imp.last_frame.get() == 0 {
+                    16_000.0
+                } else {
+                    (now - imp.last_frame.get()) as f64
+                };
                 imp.last_frame.set(now);
                 // exponential approach: about 60 ms to cover most of the distance, whatever the frame rate
                 let k = 1.0 - (-dt / 1000.0 / 55.0).exp();
@@ -306,18 +342,43 @@ mod imp {
                 return (0, 0, -1, -1);
             }
             if orientation == gtk::Orientation::Horizontal {
-                let min = items.iter().map(|i| i.w.measure(orientation, -1).0).max().unwrap_or(0);
-                let nat = items.iter().map(|i| i.w.measure(orientation, -1).1).max().unwrap_or(0);
+                let min = items
+                    .iter()
+                    .map(|i| i.w.measure(orientation, -1).0)
+                    .max()
+                    .unwrap_or(0);
+                let nat = items
+                    .iter()
+                    .map(|i| i.w.measure(orientation, -1).1)
+                    .max()
+                    .unwrap_or(0);
                 return (min, nat * MAX_COLS as i32, -1, -1);
             }
             drop(items);
             // asked without a width (the scroller does): the width it has now, else a single column's worth
             let known = self.obj().width().max(self.last_w.get());
-            let width = if for_size >= 0 { for_size } else { known.max(self.cols_for(0) as i32 * self.items.borrow().iter().map(|i| i.w.measure(gtk::Orientation::Horizontal, -1).0).max().unwrap_or(1)) };
+            let width = if for_size >= 0 {
+                for_size
+            } else {
+                known.max(
+                    self.cols_for(0) as i32
+                        * self
+                            .items
+                            .borrow()
+                            .iter()
+                            .map(|i| i.w.measure(gtk::Orientation::Horizontal, -1).0)
+                            .max()
+                            .unwrap_or(1),
+                )
+            };
             let cols = self.cols_for(width);
             let cw = width / cols as i32;
             let items = self.items.borrow();
-            let ch = items.iter().map(|i| i.w.measure(gtk::Orientation::Vertical, cw).1).max().unwrap_or(0);
+            let ch = items
+                .iter()
+                .map(|i| i.w.measure(gtk::Orientation::Vertical, cw).1)
+                .max()
+                .unwrap_or(0);
             let rows = items.len().div_ceil(cols) as i32;
             (rows * ch, rows * ch, -1, -1)
         }
@@ -326,7 +387,13 @@ mod imp {
             self.last_w.set(width);
             let cols = self.cols_for(width);
             let cw = width as f64 / cols as f64;
-            let ch = self.items.borrow().iter().map(|i| i.w.measure(gtk::Orientation::Vertical, cw as i32).1).max().unwrap_or(0) as f64;
+            let ch = self
+                .items
+                .borrow()
+                .iter()
+                .map(|i| i.w.measure(gtk::Orientation::Vertical, cw as i32).1)
+                .max()
+                .unwrap_or(0) as f64;
             // a height asked for without a width is cached by GTK: when the column count changes, ask again
             if self.cols.replace(cols) != cols {
                 let obj = self.obj().clone();
@@ -334,7 +401,11 @@ mod imp {
             }
             self.cell.set((cw, ch));
             let animating = self.tick.borrow().is_some();
-            let drag = self.drag.borrow().as_ref().map(|d| (d.at, d.grab, d.pointer));
+            let drag = self
+                .drag
+                .borrow()
+                .as_ref()
+                .map(|d| (d.at, d.grab, d.pointer));
             let mut items = self.items.borrow_mut();
             let rows = items.len().div_ceil(cols).max(1);
             for i in 0..items.len() {
@@ -342,12 +413,23 @@ mod imp {
                 let it = &mut items[i];
                 if let Some((_, grab, p)) = drag.filter(|d| d.0 == i) {
                     // follows the pointer, kept inside the grid
-                    it.pos = ((p.0 - grab.0).clamp(0.0, (width as f64 - cw).max(0.0)), (p.1 - grab.1).clamp(0.0, ((rows - 1) as f64 * ch).max(0.0)));
+                    it.pos = (
+                        (p.0 - grab.0).clamp(0.0, (width as f64 - cw).max(0.0)),
+                        (p.1 - grab.1).clamp(0.0, ((rows - 1) as f64 * ch).max(0.0)),
+                    );
                 } else if !it.placed || !animating {
                     it.pos = (tx, ty); // laid out afresh (first time, or the width changed): no sliding
                 }
                 it.placed = true;
-                it.w.allocate(cw.ceil() as i32, ch.ceil() as i32, -1, Some(gsk::Transform::new().translate(&graphene::Point::new(it.pos.0 as f32, it.pos.1 as f32))));
+                it.w.allocate(
+                    cw.ceil() as i32,
+                    ch.ceil() as i32,
+                    -1,
+                    Some(
+                        gsk::Transform::new()
+                            .translate(&graphene::Point::new(it.pos.0 as f32, it.pos.1 as f32)),
+                    ),
+                );
             }
         }
     }

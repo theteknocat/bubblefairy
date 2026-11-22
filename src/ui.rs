@@ -12,8 +12,8 @@ use gtk::{gdk, gio, glib};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::{bubble, viewer};
 use crate::mac::{Cmd, Config, Event, Kind, MediaItem};
+use crate::{bubble, viewer};
 
 const SIDEBAR_MIN: i32 = 260; // paned positions and widths below include the panels' side margins
 const CHAT_MIN: i32 = 440;
@@ -369,8 +369,19 @@ fn brand() -> gtk::Box {
     b
 }
 
-pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::UnboundedSender<Cmd>, mut ev: mpsc::UnboundedReceiver<Event>) {
-    let win = gtk::ApplicationWindow::builder().application(app).title("BubbleFairy").default_width(1120).default_height(740).build();
+pub fn build(
+    app: &gtk::Application,
+    store: Store,
+    cfg: Config,
+    cmd: mpsc::UnboundedSender<Cmd>,
+    mut ev: mpsc::UnboundedReceiver<Event>,
+) {
+    let win = gtk::ApplicationWindow::builder()
+        .application(app)
+        .title("BubbleFairy")
+        .default_width(1120)
+        .default_height(740)
+        .build();
     win.add_css_class("bf");
 
     // header: status pill, title, settings
@@ -400,7 +411,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let pill = gtk::Box::new(gtk::Orientation::Horizontal, 7);
     pill.append(&dot);
     pill.append(&status_text);
-    let status = gtk::Button::builder().child(&pill).css_classes(["status", "connecting"]).build();
+    let status = gtk::Button::builder()
+        .child(&pill)
+        .css_classes(["status", "connecting"])
+        .build();
     head.pack_start(&status);
     let settings_btn = gtk::Button::from_icon_name("emblem-system-symbolic");
     settings_btn.set_tooltip_text(Some("Settings"));
@@ -412,7 +426,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     head.pack_start(&search_btn);
     // the field lives in a layer over the whole header, placed over the title between the status pill and the settings
     // button (a header bar centres its title and can't give it that space)
-    let search = gtk::SearchEntry::builder().placeholder_text("Search conversations").build();
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("Search conversations")
+        .build();
     search.add_css_class("head-search");
     search.set_valign(gtk::Align::Center);
     let search_spin = gtk::Spinner::new();
@@ -473,7 +489,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     side_none_box.append(&side_none);
     side_none_box.set_visible(false);
     side_inner.append(&side_none_box);
-    let side_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&side_inner).build();
+    let side_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&side_inner)
+        .build();
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar.add_css_class("sidebar");
     let side_title = gtk::Label::new(Some("Conversations"));
@@ -548,7 +568,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // new message: the header becomes a To field, the message area a list of people to pick
     let to_label = gtk::Label::new(Some("To:"));
     to_label.add_css_class("to-label");
-    let to_entry = gtk::Entry::builder().placeholder_text("Name, phone number or email").hexpand(true).build();
+    let to_entry = gtk::Entry::builder()
+        .placeholder_text("Name, phone number or email")
+        .hexpand(true)
+        .build();
     to_entry.add_css_class("to-entry");
     let to_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     to_row.set_hexpand(true);
@@ -559,7 +582,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let suggest = gtk::ListBox::new();
     suggest.add_css_class("chat-list");
     suggest.add_css_class("suggest");
-    let suggest_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&suggest).build();
+    let suggest_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&suggest)
+        .build();
     suggest_scroll.set_visible(false);
 
     let msgs = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -568,7 +595,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // anchored to the bottom (see chatscroll.rs); `stick` is true while the view follows the newest message
     let stick = Rc::new(Cell::new(true));
     let anchored = crate::chatscroll::ChatScroll::new(&msgs, stick.clone());
-    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&anchored).build();
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&anchored)
+        .build();
 
     let compose = gtk::TextView::builder()
         .wrap_mode(gtk::WrapMode::WordChar)
@@ -580,7 +611,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         .right_margin(COMPOSE_PAD_X)
         .build();
     compose.add_css_class("compose");
-    let compose_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&compose).hexpand(true).build();
+    let compose_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&compose)
+        .hexpand(true)
+        .build();
     // The field's height is worked out here from the text itself (Pango, at the field's width) rather
     // than taken from the TextView, whose reported height runs a line tall while new lines are still
     // being laid out. Past COMPOSE_MAX it stops growing and scrolls.
@@ -592,7 +627,8 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             return;
         }
         let buf = cv.buffer();
-        let layout = cv.create_pango_layout(Some(&buf.text(&buf.start_iter(), &buf.end_iter(), false)));
+        let layout =
+            cv.create_pango_layout(Some(&buf.text(&buf.start_iter(), &buf.end_iter(), false)));
         layout.set_width(w * gtk::pango::SCALE);
         layout.set_wrap(gtk::pango::WrapMode::WordChar);
         let need = layout.pixel_size().1 + cv.top_margin() + cv.bottom_margin();
@@ -604,7 +640,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             cs.set_min_content_height(shown);
         }
         // External: no scrollbar (its own minimum height is taller than one line) until it's needed
-        cs.set_vscrollbar_policy(if need > COMPOSE_MAX { gtk::PolicyType::Automatic } else { gtk::PolicyType::External });
+        cs.set_vscrollbar_policy(if need > COMPOSE_MAX {
+            gtk::PolicyType::Automatic
+        } else {
+            gtk::PolicyType::External
+        });
         if need > COMPOSE_MAX {
             let (cv, cs) = (cv.clone(), cs.clone());
             glib::idle_add_local_once(move || {
@@ -624,13 +664,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // A key press that adds a line makes the TextView scroll to the cursor while the field is still
     // the old height; once it grows, that scroll would linger and push the text up. While everything
     // fits, stay at the top.
-    compose_scroll.vadjustment().connect_value_changed(move |a| {
-        if fits.get() && a.value() != 0.0 {
-            a.set_value(0.0);
-        }
-    });
+    compose_scroll
+        .vadjustment()
+        .connect_value_changed(move |a| {
+            if fits.get() && a.value() != 0.0 {
+                a.set_value(0.0);
+            }
+        });
     let f = fit.clone();
-    compose_scroll.hadjustment().connect_page_size_notify(move |_| f()); // width changed: rewrap
+    compose_scroll
+        .hadjustment()
+        .connect_page_size_notify(move |_| f()); // width changed: rewrap
     let compose_hint = gtk::Label::new(None);
     compose_hint.add_css_class("compose-hint");
     // sits exactly where the first line of text starts, so the caret and the hint line up
@@ -644,7 +688,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     compose_box.add_overlay(&compose_hint);
     compose_box.set_hexpand(true);
     let hint = compose_hint.clone();
-    compose.buffer().connect_changed(move |b| hint.set_visible(b.char_count() == 0));
+    compose
+        .buffer()
+        .connect_changed(move |b| hint.set_visible(b.char_count() == 0));
     compose_box.set_valign(gtk::Align::Center);
     let emoji = gtk::MenuButton::new();
     let smile = gtk::Image::from_icon_name("face-smile-symbolic");
@@ -691,7 +737,13 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     find_close.set_tooltip_text(Some("Close search"));
     let find_bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     find_bar.add_css_class("find-bar");
-    for w in [find_label.upcast_ref::<gtk::Widget>(), find_older.upcast_ref(), find_newer.upcast_ref(), find_latest.upcast_ref(), find_close.upcast_ref()] {
+    for w in [
+        find_label.upcast_ref::<gtk::Widget>(),
+        find_older.upcast_ref(),
+        find_newer.upcast_ref(),
+        find_latest.upcast_ref(),
+        find_close.upcast_ref(),
+    ] {
         find_bar.append(w);
     }
     for b in [&find_older, &find_newer, &find_latest, &find_close] {
@@ -761,7 +813,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             b.set_can_target(away);
         }
     };
-    scroller.vadjustment().connect_value_changed(show_btn.clone());
+    scroller
+        .vadjustment()
+        .connect_value_changed(show_btn.clone());
     scroller.vadjustment().connect_changed(show_btn);
     conv.append(&scroll_over);
     // files waiting to go, above the composer
@@ -797,7 +851,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     banner_box.add_css_class("banner");
     banner_box.append(&banner_text);
     banner_box.append(&banner_close);
-    let banner = gtk::Revealer::builder().child(&banner_box).transition_type(gtk::RevealerTransitionType::SlideDown).build();
+    let banner = gtk::Revealer::builder()
+        .child(&banner_box)
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .build();
 
     let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
     paned.set_start_child(Some(&sidebar));
@@ -850,13 +907,32 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let web_links = load_web_links(&store.web_file);
     let web = webkit6::soup::Session::new();
     webkit6::soup::prelude::SessionExt::set_timeout(&web, 10);
-    webkit6::soup::prelude::SessionExt::set_user_agent(&web, "Mozilla/5.0 (compatible; facebookexternalhit/1.1; BubbleFairy)"); // the form sites expect from link previewers
+    webkit6::soup::prelude::SessionExt::set_user_agent(
+        &web,
+        "Mozilla/5.0 (compatible; facebookexternalhit/1.1; BubbleFairy)",
+    ); // the form sites expect from link previewers
     let seen = load_seen(&store.seen_file);
-    let resent: HashSet<i64> = std::fs::read_to_string(&store.resent_file).unwrap_or_default().lines().filter_map(|l| l.parse().ok()).collect();
-    let pins: Vec<String> = std::fs::read_to_string(&store.pins_file).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(String::from).collect();
-    let muted: Vec<String> = std::fs::read_to_string(&store.muted_file).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(String::from).collect();
+    let resent: HashSet<i64> = std::fs::read_to_string(&store.resent_file)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.parse().ok())
+        .collect();
+    let pins: Vec<String> = std::fs::read_to_string(&store.pins_file)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect();
+    let muted: Vec<String> = std::fs::read_to_string(&store.muted_file)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect();
     // dev: BF_PINS=<key>,<key> pins those chats (demo chats' keys are their participants)
-    let pins = std::env::var("BF_PINS").map(|v| v.split(';').map(String::from).collect()).unwrap_or(pins);
+    let pins = std::env::var("BF_PINS")
+        .map(|v| v.split(';').map(String::from).collect())
+        .unwrap_or(pins);
     let ui = Rc::new(Ui {
         app: app.clone(),
         win: win.clone(),
@@ -864,7 +940,16 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         cmd,
         viewer,
         web,
-        st: RefCell::new(State { cfg, seen, pins, muted, chat_limit: CHATS_PAGE, resent, web_links, ..Default::default() }),
+        st: RefCell::new(State {
+            cfg,
+            seen,
+            pins,
+            muted,
+            chat_limit: CHATS_PAGE,
+            resent,
+            web_links,
+            ..Default::default()
+        }),
         chat_list,
         side_more,
         search,
@@ -974,9 +1059,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
 
     // search: rows that don't match are filtered out; pinned chats' tiles give way to their (otherwise hidden) rows
     let w = Rc::downgrade(&ui);
-    ui.chat_list.set_filter_func(move |row| w.upgrade().is_none_or(|u| row_matches(&u, row)));
+    ui.chat_list
+        .set_filter_func(move |row| w.upgrade().is_none_or(|u| row_matches(&u, row)));
     let u = ui.clone();
-    ui.search.connect_search_changed(move |_| search_changed(&u));
+    ui.search
+        .connect_search_changed(move |_| search_changed(&u));
     for (b, step) in [(&ui.find_older, 1_i64), (&ui.find_newer, -1)] {
         let u = ui.clone();
         b.connect_clicked(move |_| step_find(&u, step));
@@ -1019,7 +1106,13 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
 
     if let Ok(q) = std::env::var("BF_SEARCH") {
         let u = ui.clone();
-        glib::timeout_add_local_once(Duration::from_millis(5000), move || if q.is_empty() { open_search(&u) } else { u.search.set_text(&q) }); // dev aid (after the connection is up; empty = just open the field)
+        glib::timeout_add_local_once(Duration::from_millis(5000), move || {
+            if q.is_empty() {
+                open_search(&u)
+            } else {
+                u.search.set_text(&q)
+            }
+        }); // dev aid (after the connection is up; empty = just open the field)
     }
     if let Ok(id) = std::env::var("BF_FIND_OPEN").map(|v| v.parse::<i64>().unwrap_or(1)) {
         // dev aid: open this chat from the search results, 9 s in
@@ -1029,7 +1122,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
 
     if let Ok(name) = std::env::var("BF_SOUND") {
         // dev aid: play this sound (a bundled name or file:<path>) 2 s in
-        glib::timeout_add_local_once(Duration::from_millis(2000), move || crate::sound::play(&name));
+        glib::timeout_add_local_once(Duration::from_millis(2000), move || {
+            crate::sound::play(&name)
+        });
     }
     if let Ok(ms) = std::env::var("BF_SIDE_END").map(|v| v.parse::<u64>().unwrap_or(9000)) {
         // dev aid: scroll the sidebar to its end after this many ms
@@ -1041,13 +1136,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         });
     }
     // dev aid BF_TILE_DRAG=<ms>: drag the first tile two slots to the right at that time, hold, let go 3 s later
-    if let Some(ms) = std::env::var("BF_TILE_DRAG").ok().and_then(|v| v.parse::<u64>().ok()) {
+    if let Some(ms) = std::env::var("BF_TILE_DRAG")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
         let u = ui.clone();
         glib::timeout_add_local_once(Duration::from_millis(ms), move || u.tiles.dev_drag(0, 2.0));
     }
     // pinned tiles dragged into a new order are saved that way
     let u = ui.clone();
-    ui.tiles.connect_reordered(move |order| reorder_pins(&u, order));
+    ui.tiles
+        .connect_reordered(move |order| reorder_pins(&u, order));
     // scrolled to the end of the list: ask for older chats
     if let Some(adj) = side_adjustment(&ui) {
         let u = ui.clone();
@@ -1055,7 +1154,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             // halfway through the newest page of chats (about CHATS_PAGE rows) counts as near the end
             let loaded = u.st.try_borrow().map_or(0, |st| st.chats.len()).max(1);
             let page_h = a.upper() * (CHATS_PAGE as f64 / loaded as f64).min(1.0);
-            if a.upper() > a.page_size() && a.value() + a.page_size() >= a.upper() - (page_h / 2.0).max(300.0) {
+            if a.upper() > a.page_size()
+                && a.value() + a.page_size() >= a.upper() - (page_h / 2.0).max(300.0)
+            {
                 load_more_chats(&u);
             }
         });
@@ -1067,7 +1168,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             return;
         }
         let Some(row) = row else { return };
-        let id = u.st.borrow().chats.get(row.index() as usize).and_then(|c| c["id"].as_i64());
+        let id =
+            u.st.borrow()
+                .chats
+                .get(row.index() as usize)
+                .and_then(|c| c["id"].as_i64());
         if let Some(id) = id {
             select(&u, id);
             // the click itself gives the row the focus once the selection is done: take it back for the composer
@@ -1092,7 +1197,12 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let u = ui.clone();
     ui.scroller.vadjustment().connect_value_changed(move |a| {
         // like Messages: older messages come once the view is halfway through the newest page loaded above
-        let loaded = u.st.try_borrow().ok().and_then(|st| Some(st.hist.get(&st.sel?)?.len())).unwrap_or(0).max(1);
+        let loaded =
+            u.st.try_borrow()
+                .ok()
+                .and_then(|st| Some(st.hist.get(&st.sel?)?.len()))
+                .unwrap_or(0)
+                .max(1);
         let page_h = a.upper() * (HISTORY_OLDER as f64 / loaded as f64).min(1.0);
         if a.value() < (page_h / 2.0).max(400.0) && a.upper() > a.page_size() {
             load_older(&u);
@@ -1103,13 +1213,17 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     });
 
     let u = ui.clone();
-    ui.compose.buffer().connect_changed(move |_| update_send(&u));
+    ui.compose
+        .buffer()
+        .connect_changed(move |_| update_send(&u));
     let u = ui.clone();
     attach_btn.connect_clicked(move |_| pick_files(&u));
     let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
     let u = ui.clone();
     drop.connect_drop(move |_, v, _, _| {
-        let Ok(list) = v.get::<gdk::FileList>() else { return false };
+        let Ok(list) = v.get::<gdk::FileList>() else {
+            return false;
+        };
         add_files(&u, list.files().iter().filter_map(|f| f.path()).collect());
         true
     });
@@ -1123,20 +1237,30 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             tv.stop_signal_emission_by_name("paste-clipboard");
             let u = u.clone();
             glib::spawn_future_local(async move {
-                if let Ok(v) = cb.read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT).await
+                if let Ok(v) = cb
+                    .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT)
+                    .await
                     && let Ok(list) = v.get::<gdk::FileList>()
                 {
                     add_files(&u, list.files().iter().filter_map(|f| f.path()).collect());
                 }
             });
-        } else if f.contains_type(gdk::Texture::static_type()) && !f.contain_mime_type("text/plain") {
+        } else if f.contains_type(gdk::Texture::static_type()) && !f.contain_mime_type("text/plain")
+        {
             tv.stop_signal_emission_by_name("paste-clipboard");
             let u = u.clone();
             glib::spawn_future_local(async move {
-                let Ok(Some(t)) = cb.read_texture_future().await else { return };
+                let Ok(Some(t)) = cb.read_texture_future().await else {
+                    return;
+                };
                 let dir = outgoing_dir(&u);
                 let _ = std::fs::create_dir_all(&dir);
-                let path = dir.join(format!("Pasted image {}.png", glib::DateTime::now_local().map(|d| d.format("%Y-%m-%d %H.%M.%S").unwrap_or_default()).unwrap_or_default()));
+                let path = dir.join(format!(
+                    "Pasted image {}.png",
+                    glib::DateTime::now_local()
+                        .map(|d| d.format("%Y-%m-%d %H.%M.%S").unwrap_or_default())
+                        .unwrap_or_default()
+                ));
                 if t.save_to_png(&path).is_ok() {
                     add_files(&u, vec![path]);
                 }
@@ -1191,7 +1315,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // keep the three panels fitting as the window is resized (see relayout)
     let (weak, last_w) = (Rc::downgrade(&ui), Cell::new(0));
     ui.paned.add_tick_callback(move |p, _| {
-        let Some(u) = weak.upgrade() else { return glib::ControlFlow::Break };
+        let Some(u) = weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
         let dragged = p.position() != u.last_pos.get();
         if dragged && !u.narrow.get() && !u.info.revealer.reveals_child() {
             u.st.borrow_mut().side_pref = p.position(); // wherever the user has dragged it
@@ -1218,7 +1344,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     if std::env::var_os("BF_PROF").is_some() {
         let last = Cell::new(std::time::Instant::now());
         glib::timeout_add_local(Duration::from_millis(50), move || {
-            let late = last.replace(std::time::Instant::now()).elapsed().as_millis();
+            let late = last
+                .replace(std::time::Instant::now())
+                .elapsed()
+                .as_millis();
             if late > 300 {
                 eprintln!("prof: GTK thread stalled {} ms", late - 50);
             }
@@ -1238,7 +1367,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // ... and while it is in front
     let w = Rc::downgrade(&ui);
     glib::timeout_add_seconds_local(60, move || {
-        let Some(u) = w.upgrade() else { return glib::ControlFlow::Break };
+        let Some(u) = w.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
         if u.win.is_active() && u.st.borrow().connected {
             u.send(Cmd::ContactsCheck);
         }
@@ -1248,7 +1379,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // receipts (delivered, read) don't come through the live stream either: look again while a chat is open
     let w = Rc::downgrade(&ui);
     glib::timeout_add_seconds_local(10, move || {
-        let Some(u) = w.upgrade() else { return glib::ControlFlow::Break };
+        let Some(u) = w.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
         let sel = u.st.borrow().sel.filter(|_| u.st.borrow().connected);
         if let Some(id) = sel.filter(|_| u.win.is_active()) {
             u.send(Cmd::Receipts(id));
@@ -1258,7 +1391,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     // read state changes (chats read on other devices) don't come through the live stream
     let w = Rc::downgrade(&ui);
     glib::timeout_add_seconds_local(60, move || {
-        let Some(u) = w.upgrade() else { return glib::ControlFlow::Break };
+        let Some(u) = w.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
         if u.st.borrow().connected {
             u.send(Cmd::Chats(u.st.borrow().chat_limit));
         }
@@ -1294,7 +1429,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     let apply = move |s: &gtk::Settings| {
         let dark = s.gtk_interface_color_scheme() == gtk::InterfaceColorScheme::Dark;
         for w in a.windows() {
-            if dark { w.add_css_class("dark") } else { w.remove_css_class("dark") }
+            if dark {
+                w.add_css_class("dark")
+            } else {
+                w.remove_css_class("dark")
+            }
         }
     };
     apply(&gs);
@@ -1311,9 +1450,14 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         if !u.info.revealer.reveals_child() || u.viewer.is_open() {
             return;
         }
-        let Some(hit) = u.win.pick(x, y, gtk::PickFlags::DEFAULT) else { return };
+        let Some(hit) = u.win.pick(x, y, gtk::PickFlags::DEFAULT) else {
+            return;
+        };
         let inside = |w: &gtk::Widget| hit == *w || hit.is_ancestor(w);
-        if !inside(u.info.panel.upcast_ref()) && !inside(u.info.btn.upcast_ref()) && hit.ancestor(gtk::Popover::static_type()).is_none() {
+        if !inside(u.info.panel.upcast_ref())
+            && !inside(u.info.btn.upcast_ref())
+            && hit.ancestor(gtk::Popover::static_type()).is_none()
+        {
             close_info(&u);
         }
     });
@@ -1323,7 +1467,11 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let u = ui.clone();
     keys.connect_key_pressed(move |_, key, _, _| {
-        if u.viewer.is_open() && u.viewer.key(key) { glib::Propagation::Stop } else { glib::Propagation::Proceed }
+        if u.viewer.is_open() && u.viewer.key(key) {
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
     });
     win.add_controller(keys);
     // Esc closes the search bar over a chat (in the bubble phase: a popover or the viewer that wants it gets it first)
@@ -1339,10 +1487,18 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     win.add_controller(esc_find);
     let w = Rc::downgrade(&ui);
     ui.viewer.set_hooks(viewer::Hooks {
-        fetch_full: Box::new(move |p| if let Some(u) = w.upgrade() { fetch_full(&u, p) }),
+        fetch_full: Box::new(move |p| {
+            if let Some(u) = w.upgrade() {
+                fetch_full(&u, p)
+            }
+        }),
         fetch_video: Box::new({
             let w = Rc::downgrade(&ui);
-            move |p| if let Some(u) = w.upgrade() { fetch_video(&u, p) }
+            move |p| {
+                if let Some(u) = w.upgrade() {
+                    fetch_video(&u, p)
+                }
+            }
         }),
         set_fullscreen: Box::new({
             let w = Rc::downgrade(&ui);
@@ -1364,19 +1520,27 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         }),
         open_external: Box::new({
             let w = Rc::downgrade(&ui);
-            move |p| if let Some(u) = w.upgrade() { open_file(&u, p) }
+            move |p| {
+                if let Some(u) = w.upgrade() {
+                    open_file(&u, p)
+                }
+            }
         }),
     });
     let u = ui.clone();
-    ui.scroller.hadjustment().connect_page_size_notify(move |_| {
-        let fs: Vec<_> = u.stacks.borrow().clone();
-        for f in fs {
-            f();
-        }
-    });
+    ui.scroller
+        .hadjustment()
+        .connect_page_size_notify(move |_| {
+            let fs: Vec<_> = u.stacks.borrow().clone();
+            for f in fs {
+                f();
+            }
+        });
 
     // first run: only the setup wizard shows; the main window follows when it closes
-    let first_run = ui.st.borrow().cfg.host.is_empty() || std::env::var_os("BF_SETUP").is_some() || std::env::var_os("BF_SETUP_TEST").is_some();
+    let first_run = ui.st.borrow().cfg.host.is_empty()
+        || std::env::var_os("BF_SETUP").is_some()
+        || std::env::var_os("BF_SETUP_TEST").is_some();
     let login = std::env::args().any(|a| a == "--tray");
     start_tray(&ui, login); // a login start stays hidden if a tray turns up
     if !first_run && !login {
@@ -1403,7 +1567,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
         let chars: Vec<char> = t.replace("\\n", "\n").chars().collect();
         let (i, c) = (Cell::new(0), ui.compose.clone());
         glib::timeout_add_local(Duration::from_millis(25), move || {
-            let Some(ch) = chars.get(i.get()) else { return glib::ControlFlow::Break };
+            let Some(ch) = chars.get(i.get()) else {
+                return glib::ControlFlow::Break;
+            };
             c.buffer().insert_at_cursor(&ch.to_string());
             i.set(i.get() + 1);
             glib::ControlFlow::Continue
@@ -1412,23 +1578,35 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     if let Ok(t) = std::env::var("BF_DRAFT") {
         ui.compose.buffer().set_text(&t.replace("\\n", "\n")); // dev aid: prefill the composer
     }
-    if let Some(n) = std::env::var("BF_TOP").ok().and_then(|v| v.parse::<u32>().ok()) {
+    if let Some(n) = std::env::var("BF_TOP")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+    {
         // dev aid: scroll to the top n times, 1.5 s apart (each loads an older page)
         let (u, left) = (ui.clone(), Cell::new(n));
         glib::timeout_add_local(Duration::from_millis(1500), move || {
             u.stick_bottom.set(false);
             u.scroller.vadjustment().set_value(0.0);
             left.set(left.get().saturating_sub(1));
-            if left.get() == 0 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+            if left.get() == 0 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
         });
     }
-    if let Some(ms) = std::env::var("BF_LINK").ok().and_then(|v| v.parse::<u64>().ok()) {
+    if let Some(ms) = std::env::var("BF_LINK")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
         // dev aid: every `ms`, scroll the open chat to its first link card with a picture
         let u = ui.clone();
         glib::timeout_add_local(Duration::from_millis(ms), move || {
             // BF_LINK_TITLE=<text> picks the card whose title has that text; else the first with a big picture
             fn has_text(w: &gtk::Widget, needle: &str) -> bool {
-                if w.downcast_ref::<gtk::Label>().is_some_and(|l| l.text().contains(needle)) {
+                if w.downcast_ref::<gtk::Label>()
+                    .is_some_and(|l| l.text().contains(needle))
+                {
                     return true;
                 }
                 let mut c = w.first_child();
@@ -1441,7 +1619,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
                 false
             }
             fn find(w: &gtk::Widget, title: Option<&str>) -> Option<gtk::Widget> {
-                if w.has_css_class("linkcard") && title.map_or(w.has_css_class("fixed"), |t| has_text(w, t)) {
+                if w.has_css_class("linkcard")
+                    && title.map_or(w.has_css_class("fixed"), |t| has_text(w, t))
+                {
                     return Some(w.clone());
                 }
                 let mut c = w.first_child();
@@ -1466,7 +1646,9 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     if let Ok(t) = std::env::var("BF_ATTACH") {
         // dev aid: put these files (colon-separated) in the composer
         let u = ui.clone();
-        glib::timeout_add_local_once(Duration::from_millis(1500), move || add_files(&u, t.split(':').map(PathBuf::from).collect()));
+        glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+            add_files(&u, t.split(':').map(PathBuf::from).collect())
+        });
     }
     if let Ok(t) = std::env::var("BF_NEW") {
         // dev aid: open the new-message view with this typed in the To field
@@ -1476,7 +1658,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             u.to_entry.set_text(&t);
         });
     }
-    if let Some(ms) = std::env::var("BF_INFO").ok().and_then(|v| v.parse::<u64>().ok()) {
+    if let Some(ms) = std::env::var("BF_INFO")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
         // dev aid: open the info panel after <ms> (e.g. with BF_CHAT, in a headless compositor)
         let u = ui.clone();
         glib::timeout_add_local_once(Duration::from_millis(ms), move || {
@@ -1496,30 +1681,54 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             }
         });
     }
-    if let Some(ms) = std::env::var("BF_SETTINGS").ok().and_then(|v| v.parse::<u64>().ok()) {
+    if let Some(ms) = std::env::var("BF_SETTINGS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
         // dev aid: open Settings after <ms>; BF_SETTINGS_TAB=mac shows the second tab, BF_SETTINGS_SHOT=<png> saves the dialog 1.5 s later
         let u = ui.clone();
         glib::timeout_add_local_once(Duration::from_millis(ms), move || settings(&u));
     }
-    if let Some(ms) = std::env::var("BF_SIDE").ok().and_then(|v| v.parse::<u64>().ok()) {
+    if let Some(ms) = std::env::var("BF_SIDE")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
         // dev aid: press the sidebar button after <ms> (narrow window)
         let u = ui.clone();
-        glib::timeout_add_local_once(Duration::from_millis(ms), move || u.side_toggle.emit_clicked());
+        glib::timeout_add_local_once(Duration::from_millis(ms), move || {
+            u.side_toggle.emit_clicked()
+        });
     }
     if let Ok(id) = std::env::var("BF_YT") {
         // dev aid: open the viewer on this YouTube video id
         let u = ui.clone();
-        glib::timeout_add_local_once(Duration::from_millis(1500), move || u.viewer.open_youtube(&id));
+        glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+            u.viewer.open_youtube(&id)
+        });
     }
     if std::env::var_os("BF_VIEW").is_some() {
         // dev aid: open the viewer on the newest loaded photo shortly before BF_SHOT fires
         // BF_VIEW=<ms> sets when it opens; otherwise 0.9 s before the shot
-        let ms = std::env::var("BF_SHOT_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(2500);
-        let at = std::env::var("BF_VIEW").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(ms.saturating_sub(900));
+        let ms = std::env::var("BF_SHOT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(2500);
+        let at = std::env::var("BF_VIEW")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(ms.saturating_sub(900));
         let u = ui.clone();
         glib::timeout_add_local_once(Duration::from_millis(at), move || {
             let items = u.st.borrow().photos.clone();
-            if let Some((last, _)) = items.iter().rev().find(|(_, w)| w.downcast_ref::<bubble::Bubble>().is_some_and(|b| b.texture().is_some())).cloned() {
+            if let Some((last, _)) = items
+                .iter()
+                .rev()
+                .find(|(_, w)| {
+                    w.downcast_ref::<bubble::Bubble>()
+                        .is_some_and(|b| b.texture().is_some())
+                })
+                .cloned()
+            {
                 u.viewer.open(items, &last);
             }
         });
@@ -1527,7 +1736,10 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
     if let Some(out) = std::env::var_os("BF_SHOT") {
         // dev aid: save the window to a PNG and quit (used with BF_DEMO in a headless compositor)
         let w = win.clone();
-        let ms = std::env::var("BF_SHOT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2500);
+        let ms = std::env::var("BF_SHOT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2500);
         glib::timeout_add_local_once(Duration::from_millis(ms), move || {
             let p = gtk::WidgetPaintable::new(Some(&w));
             let (width, height) = (w.width() as f64, w.height() as f64);
@@ -1557,17 +1769,19 @@ fn start_setup(u: &Rc<Ui>, over_main: bool) {
         (data.join("id_ed25519"), u.store.public_key.clone())
     };
     let u2 = u.clone();
-    let done = Rc::new(move |host: String, user: String, imsg: String, host_key: String| {
-        let mut cfg = u2.st.borrow().cfg.clone();
-        (cfg.host, cfg.user, cfg.imsg) = (host, user, imsg);
-        if !host_key.is_empty() {
-            let _ = std::fs::write(&u2.store.known_host, host_key); // the fingerprint the person accepted
-        }
-        crate::save_config(&u2.store.config_file, &cfg);
-        u2.st.borrow_mut().cfg = cfg.clone();
-        set_status(&u2, "connecting", "Connecting", None); // (the banner is only ever shown for a failure, never cleared here)
-        u2.send(Cmd::Configure(cfg));
-    });
+    let done = Rc::new(
+        move |host: String, user: String, imsg: String, host_key: String| {
+            let mut cfg = u2.st.borrow().cfg.clone();
+            (cfg.host, cfg.user, cfg.imsg) = (host, user, imsg);
+            if !host_key.is_empty() {
+                let _ = std::fs::write(&u2.store.known_host, host_key); // the fingerprint the person accepted
+            }
+            crate::save_config(&u2.store.config_file, &cfg);
+            u2.st.borrow_mut().cfg = cfg.clone();
+            set_status(&u2, "connecting", "Connecting", None); // (the banner is only ever shown for a failure, never cleared here)
+            u2.send(Cmd::Configure(cfg));
+        },
+    );
     let u3 = u.clone();
     let closed = Rc::new(move || u3.win.present());
     let u4 = u.clone();
@@ -1580,7 +1794,20 @@ fn start_setup(u: &Rc<Ui>, over_main: bool) {
     let skip_intro = u.st.borrow().cfg.skip_intro;
     let app = u.win.application().expect("application");
     let parent = over_main.then(|| u.win.clone().upcast::<gtk::Window>());
-    crate::setup::open_wizard(&app, parent.as_ref(), crate::setup::Ctx { public_key, key_path, default_user: crate::setup::default_user(), test, done, closed, skip_intro, set_skip_intro });
+    crate::setup::open_wizard(
+        &app,
+        parent.as_ref(),
+        crate::setup::Ctx {
+            public_key,
+            key_path,
+            default_user: crate::setup::default_user(),
+            test,
+            done,
+            closed,
+            skip_intro,
+            set_skip_intro,
+        },
+    );
 }
 
 // ---------- events from the Mac ----------
@@ -1593,7 +1820,9 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 let mut st = u.st.borrow_mut();
                 // a photo added, changed or removed since is picked up, the others stay
                 let old = st.contacts.take();
-                st.avatar_tex.retain(|key, t| t.is_some() && old.as_ref().is_some_and(|o| o.photo(key) == c.photo(key)));
+                st.avatar_tex.retain(|key, t| {
+                    t.is_some() && old.as_ref().is_some_and(|o| o.photo(key) == c.photo(key))
+                });
                 st.contacts = Some(c);
                 st.avatar_asked.clear();
                 fill_names(&mut st);
@@ -1636,7 +1865,12 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             u.st.borrow_mut().connected = false;
             // not set up yet: nothing has failed, so no alarm (the setup wizard is on its way, or Settings)
             if u.st.borrow().cfg.host.is_empty() {
-                set_status(u, "offline", "Not set up", Some("Set up your Mac from Settings."));
+                set_status(
+                    u,
+                    "offline",
+                    "Not set up",
+                    Some("Set up your Mac from Settings."),
+                );
                 return;
             }
             // a first failed try is only a try: the pill stays orange and the app tries again by itself. Only a second one
@@ -1644,12 +1878,23 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             let fails = u.fails.get() + 1;
             u.fails.set(fails);
             if fails < 2 {
-                set_status(u, "connecting", if u.ever_connected.get() { "Reconnecting" } else { "Connecting" }, Some(&why));
+                set_status(
+                    u,
+                    "connecting",
+                    if u.ever_connected.get() {
+                        "Reconnecting"
+                    } else {
+                        "Connecting"
+                    },
+                    Some(&why),
+                );
                 return;
             }
             set_status(u, "offline", "Offline", Some(&why));
             let text = if u.ever_connected.get() {
-                format!("Lost the connection to your Mac ({why}). BubbleFairy will reconnect on its own.")
+                format!(
+                    "Lost the connection to your Mac ({why}). BubbleFairy will reconnect on its own."
+                )
             } else {
                 format!("Couldn't connect to your Mac yet ({why}). BubbleFairy will keep trying.")
             };
@@ -1663,7 +1908,8 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 let mut st = u.st.borrow_mut();
                 for c in &chats {
                     if c["is_group"].as_bool() != Some(true)
-                        && let (Some(h), Some(n)) = (c["participants"][0].as_str(), c["contact_name"].as_str())
+                        && let (Some(h), Some(n)) =
+                            (c["participants"][0].as_str(), c["contact_name"].as_str())
                         && !n.is_empty()
                     {
                         st.names.insert(h.into(), n.into());
@@ -1677,8 +1923,11 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 fill_names(&mut st);
                 let st = &mut *st;
                 let ids: Vec<i64> = st.chats.iter().filter_map(|c| c["id"].as_i64()).collect();
-                let ask: Vec<i64> =
-                    ids.into_iter().filter(|id| !st.preview.contains_key(id) && !st.hist.contains_key(id)).take(150).collect();
+                let ask: Vec<i64> = ids
+                    .into_iter()
+                    .filter(|id| !st.preview.contains_key(id) && !st.hist.contains_key(id))
+                    .take(150)
+                    .collect();
                 st.preview_asked.extend(ask.iter().copied());
                 ask
             };
@@ -1691,15 +1940,28 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             let prof = std::time::Instant::now();
             render_chats(u); // before the fade starts: building the rows takes long enough to freeze it half way
             if std::env::var_os("BF_PROF").is_some() {
-                let rss = std::fs::read_to_string("/proc/self/statm").ok().and_then(|t| t.split(' ').nth(1)?.parse::<u64>().ok()).unwrap_or(0) * 4 / 1024;
-                eprintln!("prof: {} chats, render_chats {} ms, previews asked {}, memory {} MB", u.st.borrow().chats.len(), prof.elapsed().as_millis(), u.st.borrow().preview_asked.len(), rss);
+                let rss = std::fs::read_to_string("/proc/self/statm")
+                    .ok()
+                    .and_then(|t| t.split(' ').nth(1)?.parse::<u64>().ok())
+                    .unwrap_or(0)
+                    * 4
+                    / 1024;
+                eprintln!(
+                    "prof: {} chats, render_chats {} ms, previews asked {}, memory {} MB",
+                    u.st.borrow().chats.len(),
+                    prof.elapsed().as_millis(),
+                    u.st.borrow().preview_asked.len(),
+                    rss
+                );
             }
             u.side_stack.set_visible_child_name("list");
             prof_list(u, "Event::Chats rendered");
             let first = {
                 let st = u.st.borrow();
                 // BF_CHAT=<id>: dev aid to open a given chat first
-                let want = std::env::var("BF_CHAT").ok().and_then(|v| v.parse::<i64>().ok());
+                let want = std::env::var("BF_CHAT")
+                    .ok()
+                    .and_then(|v| v.parse::<i64>().ok());
                 if st.sel.is_none() && !u.new_mode.get() {
                     want.or_else(|| st.chats.first().and_then(|c| c["id"].as_i64()))
                 } else {
@@ -1709,13 +1971,18 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             // a new conversation's chat has appeared: open it
             let new_chat = {
                 let st = u.st.borrow();
-                st.new_pending.as_deref().and_then(|a| find_direct_chat(&st.chats, a))
+                st.new_pending
+                    .as_deref()
+                    .and_then(|a| find_direct_chat(&st.chats, a))
             };
             if let Some(id) = new_chat {
                 {
                     let mut st = u.st.borrow_mut();
                     st.new_pending = None;
-                    st.pending.iter_mut().filter(|p| p.chat_id == 0).for_each(|p| p.chat_id = id);
+                    st.pending
+                        .iter_mut()
+                        .filter(|p| p.chat_id == 0)
+                        .for_each(|p| p.chat_id = id);
                 }
                 open_chat(u, id);
             }
@@ -1726,9 +1993,17 @@ fn on_event(u: &Rc<Ui>, e: Event) {
         }
         Event::FoundChat(addr, chat) => {
             let Some(chat) = chat else { return };
-            let Some(id) = chat["id"].as_i64() else { return };
+            let Some(id) = chat["id"].as_i64() else {
+                return;
+            };
             let id = u.st.borrow().alias.get(&id).copied().unwrap_or(id); // one of a merged person's chats
-            if !u.st.borrow().chats.iter().any(|c| c["id"].as_i64() == Some(id)) {
+            if !u
+                .st
+                .borrow()
+                .chats
+                .iter()
+                .any(|c| c["id"].as_i64() == Some(id))
+            {
                 insert_chat(&mut u.st.borrow_mut().chats, chat);
                 render_chats(u);
                 u.send(Cmd::Preview(id));
@@ -1744,9 +2019,17 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             }
             let mut added = Vec::new();
             for chat in chats {
-                let Some(id) = chat["id"].as_i64() else { continue };
+                let Some(id) = chat["id"].as_i64() else {
+                    continue;
+                };
                 let id = u.st.borrow().alias.get(&id).copied().unwrap_or(id); // one of a merged person's chats
-                if !u.st.borrow().chats.iter().any(|c| c["id"].as_i64() == Some(id)) {
+                if !u
+                    .st
+                    .borrow()
+                    .chats
+                    .iter()
+                    .any(|c| c["id"].as_i64() == Some(id))
+                {
                     let mut st = u.st.borrow_mut();
                     insert_chat(&mut st.chats, chat);
                     st.search_added.insert(id);
@@ -1773,7 +2056,11 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             let is_sel = {
                 let mut st = u.st.borrow_mut();
                 // (a group event isn't a message: the list's preview and date are those of the last real one)
-                if let Some(last) = msgs.iter().rev().find(|m| m["item_type"].as_i64().unwrap_or(0) == 0) {
+                if let Some(last) = msgs
+                    .iter()
+                    .rev()
+                    .find(|m| m["item_type"].as_i64().unwrap_or(0) == 0)
+                {
                     st.preview.insert(id, last.clone());
                 }
                 // a chat open on a search hit shows a window of its history, not its newest messages
@@ -1794,8 +2081,14 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 let mut st = u.st.borrow_mut();
                 st.older_loading = false;
                 let h = st.hist.entry(id).or_default();
-                let have: HashSet<String> = h.iter().filter_map(|m| m["guid"].as_str().map(String::from)).collect();
-                let fresh: Vec<Value> = older.into_iter().filter(|m| m["guid"].as_str().is_some_and(|g| !have.contains(g))).collect();
+                let have: HashSet<String> = h
+                    .iter()
+                    .filter_map(|m| m["guid"].as_str().map(String::from))
+                    .collect();
+                let fresh: Vec<Value> = older
+                    .into_iter()
+                    .filter(|m| m["guid"].as_str().is_some_and(|g| !have.contains(g)))
+                    .collect();
                 if fresh.is_empty() {
                     st.no_more.insert(id);
                 } else {
@@ -1817,12 +2110,22 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             }
             let (showing, opened) = {
                 let st = u.st.borrow();
-                (st.find_view.as_ref().is_some_and(|f| f.chat == chat), st.sel == Some(chat))
+                (
+                    st.find_view.as_ref().is_some_and(|f| f.chat == chat),
+                    st.sel == Some(chat),
+                )
             };
             {
                 let mut st = u.st.borrow_mut();
-                let cur = st.find_view.as_ref().filter(|f| f.chat == chat).and_then(|f| st.find_hits.get(&chat)?.get(f.idx)).map(|h| h["guid"].clone());
-                let idx = cur.and_then(|g| hits.iter().position(|h| h["guid"] == g)).unwrap_or(0);
+                let cur = st
+                    .find_view
+                    .as_ref()
+                    .filter(|f| f.chat == chat)
+                    .and_then(|f| st.find_hits.get(&chat)?.get(f.idx))
+                    .map(|h| h["guid"].clone());
+                let idx = cur
+                    .and_then(|g| hits.iter().position(|h| h["guid"] == g))
+                    .unwrap_or(0);
                 st.find_counts.entry(chat).or_insert(hits.len());
                 st.find_hits.insert(chat, hits);
                 if let Some(f) = st.find_view.as_mut().filter(|f| f.chat == chat) {
@@ -1864,8 +2167,15 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 let ok = st.find_view.as_ref().is_some_and(|f| f.chat == id);
                 if ok {
                     let h = st.hist.entry(id).or_default();
-                    let have: HashSet<String> = h.iter().filter_map(|m| m["guid"].as_str().map(String::from)).collect();
-                    h.extend(msgs.iter().filter(|m| m["guid"].as_str().is_some_and(|g| !have.contains(g))).cloned());
+                    let have: HashSet<String> = h
+                        .iter()
+                        .filter_map(|m| m["guid"].as_str().map(String::from))
+                        .collect();
+                    h.extend(
+                        msgs.iter()
+                            .filter(|m| m["guid"].as_str().is_some_and(|g| !have.contains(g)))
+                            .cloned(),
+                    );
                     if let Some(f) = st.find_view.as_mut() {
                         f.more = more;
                         f.loading = false;
@@ -1876,7 +2186,11 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             if ok {
                 learn_names(u, &msgs);
                 if u.st.borrow().sel == Some(id) {
-                    if let Some(sc) = u.msgs.parent().and_downcast::<crate::chatscroll::ChatScroll>() {
+                    if let Some(sc) = u
+                        .msgs
+                        .parent()
+                        .and_downcast::<crate::chatscroll::ChatScroll>()
+                    {
                         sc.hold(); // messages appended below: the view stays where it is
                     }
                     render_conv(u);
@@ -1896,7 +2210,12 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             "Still sending… If this is your first message from BubbleFairy, check your Mac: it may be asking whether to allow control of Messages.",
             false,
         ),
-        Event::Sent { text, files, err, token } if u.st.borrow().resend_of.contains_key(&token) => {
+        Event::Sent {
+            text,
+            files,
+            err,
+            token,
+        } if u.st.borrow().resend_of.contains_key(&token) => {
             let mid = u.st.borrow_mut().resend_of.remove(&token);
             let _ = (text, files);
             if let Some(mid) = mid {
@@ -1921,12 +2240,19 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                     render_conv(u);
                     // the seed for a picture isn't needed once the new message has come (or never does)
                     let u2 = u.clone();
-                    glib::timeout_add_local_once(Duration::from_secs(20), move || drop_pending(&u2, token));
+                    glib::timeout_add_local_once(Duration::from_secs(20), move || {
+                        drop_pending(&u2, token)
+                    });
                 }
                 (None, None) => {}
             }
         }
-        Event::Sent { text, files, err, token } => {
+        Event::Sent {
+            text,
+            files,
+            err,
+            token,
+        } => {
             if let Some(err) = err {
                 u.st.borrow_mut().new_pending = None;
                 drop_pending(u, token);
@@ -1942,7 +2268,9 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 }
                 // normally the real messages replace these within a second; if they never show, don't leave spinners
                 let u2 = u.clone();
-                glib::timeout_add_local_once(Duration::from_secs(20), move || drop_pending(&u2, token));
+                glib::timeout_add_local_once(Duration::from_secs(20), move || {
+                    drop_pending(&u2, token)
+                });
             }
         }
         Event::Recent(id, msgs) => {
@@ -1966,7 +2294,14 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 render_conv(u);
             }
         }
-        Event::Media { chat_id, kind, offset, items, next, more } => on_media(u, chat_id, kind, offset, items, next, more),
+        Event::Media {
+            chat_id,
+            kind,
+            offset,
+            items,
+            next,
+            more,
+        } => on_media(u, chat_id, kind, offset, items, next, more),
         Event::Map(query, data) => {
             let view = data.and_then(|d| {
                 let _ = std::fs::create_dir_all(&u.store.image_cache);
@@ -1974,13 +2309,21 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 map_view(&d)
             });
             u.st.borrow_mut().maps.insert(query.clone(), view.clone());
-            let slots = u.st.borrow_mut().waiting_map.remove(&query).unwrap_or_default();
+            let slots =
+                u.st.borrow_mut()
+                    .waiting_map
+                    .remove(&query)
+                    .unwrap_or_default();
             for (frame, loc) in slots.iter().filter_map(|(w, l)| Some((w.upgrade()?, l))) {
                 fill_map(&frame, loc, view.as_ref());
             }
         }
         Event::Downloaded { path, dest, err } => {
-            let chip = u.st.borrow_mut().downloading.remove(&path).and_then(|w| w.upgrade());
+            let chip =
+                u.st.borrow_mut()
+                    .downloading
+                    .remove(&path)
+                    .and_then(|w| w.upgrade());
             if let Some(c) = chip {
                 c.set_opacity(1.0);
                 c.set_tooltip_text(Some("Copy from the Mac and open"));
@@ -1989,7 +2332,11 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             if let Some(targets) = targets {
                 match err {
                     Some(e) => {
-                        show_banner(u, &format!("Couldn't copy the file from the Mac: {e}"), false);
+                        show_banner(
+                            u,
+                            &format!("Couldn't copy the file from the Mac: {e}"),
+                            false,
+                        );
                         for (_, done) in targets {
                             done(false);
                         }
@@ -2007,7 +2354,11 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 }
             } else {
                 match err {
-                    Some(e) => show_banner(u, &format!("Couldn't copy the file from the Mac: {e}"), false),
+                    Some(e) => show_banner(
+                        u,
+                        &format!("Couldn't copy the file from the Mac: {e}"),
+                        false,
+                    ),
                     None => open_file(u, &dest),
                 }
             }
@@ -2024,7 +2375,11 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             u.st.borrow_mut().links.insert(row, p.clone());
             // Links tab slots waiting for this card
             if let Some(l) = &p {
-                let slots = u.st.borrow_mut().link_waiters.remove(&row).unwrap_or_default();
+                let slots =
+                    u.st.borrow_mut()
+                        .link_waiters
+                        .remove(&row)
+                        .unwrap_or_default();
                 for slot in slots.iter().filter_map(|w| w.upgrade()) {
                     clear(&slot);
                     slot.append(&link_tile(u, &l.url, Some(l)));
@@ -2032,11 +2387,19 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             }
             let shown = {
                 let st = u.st.borrow();
-                p.is_some() && st.sel.and_then(|id| st.hist.get(&id)).is_some_and(|h| h.iter().any(|m| preview_row(m) == Some(row)))
+                p.is_some()
+                    && st
+                        .sel
+                        .and_then(|id| st.hist.get(&id))
+                        .is_some_and(|h| h.iter().any(|m| preview_row(m) == Some(row)))
             };
             if shown {
                 // just that message, where it stands; the whole chat only if that can't be done
-                let at = u.conv_ctx.borrow().as_ref().and_then(|c| c.msgs.iter().position(|m| preview_row(m) == Some(row)));
+                let at = u
+                    .conv_ctx
+                    .borrow()
+                    .as_ref()
+                    .and_then(|c| c.msgs.iter().position(|m| preview_row(m) == Some(row)));
                 if !at.is_some_and(|i| redraw_message(u, i)) && !u.render_queued.replace(true) {
                     let u2 = u.clone();
                     glib::idle_add_local_once(move || {
@@ -2047,9 +2410,15 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             }
         }
         Event::Image { path, full, bytes } => {
-            let Some(b) = bytes else { return image_done(u, path, full, None) };
+            let Some(b) = bytes else {
+                return image_done(u, path, full, None);
+            };
             // written to the cache and decoded off the GTK thread (a photo costs 5-10 ms to decode)
-            let (file, dir, u2) = (cache_path(u, &path, full), u.store.image_cache.clone(), u.clone());
+            let (file, dir, u2) = (
+                cache_path(u, &path, full),
+                u.store.image_cache.clone(),
+                u.clone(),
+            );
             bg(
                 move || {
                     let _ = std::fs::create_dir_all(&dir);
@@ -2072,9 +2441,18 @@ fn image_done(u: &Rc<Ui>, path: String, full: bool, tex: Option<gdk::Texture>) {
         }
         return;
     }
-    let held = u.st.borrow_mut().notify_wait.remove(&path).unwrap_or_default();
+    let held =
+        u.st.borrow_mut()
+            .notify_wait
+            .remove(&path)
+            .unwrap_or_default();
     for (cid, m) in held {
-        show_notification(u, cid, &m, tex.is_some().then(|| cache_path(u, &path, false)));
+        show_notification(
+            u,
+            cid,
+            &m,
+            tex.is_some().then(|| cache_path(u, &path, false)),
+        );
     }
     let pics = u.st.borrow_mut().waiting.remove(&path).unwrap_or_default();
     if let Some(tex) = tex {
@@ -2108,7 +2486,6 @@ fn image_done(u: &Rc<Ui>, path: String, full: bool, tex: Option<gdk::Texture>) {
             });
         }
     }
-
 }
 
 /// The receipt of a chat's newest sent message arrived: show it under that message.
@@ -2129,8 +2506,16 @@ fn on_receipt(u: &Rc<Ui>, chat: i64, r: Option<crate::mac::Receipt>) {
     }
     // the message that has the line now, and the one that had it before (a newer message was sent)
     let mut stale = false;
-    for msg in [r.as_ref().map(|r| r.msg), old.as_ref().map(|r| r.msg)].into_iter().flatten().collect::<HashSet<_>>() {
-        let at = u.conv_ctx.borrow().as_ref().and_then(|c| c.msgs.iter().position(|m| m["id"].as_i64() == Some(msg)));
+    for msg in [r.as_ref().map(|r| r.msg), old.as_ref().map(|r| r.msg)]
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>()
+    {
+        let at = u
+            .conv_ctx
+            .borrow()
+            .as_ref()
+            .and_then(|c| c.msgs.iter().position(|m| m["id"].as_i64() == Some(msg)));
         stale |= !at.is_some_and(|i| redraw_message(u, i));
     }
     if stale {
@@ -2142,7 +2527,9 @@ fn on_receipt(u: &Rc<Ui>, chat: i64, r: Option<crate::mac::Receipt>) {
 /// message delivered while the recipient's Focus silenced notifications says "Delivered" too (what Messages on the
 /// phone shows); the tooltip tells.
 fn receipt_text(r: &crate::mac::Receipt) -> Option<(String, Option<&'static str>)> {
-    let tip = r.silenced.then_some("Delivered quietly: their Focus silenced notifications when it arrived");
+    let tip = r
+        .silenced
+        .then_some("Delivered quietly: their Focus silenced notifications when it arrived");
     r.delivered.then(|| ("Delivered".to_string(), tip))
 }
 
@@ -2166,7 +2553,11 @@ fn drop_pending(u: &Rc<Ui>, token: u64) {
 fn settle_pending(st: &mut State, cid: i64, m: &Value) {
     let text = clean_text(m);
     let has_files = m["attachments"].as_array().is_some_and(|a| !a.is_empty());
-    let name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = |p: &PathBuf| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
     let at = st.pending.iter().position(|p| {
         // chat id 0: the first message to a new address, whose chat we don't know yet
         (p.chat_id == cid || p.chat_id == 0)
@@ -2174,10 +2565,19 @@ fn settle_pending(st: &mut State, cid: i64, m: &Value) {
                 PendingItem::Text(t) => !text.is_empty() && *t == text,
                 PendingItem::File(f) => {
                     has_files
-                        && m["attachments"].as_array().into_iter().flatten().any(|a| a["transfer_name"].as_str().is_none_or(|n| n == name(f)))
+                        && m["attachments"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|a| a["transfer_name"].as_str().is_none_or(|n| n == name(f)))
                 }
                 PendingItem::Seed(_, n) => {
-                    has_files && m["attachments"].as_array().into_iter().flatten().any(|a| a["transfer_name"].as_str().is_none_or(|t| t == n))
+                    has_files
+                        && m["attachments"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|a| a["transfer_name"].as_str().is_none_or(|t| t == n))
                 }
             }
     });
@@ -2185,15 +2585,32 @@ fn settle_pending(st: &mut State, cid: i64, m: &Value) {
         let gone = st.pending.remove(i);
         if let PendingItem::Seed(t, n) = &gone.item {
             // the new message shows the picture we already had, with no fetch from the Mac
-            let att = m["attachments"].as_array().into_iter().flatten().find(|a| a["transfer_name"].as_str().is_none_or(|x| x == n));
-            if let Some(path) = att.and_then(|a| a["original_path"].as_str()).filter(|p| !p.is_empty()) {
-                st.textures.entry(path.to_string()).or_insert_with(|| t.clone());
+            let att = m["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|a| a["transfer_name"].as_str().is_none_or(|x| x == n));
+            if let Some(path) = att
+                .and_then(|a| a["original_path"].as_str())
+                .filter(|p| !p.is_empty())
+            {
+                st.textures
+                    .entry(path.to_string())
+                    .or_insert_with(|| t.clone());
             }
         }
         if let PendingItem::File(f) = gone.item {
             // the real photo shows the local picture at once instead of waiting for the fetch back from the Mac
-            let att = m["attachments"].as_array().into_iter().flatten().find(|a| a["transfer_name"].as_str().is_none_or(|n| n == name(&f)));
-            if let (Some(path), Ok(t)) = (att.and_then(|a| a["original_path"].as_str()).filter(|p| !p.is_empty()), gdk::Texture::from_filename(&f)) {
+            let att = m["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|a| a["transfer_name"].as_str().is_none_or(|n| n == name(&f)));
+            if let (Some(path), Ok(t)) = (
+                att.and_then(|a| a["original_path"].as_str())
+                    .filter(|p| !p.is_empty()),
+                gdk::Texture::from_filename(&f),
+            ) {
                 st.textures.entry(path.to_string()).or_insert(t);
             }
         }
@@ -2202,7 +2619,9 @@ fn settle_pending(st: &mut State, cid: i64, m: &Value) {
 
 fn on_message(u: &Rc<Ui>, m: Value) {
     learn_names(u, std::slice::from_ref(&m));
-    let Some(cid) = m["chat_id"].as_i64() else { return };
+    let Some(cid) = m["chat_id"].as_i64() else {
+        return;
+    };
     let mutation = m["type"].as_str().is_some();
     if !mutation && m["is_from_me"].as_bool() == Some(true) {
         settle_pending(&mut u.st.borrow_mut(), cid, &m);
@@ -2210,7 +2629,11 @@ fn on_message(u: &Rc<Ui>, m: Value) {
     }
     let mut fresh = false; // a message we hadn't got yet
     // a search window that doesn't reach the newest messages yet: a new one isn't next to what's loaded
-    let gap = u.st.borrow().find_view.as_ref().is_some_and(|f| f.chat == cid && f.more);
+    let gap =
+        u.st.borrow()
+            .find_view
+            .as_ref()
+            .is_some_and(|f| f.chat == cid && f.more);
     let (is_sel, known_chat) = {
         let mut st = u.st.borrow_mut();
         if let Some(h) = st.hist.get_mut(&cid) {
@@ -2226,7 +2649,10 @@ fn on_message(u: &Rc<Ui>, m: Value) {
         if !mutation && m["item_type"].as_i64().unwrap_or(0) == 0 {
             st.preview.insert(cid, m.clone());
         }
-        (st.sel == Some(cid), st.chats.iter().any(|c| c["id"].as_i64() == Some(cid)))
+        (
+            st.sel == Some(cid),
+            st.chats.iter().any(|c| c["id"].as_i64() == Some(cid)),
+        )
     };
     if is_sel {
         if fresh {
@@ -2263,8 +2689,13 @@ fn on_message(u: &Rc<Ui>, m: Value) {
 /// A message with a link arrives before Messages has made its preview (and, for one we sent, before it
 /// has pulled the link out of the text). Look again a few times so the card replaces the plain text.
 fn watch_for_preview(u: &Rc<Ui>, cid: i64, m: &Value) {
-    let Some(guid) = m["guid"].as_str() else { return };
-    if preview_row(m).is_some() || crate::mac::urls_in(&clean_text(m)).is_empty() || !u.st.borrow_mut().preview_watch.insert(guid.to_string()) {
+    let Some(guid) = m["guid"].as_str() else {
+        return;
+    };
+    if preview_row(m).is_some()
+        || crate::mac::urls_in(&clean_text(m)).is_empty()
+        || !u.st.borrow_mut().preview_watch.insert(guid.to_string())
+    {
         return;
     }
     for secs in [3, 8, 20] {
@@ -2272,7 +2703,10 @@ fn watch_for_preview(u: &Rc<Ui>, cid: i64, m: &Value) {
         glib::timeout_add_local_once(Duration::from_secs(secs), move || {
             let (done, connected) = {
                 let st = u2.st.borrow();
-                let msg = st.hist.get(&cid).and_then(|h| h.iter().find(|x| x["guid"].as_str() == Some(&guid)));
+                let msg = st
+                    .hist
+                    .get(&cid)
+                    .and_then(|h| h.iter().find(|x| x["guid"].as_str() == Some(&guid)));
                 (msg.is_none_or(|x| preview_row(x).is_some()), st.connected)
             };
             if !done && connected {
@@ -2288,7 +2722,12 @@ fn fill_names(st: &mut State) {
     let Some(contacts) = &st.contacts else { return };
     let mut found = Vec::new();
     for c in &st.chats {
-        for h in c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()) {
+        for h in c["participants"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_str())
+        {
             if !st.names.contains_key(h)
                 && let Some(p) = contacts.person(h).filter(|p| !p.name.is_empty())
             {
@@ -2314,7 +2753,12 @@ fn notify(u: &Rc<Ui>, cid: i64, m: &Value) {
     {
         // a muted chat makes no sound and shows nothing
         let st = u.st.borrow();
-        if st.chats.iter().find(|c| c["id"].as_i64() == Some(cid)).is_some_and(|c| is_muted(&st.muted, c)) {
+        if st
+            .chats
+            .iter()
+            .find(|c| c["id"].as_i64() == Some(cid))
+            .is_some_and(|c| is_muted(&st.muted, c))
+        {
             return;
         }
     }
@@ -2323,7 +2767,11 @@ fn notify(u: &Rc<Ui>, cid: i64, m: &Value) {
         (c.notify, c.notify_sound, c.sound.clone())
     };
     // window in front: the in-app counterpart of the send swish, not the chosen notification sound
-    let choice = if u.win.is_active() { "received".to_string() } else { choice };
+    let choice = if u.win.is_active() {
+        "received".to_string()
+    } else {
+        choice
+    };
     if sound {
         // not while the desktop is in do-not-disturb
         glib::spawn_future_local(async move {
@@ -2341,13 +2789,18 @@ fn notify(u: &Rc<Ui>, cid: i64, m: &Value) {
 
 /// A message's file is on the Mac only once Messages has downloaded it, which can lag the message row.
 fn awaiting_media(m: &Value) -> bool {
-    let atts = m["attachments"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let atts = m["attachments"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     !atts.is_empty() && atts.iter().all(|a| a["missing"].as_bool() == Some(true))
 }
 
 /// Ask again a few times for a message whose pictures or files aren't on the Mac yet, so they appear when they land.
 fn watch_for_media(u: &Rc<Ui>, cid: i64, m: &Value) {
-    let Some(guid) = m["guid"].as_str() else { return };
+    let Some(guid) = m["guid"].as_str() else {
+        return;
+    };
     if !awaiting_media(m) || !u.st.borrow_mut().media_watch.insert(guid.to_string()) {
         return;
     }
@@ -2356,7 +2809,10 @@ fn watch_for_media(u: &Rc<Ui>, cid: i64, m: &Value) {
         glib::timeout_add_local_once(Duration::from_secs(secs), move || {
             let (done, connected) = {
                 let st = u2.st.borrow();
-                let msg = st.hist.get(&cid).and_then(|h| h.iter().find(|x| x["guid"].as_str() == Some(&guid)));
+                let msg = st
+                    .hist
+                    .get(&cid)
+                    .and_then(|h| h.iter().find(|x| x["guid"].as_str() == Some(&guid)));
                 (msg.is_none_or(|x| !awaiting_media(x)), st.connected)
             };
             if !done && connected {
@@ -2368,7 +2824,9 @@ fn watch_for_media(u: &Rc<Ui>, cid: i64, m: &Value) {
 
 /// A held notification can go once its message has its file (or has waited long enough).
 fn release_held(u: &Rc<Ui>, m: &Value) {
-    let Some(guid) = m["guid"].as_str() else { return };
+    let Some(guid) = m["guid"].as_str() else {
+        return;
+    };
     if awaiting_media(m) {
         return;
     }
@@ -2382,14 +2840,24 @@ fn deliver(u: &Rc<Ui>, cid: i64, m: &Value) {
     let text_level = u.st.borrow().cfg.notify_text;
     // the first picture goes in the notification, but only when the text is shown too (it would give the message away)
     let pic = (text_level == 0)
-        .then(|| m["attachments"].as_array().into_iter().flatten().find(|a| a["mime_type"].as_str().is_some_and(|t| t.starts_with("image/"))))
+        .then(|| {
+            m["attachments"].as_array().into_iter().flatten().find(|a| {
+                a["mime_type"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("image/"))
+            })
+        })
         .flatten()
         .and_then(|a| a["original_path"].as_str().filter(|p| !p.is_empty()))
         .map(String::from);
-    let Some(path) = pic else { return show_notification(u, cid, m, None) };
+    let Some(path) = pic else {
+        return show_notification(u, cid, m, None);
+    };
     if let (true, Some(guid)) = (awaiting_media(m), m["guid"].as_str()) {
         // Messages hasn't downloaded the picture yet: wait for it (up to 40 s) instead of showing "Photo"
-        u.st.borrow_mut().notify_media.insert(guid.to_string(), (cid, m.clone()));
+        u.st.borrow_mut()
+            .notify_media
+            .insert(guid.to_string(), (cid, m.clone()));
         let (u2, guid, m) = (u.clone(), guid.to_string(), m.clone());
         glib::timeout_add_local_once(Duration::from_secs(40), move || {
             if u2.st.borrow_mut().notify_media.remove(&guid).is_some() {
@@ -2419,7 +2887,9 @@ fn show_notification(u: &Ui, cid: i64, m: &Value, picture: Option<PathBuf>) {
         return; // the message may have been held while you came to the window
     }
     let (text_level, st) = (u.st.borrow().cfg.notify_text, u.st.borrow());
-    let Some(chat) = st.chats.iter().find(|c| c["id"].as_i64() == Some(cid)) else { return };
+    let Some(chat) = st.chats.iter().find(|c| c["id"].as_i64() == Some(cid)) else {
+        return;
+    };
     let mut title = chat_title(chat, &st.names);
     if chat["is_group"].as_bool() == Some(true) {
         title = format!("{} in {title}", sender_name(m, &st.names));
@@ -2438,7 +2908,13 @@ fn show_notification(u: &Ui, cid: i64, m: &Value, picture: Option<PathBuf>) {
         None => n.set_icon(&gio::ThemedIcon::new(crate::APP_ID)),
     }
     // one per message: re-using an id per chat made the desktop update the old one quietly instead of popping up
-    u.app.send_notification(Some(&format!("chat-{cid}-{}", m["id"].as_i64().unwrap_or_default())), &n);
+    u.app.send_notification(
+        Some(&format!(
+            "chat-{cid}-{}",
+            m["id"].as_i64().unwrap_or_default()
+        )),
+        &n,
+    );
 }
 
 // ---------- status and banner ----------
@@ -2449,7 +2925,9 @@ fn set_status(u: &Ui, kind: &str, text: &str, tip: Option<&str>) {
     }
     u.status.add_css_class(kind);
     u.status_text.set_text(text);
-    u.status.set_tooltip_text(Some(tip.unwrap_or("Connection to your Mac. Click for settings.")));
+    u.status.set_tooltip_text(Some(
+        tip.unwrap_or("Connection to your Mac. Click for settings."),
+    ));
 }
 
 fn show_banner(u: &Ui, text: &str, offline: bool) {
@@ -2460,13 +2938,19 @@ fn show_banner(u: &Ui, text: &str, offline: bool) {
 
 fn cap(s: &str) -> String {
     let mut c = s.chars();
-    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 // ---------- selecting and sending ----------
 
 fn select_in_list(u: &Ui, id: i64) {
-    let idx = u.st.borrow().chats.iter().position(|c| c["id"].as_i64() == Some(id));
+    let idx =
+        u.st.borrow()
+            .chats
+            .iter()
+            .position(|c| c["id"].as_i64() == Some(id));
     if let Some(row) = idx.and_then(|i| u.chat_list.row_at_index(i as i32)) {
         u.selecting.set(true);
         u.chat_list.select_row(Some(&row));
@@ -2477,16 +2961,24 @@ fn select_in_list(u: &Ui, id: i64) {
 /// Highlight the pinned tile of this chat (if it has one), clear the others.
 fn mark_tile(u: &Ui, id: i64) {
     for t in u.tiles.tiles() {
-        if t.widget_name() == id.to_string() { t.add_css_class("selected") } else { t.remove_css_class("selected") }
+        if t.widget_name() == id.to_string() {
+            t.add_css_class("selected")
+        } else {
+            t.remove_css_class("selected")
+        }
     }
 }
 
 /// Leaving a chat for another: its unsent text and waiting files are kept for when you come back, and the other
 /// chat's are put in the composer. (Coming from the new-message view, what was typed there goes with you.)
 fn swap_draft(u: &Rc<Ui>, from: Option<i64>, to: i64) {
-    let Some(from) = from.filter(|f| *f != to) else { return };
+    let Some(from) = from.filter(|f| *f != to) else {
+        return;
+    };
     let buf = u.compose.buffer();
-    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false).to_string();
+    let text = buf
+        .text(&buf.start_iter(), &buf.end_iter(), false)
+        .to_string();
     let draft = {
         let mut st = u.st.borrow_mut();
         let files = std::mem::take(&mut st.outgoing);
@@ -2527,11 +3019,17 @@ fn select(u: &Rc<Ui>, id: i64) {
     }
     render_conv(u); // cached view right away, fresh history shortly
     if counted {
-        u.send(Cmd::ChatHits { chat: id, q: u.search.text().trim().to_string() });
+        u.send(Cmd::ChatHits {
+            chat: id,
+            q: u.search.text().trim().to_string(),
+        });
     }
     if on_hit {
         begin_find(u, id, 0);
-        u.send(Cmd::ChatHits { chat: id, q: u.search.text().trim().to_string() });
+        u.send(Cmd::ChatHits {
+            chat: id,
+            q: u.search.text().trim().to_string(),
+        });
         u.compose.grab_focus();
         return;
     }
@@ -2576,7 +3074,9 @@ fn update_spinner(u: &Ui) {
     let on = {
         let st = u.st.borrow();
         // only while there is nothing to look at: a reload of messages already showing is silent
-        st.sel.is_some_and(|id| st.loading.contains(&id) && st.hist.get(&id).is_none_or(|h| h.is_empty()))
+        st.sel.is_some_and(|id| {
+            st.loading.contains(&id) && st.hist.get(&id).is_none_or(|h| h.is_empty())
+        })
     };
     u.msgs_loading.set_visible(on);
 }
@@ -2589,13 +3089,22 @@ fn load_older(u: &Rc<Ui>) {
         if st.older_loading || st.no_more.contains(&id) || !st.connected {
             return;
         }
-        let Some(before) = st.hist.get(&id).and_then(|h| h.first()).and_then(|m| m["created_at"].as_str()).map(String::from) else {
+        let Some(before) = st
+            .hist
+            .get(&id)
+            .and_then(|h| h.first())
+            .and_then(|m| m["created_at"].as_str())
+            .map(String::from)
+        else {
             return;
         };
         st.older_loading = true;
         (id, before)
     };
-    u.send(Cmd::Older { id: req.0, before: req.1 });
+    u.send(Cmd::Older {
+        id: req.0,
+        before: req.1,
+    });
     let u2 = u.clone();
     glib::idle_add_local_once(move || render_conv(&u2)); // shows the "Loading more" row; not inside a scroll signal
 }
@@ -2614,10 +3123,18 @@ fn direct_to(u: &Ui, chat_id: i64) -> Option<String> {
 /// message stays where it is, as a ghost with a spinner while that goes on; the new one appears at the end when the
 /// Mac has it (as in Messages, the failed one stays in the chat).
 fn retry_failed(u: &Rc<Ui>, m: &Value) {
-    let (Some(chat_id), Some(mid)) = (m["chat_id"].as_i64(), m["id"].as_i64()) else { return };
+    let (Some(chat_id), Some(mid)) = (m["chat_id"].as_i64(), m["id"].as_i64()) else {
+        return;
+    };
     let text = clean_text(m);
-    let mac_files: Vec<String> =
-        m["attachments"].as_array().into_iter().flatten().filter_map(|a| a["original_path"].as_str()).filter(|p| !p.is_empty()).map(String::from).collect();
+    let mac_files: Vec<String> = m["attachments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| a["original_path"].as_str())
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .collect();
     if text.is_empty() && mac_files.is_empty() {
         return;
     }
@@ -2630,13 +3147,26 @@ fn retry_failed(u: &Rc<Ui>, m: &Value) {
         st.resending.insert(mid);
         // pictures we already show: the new message will show them too, nothing is fetched back
         for a in m["attachments"].as_array().into_iter().flatten() {
-            let tex = a["original_path"].as_str().and_then(|p| st.textures.get(p)).cloned();
+            let tex = a["original_path"]
+                .as_str()
+                .and_then(|p| st.textures.get(p))
+                .cloned();
             if let (Some(t), Some(n)) = (tex, a["transfer_name"].as_str()) {
-                st.pending.push(Pending { token, chat_id, item: PendingItem::Seed(t, n.to_string()) });
+                st.pending.push(Pending {
+                    token,
+                    chat_id,
+                    item: PendingItem::Seed(t, n.to_string()),
+                });
             }
         }
     }
-    u.send(Cmd::Resend { chat_id, to: direct_to(u, chat_id), text, mac_files, token });
+    u.send(Cmd::Resend {
+        chat_id,
+        to: direct_to(u, chat_id),
+        text,
+        mac_files,
+        token,
+    });
     render_conv(u);
 }
 
@@ -2654,14 +3184,26 @@ struct Save {
 
 impl Save {
     fn new(path: &str, name: &str, size: i64, pics: bool) -> Save {
-        Save { path: path.into(), name: name.into(), size, pics }
+        Save {
+            path: path.into(),
+            name: name.into(),
+            size,
+            pics,
+        }
     }
 }
 
 /// The name a photo is saved under: its attachment's own name, else the file name on the Mac.
 fn save_name(m: &Value, path: &str) -> String {
-    let from_att = m["attachments"].as_array().into_iter().flatten().find(|a| a["original_path"].as_str() == Some(path)).and_then(|a| a["transfer_name"].as_str().filter(|n| !n.is_empty()));
-    from_att.unwrap_or_else(|| path.rsplit('/').next().unwrap_or("photo")).to_string()
+    let from_att = m["attachments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|a| a["original_path"].as_str() == Some(path))
+        .and_then(|a| a["transfer_name"].as_str().filter(|n| !n.is_empty()));
+    from_att
+        .unwrap_or_else(|| path.rsplit('/').next().unwrap_or("photo"))
+        .to_string()
 }
 
 /// The small download button beside a photo, video or file.
@@ -2669,15 +3211,24 @@ fn save_button(u: &Rc<Ui>, items: Vec<Save>) -> gtk::Button {
     let b = gtk::Button::from_icon_name("document-save-symbolic");
     b.add_css_class("save-btn");
     b.set_valign(gtk::Align::Center);
-    b.set_tooltip_text(Some(if items.len() > 1 { "Save these photos" } else { "Save" }));
+    b.set_tooltip_text(Some(if items.len() > 1 {
+        "Save these photos"
+    } else {
+        "Save"
+    }));
     let u = u.clone();
     b.connect_clicked(move |b| {
         let b = b.clone();
-        save_items(&u, items.clone(), false, Rc::new(move |ok| {
-            if ok {
-                show_saved(&b);
-            }
-        }));
+        save_items(
+            &u,
+            items.clone(),
+            false,
+            Rc::new(move |ok| {
+                if ok {
+                    show_saved(&b);
+                }
+            }),
+        );
     });
     b
 }
@@ -2698,7 +3249,10 @@ fn show_saved(b: &gtk::Button) {
 /// The save button in the same row as `w` (a photo): a right-click "Save as…" has no button of its own to confirm on.
 fn save_button_near(w: &gtk::Widget) -> Option<gtk::Button> {
     fn find(w: &gtk::Widget) -> Option<gtk::Button> {
-        if let Some(b) = w.downcast_ref::<gtk::Button>().filter(|b| b.has_css_class("save-btn")) {
+        if let Some(b) = w
+            .downcast_ref::<gtk::Button>()
+            .filter(|b| b.has_css_class("save-btn"))
+        {
             return Some(b.clone());
         }
         let mut c = w.first_child();
@@ -2754,11 +3308,25 @@ fn save_items(u: &Rc<Ui>, items: Vec<Save>, ask: bool, done: SaveDone) {
     };
     let dir = {
         let st = u.st.borrow();
-        if ask { String::new() } else if first.pics { st.cfg.dir_images.clone() } else { st.cfg.dir_files.clone() }
+        if ask {
+            String::new()
+        } else if first.pics {
+            st.cfg.dir_images.clone()
+        } else {
+            st.cfg.dir_files.clone()
+        }
     };
     // a default folder that has gone (deleted, access revoked): say so and ask where instead
     let usable = |d: &str| {
-        gio::File::for_path(d).query_info("standard::type,access::can-write", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE).is_ok_and(|i| i.file_type() == gio::FileType::Directory && i.boolean("access::can-write"))
+        gio::File::for_path(d)
+            .query_info(
+                "standard::type,access::can-write",
+                gio::FileQueryInfoFlags::NONE,
+                gio::Cancellable::NONE,
+            )
+            .is_ok_and(|i| {
+                i.file_type() == gio::FileType::Directory && i.boolean("access::can-write")
+            })
     };
     let dir = if !dir.is_empty() && !usable(&dir) {
         let msg = "The default download folder isn't available any more. Choose where to save, or set it again in Settings.";
@@ -2775,7 +3343,12 @@ fn save_items(u: &Rc<Ui>, items: Vec<Save>, ask: bool, done: SaveDone) {
     };
     if !dir.is_empty() {
         for it in &items {
-            queue_save(u, it, unique(std::path::Path::new(&dir), &it.name), done.clone());
+            queue_save(
+                u,
+                it,
+                unique(std::path::Path::new(&dir), &it.name),
+                done.clone(),
+            );
         }
         return;
     }
@@ -2808,19 +3381,34 @@ fn queue_save(u: &Rc<Ui>, it: &Save, target: PathBuf, done: SaveDone) {
     if src.exists() {
         copy_to(u, src, target, done);
     } else {
-        u.st.borrow_mut().save_to.entry(it.path.clone()).or_default().push((target, done));
-        u.send(Cmd::Download { path: it.path.clone(), dest: src, size: it.size });
+        u.st.borrow_mut()
+            .save_to
+            .entry(it.path.clone())
+            .or_default()
+            .push((target, done));
+        u.send(Cmd::Download {
+            path: it.path.clone(),
+            dest: src,
+            size: it.size,
+        });
     }
 }
 
 fn copy_to(u: &Rc<Ui>, src: PathBuf, target: PathBuf, done: SaveDone) {
     let u = u.clone();
     glib::spawn_future_local(async move {
-        let (copy, _) = gio::File::for_path(&src).copy_future(&gio::File::for_path(&target), gio::FileCopyFlags::OVERWRITE, glib::Priority::DEFAULT);
+        let (copy, _) = gio::File::for_path(&src).copy_future(
+            &gio::File::for_path(&target),
+            gio::FileCopyFlags::OVERWRITE,
+            glib::Priority::DEFAULT,
+        );
         match copy.await {
             Ok(()) => done(true),
             Err(e) => {
-                let name = target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let name = target
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 show_banner(&u, &format!("Couldn't save {name}: {}", e.message()), false);
                 done(false);
             }
@@ -2832,7 +3420,10 @@ fn copy_to(u: &Rc<Ui>, src: PathBuf, target: PathBuf, done: SaveDone) {
 /// reactions than emoji; the tooltip says who reacted with what.
 fn reactions_pill(m: &Value) -> Option<gtk::Box> {
     let rs = m["reactions"].as_array().filter(|r| !r.is_empty())?;
-    let emoji = |r: &Value| match (r["emoji"].as_str().filter(|e| !e.is_empty()), r["type"].as_str()) {
+    let emoji = |r: &Value| match (
+        r["emoji"].as_str().filter(|e| !e.is_empty()),
+        r["type"].as_str(),
+    ) {
         (Some(e), _) => e.to_string(),
         (None, Some("love")) => "❤️".into(),
         (None, Some("like")) => "👍".into(),
@@ -2849,8 +3440,17 @@ fn reactions_pill(m: &Value) -> Option<gtk::Box> {
             distinct.push(e);
         }
     }
-    let text = distinct.iter().take(3).cloned().collect::<Vec<_>>().join("");
-    let label = if rs.len() > distinct.len().min(3) { format!("{text} {}", rs.len()) } else { text };
+    let text = distinct
+        .iter()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("");
+    let label = if rs.len() > distinct.len().min(3) {
+        format!("{text} {}", rs.len())
+    } else {
+        text
+    };
     let l = gtk::Label::new(Some(&label));
     let pill = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     pill.add_css_class("reactions");
@@ -2862,7 +3462,14 @@ fn reactions_pill(m: &Value) -> Option<gtk::Box> {
     let tip: Vec<String> = rs
         .iter()
         .map(|r| {
-            let who = if r["is_from_me"].as_bool() == Some(true) { "You" } else { r["sender_name"].as_str().or(r["sender"].as_str()).unwrap_or("Someone") };
+            let who = if r["is_from_me"].as_bool() == Some(true) {
+                "You"
+            } else {
+                r["sender_name"]
+                    .as_str()
+                    .or(r["sender"].as_str())
+                    .unwrap_or("Someone")
+            };
             format!("{who}: {}", emoji(r))
         })
         .collect();
@@ -2876,9 +3483,17 @@ fn match_y(ws: &[gtk::Widget], words: &[String], to: &gtk::Widget) -> Option<f32
     fn find(w: &gtk::Widget, words: &[String], to: &gtk::Widget) -> Option<f32> {
         if let Some(l) = w.downcast_ref::<gtk::Label>() {
             let text = l.text().to_ascii_lowercase();
-            if let Some(at) = words.iter().filter(|x| x.is_ascii() && !x.is_empty()).filter_map(|x| text.find(x.as_str())).min() {
-                let line = l.layout().index_to_pos(at as i32).y() as f32 / gtk::pango::SCALE as f32 + l.layout_offsets().1 as f32;
-                return l.compute_point(to, &gtk::graphene::Point::new(0.0, line)).map(|p| p.y());
+            if let Some(at) = words
+                .iter()
+                .filter(|x| x.is_ascii() && !x.is_empty())
+                .filter_map(|x| text.find(x.as_str()))
+                .min()
+            {
+                let line = l.layout().index_to_pos(at as i32).y() as f32 / gtk::pango::SCALE as f32
+                    + l.layout_offsets().1 as f32;
+                return l
+                    .compute_point(to, &gtk::graphene::Point::new(0.0, line))
+                    .map(|p| p.y());
             }
         }
         let mut c = w.first_child();
@@ -2918,7 +3533,11 @@ fn find_words(u: &Ui, m: &Value) -> (Vec<String>, bool) {
     let st = u.st.borrow();
     match &st.find_view {
         Some(f) if m["chat_id"].as_i64() == Some(f.chat) => {
-            let current = st.find_hits.get(&f.chat).and_then(|h| h.get(f.idx)).is_some_and(|h| h["guid"] == m["guid"]);
+            let current = st
+                .find_hits
+                .get(&f.chat)
+                .and_then(|h| h.get(f.idx))
+                .is_some_and(|h| h["guid"] == m["guid"]);
             (search_words(u.search.text().trim()), current)
         }
         _ => (Vec::new(), false),
@@ -2928,7 +3547,12 @@ fn find_words(u: &Ui, m: &Value) -> (Vec<String>, bool) {
 /// The red "!" beside a failed message: a popup says so and offers to try again.
 fn failed_button(u: &Rc<Ui>, m: &Value) -> gtk::Button {
     let kind = {
-        let atts: Vec<&str> = m["attachments"].as_array().into_iter().flatten().filter_map(|a| a["mime_type"].as_str()).collect();
+        let atts: Vec<&str> = m["attachments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a["mime_type"].as_str())
+            .collect();
         if atts.iter().any(|t| t.starts_with("image/")) {
             "photo"
         } else if atts.iter().any(|t| t.starts_with("video/")) {
@@ -2941,7 +3565,10 @@ fn failed_button(u: &Rc<Ui>, m: &Value) -> gtk::Button {
     };
     let b = gtk::Button::with_label("!");
     b.add_css_class("failed-btn");
-    if m["id"].as_i64().is_some_and(|id| u.st.borrow().resent.contains(&id)) {
+    if m["id"]
+        .as_i64()
+        .is_some_and(|id| u.st.borrow().resent.contains(&id))
+    {
         b.add_css_class("retried"); // sent again since: an outline, as Messages draws it
     }
     b.set_valign(gtk::Align::Center);
@@ -2990,7 +3617,10 @@ fn sent_sound(u: &Ui) {
 
 fn send_now(u: &Rc<Ui>) {
     let buf = u.compose.buffer();
-    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false).trim().to_string();
+    let text = buf
+        .text(&buf.start_iter(), &buf.end_iter(), false)
+        .trim()
+        .to_string();
     if text.is_empty() && u.st.borrow().outgoing.is_empty() {
         return;
     }
@@ -2999,7 +3629,9 @@ fn send_now(u: &Rc<Ui>) {
         send_new(u, &text);
         return;
     }
-    let Some(chat_id) = u.st.borrow().sel else { return };
+    let Some(chat_id) = u.st.borrow().sel else {
+        return;
+    };
     sent_sound(u);
     let to = direct_to(u, chat_id);
     let files = take_files(u);
@@ -3011,13 +3643,27 @@ fn send_now(u: &Rc<Ui>) {
         // a faded bubble per message until the real one comes back through the live stream
         let mut st = u.st.borrow_mut();
         for f in &files {
-            st.pending.push(Pending { token, chat_id, item: PendingItem::File(f.clone()) });
+            st.pending.push(Pending {
+                token,
+                chat_id,
+                item: PendingItem::File(f.clone()),
+            });
         }
         if !text.is_empty() {
-            st.pending.push(Pending { token, chat_id, item: PendingItem::Text(text.clone()) });
+            st.pending.push(Pending {
+                token,
+                chat_id,
+                item: PendingItem::Text(text.clone()),
+            });
         }
     }
-    u.send(Cmd::Send { chat_id, to, text, files, token });
+    u.send(Cmd::Send {
+        chat_id,
+        to,
+        text,
+        files,
+        token,
+    });
     render_conv(u);
 }
 
@@ -3033,11 +3679,16 @@ fn outgoing_dir(u: &Ui) -> PathBuf {
 }
 
 fn pick_files(u: &Rc<Ui>) {
-    let d = gtk::FileDialog::builder().title("Attach files").modal(true).build();
+    let d = gtk::FileDialog::builder()
+        .title("Attach files")
+        .modal(true)
+        .build();
     let u = u.clone();
     glib::spawn_future_local(async move {
         if let Ok(list) = d.open_multiple_future(Some(&u.win)).await {
-            let files = (0..list.n_items()).filter_map(|i| list.item(i).and_downcast::<gio::File>()?.path()).collect();
+            let files = (0..list.n_items())
+                .filter_map(|i| list.item(i).and_downcast::<gio::File>()?.path())
+                .collect();
             add_files(&u, files);
         }
     });
@@ -3073,11 +3724,17 @@ fn render_attach(u: &Rc<Ui>) {
     let files = u.st.borrow().outgoing.clone();
     u.attach_bar.set_visible(!files.is_empty());
     for f in files {
-        let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = f
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let card = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         card.add_css_class("attach-chip");
         card.set_tooltip_text(Some(&name));
-        if let Some(t) = is_image("", &name).then(|| gdk::Texture::from_filename(&f).ok()).flatten() {
+        if let Some(t) = is_image("", &name)
+            .then(|| gdk::Texture::from_filename(&f).ok())
+            .flatten()
+        {
             // ponytail: whole image decoded for a 64 px thumbnail; fine for a few files
             let pic = gtk::Image::from_paintable(Some(&t));
             pic.set_pixel_size(64);
@@ -3123,7 +3780,11 @@ fn start_new(u: &Rc<Ui>) {
     close_info(u);
     u.info.btn.set_visible(false);
     u.info.refresh.set_visible(false);
-    for w in [u.head_avatar.upcast_ref::<gtk::Widget>(), u.head_titles.upcast_ref(), u.scroller.upcast_ref()] {
+    for w in [
+        u.head_avatar.upcast_ref::<gtk::Widget>(),
+        u.head_titles.upcast_ref(),
+        u.scroller.upcast_ref(),
+    ] {
         w.set_visible(false);
     }
     u.to_row.set_visible(true);
@@ -3166,20 +3827,37 @@ fn suggestions(u: &Ui) -> Vec<(Option<i64>, String, String)> {
     st.chats
         .iter()
         .filter(|c| c["is_group"].as_bool() != Some(true))
-        .filter_map(|c| Some((c["id"].as_i64()?, chat_title(c, &st.names), direct_addr(c)?.to_string())))
-        .filter(|(_, name, addr)| q.is_empty() || name.to_lowercase().contains(&q) || addr.to_lowercase().contains(&q) || same_addr(&q, addr))
+        .filter_map(|c| {
+            Some((
+                c["id"].as_i64()?,
+                chat_title(c, &st.names),
+                direct_addr(c)?.to_string(),
+            ))
+        })
+        .filter(|(_, name, addr)| {
+            q.is_empty()
+                || name.to_lowercase().contains(&q)
+                || addr.to_lowercase().contains(&q)
+                || same_addr(&q, addr)
+        })
         .take(8)
         .map(|(id, n, a)| (Some(id), n, a))
         .collect::<Vec<_>>()
         .into_iter()
-        .chain(match (&st.contacts, q.is_empty()) {
-            (Some(c), false) => c.search(&q), // ponytail: nothing listed until you type; a 360-row list helps nobody
-            _ => vec![],
-        }
-        .into_iter()
-        .filter(|(_, a)| !st.chats.iter().any(|c| direct_addr(c).is_some_and(|d| same_addr(a, d))))
-        .take(8)
-        .map(|(n, a)| (None, n.to_string(), a.to_string())))
+        .chain(
+            match (&st.contacts, q.is_empty()) {
+                (Some(c), false) => c.search(&q), // ponytail: nothing listed until you type; a 360-row list helps nobody
+                _ => vec![],
+            }
+            .into_iter()
+            .filter(|(_, a)| {
+                !st.chats
+                    .iter()
+                    .any(|c| direct_addr(c).is_some_and(|d| same_addr(a, d)))
+            })
+            .take(8)
+            .map(|(n, a)| (None, n.to_string(), a.to_string())),
+        )
         .collect()
 }
 
@@ -3220,7 +3898,11 @@ fn render_suggest(u: &Ui) {
         if pretty_handle(&addr) != name {
             let line2 = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             line2.append(&a);
-            let label = u.st.borrow().contacts.as_ref().and_then(|c| c.label(&addr).map(str::to_string));
+            let label =
+                u.st.borrow()
+                    .contacts
+                    .as_ref()
+                    .and_then(|c| c.label(&addr).map(str::to_string));
             if let Some(l) = label {
                 let chip = gtk::Label::new(Some(&l));
                 chip.add_css_class("addr-chip");
@@ -3242,13 +3924,22 @@ fn render_suggest(u: &Ui) {
 /// (an id that doesn't change), the unread counts added up, and `merged` naming every chat. Group chats stay as they
 /// are. Needs the contacts (to know which numbers and emails are one person). Returns the list and the merges as
 /// (id, all ids newest first).
-fn merged_chats(raw: &[Value], contacts: Option<&crate::mac::Contacts>) -> (Vec<Value>, Vec<(i64, Vec<i64>)>) {
-    let Some(k) = contacts else { return (raw.to_vec(), Vec::new()) };
+fn merged_chats(
+    raw: &[Value],
+    contacts: Option<&crate::mac::Contacts>,
+) -> (Vec<Value>, Vec<(i64, Vec<i64>)>) {
+    let Some(k) = contacts else {
+        return (raw.to_vec(), Vec::new());
+    };
     let mut slot_of: HashMap<usize, usize> = HashMap::new(); // person -> position in `out`
     let mut out: Vec<Value> = Vec::new();
     let mut members: Vec<Vec<usize>> = Vec::new(); // raw positions behind each entry of `out`
     for (i, c) in raw.iter().enumerate() {
-        let person = if c["is_group"].as_bool() == Some(true) { None } else { c["participants"][0].as_str().and_then(|h| k.person_id(h)) };
+        let person = if c["is_group"].as_bool() == Some(true) {
+            None
+        } else {
+            c["participants"][0].as_str().and_then(|h| k.person_id(h))
+        };
         match person.and_then(|p| slot_of.get(&p).copied()) {
             Some(slot) => members[slot].push(i),
             None => {
@@ -3263,8 +3954,13 @@ fn merged_chats(raw: &[Value], contacts: Option<&crate::mac::Contacts>) -> (Vec<
     let mut groups = Vec::new();
     for (slot, ms) in members.iter().enumerate().filter(|(_, m)| m.len() > 1) {
         let ids: Vec<i64> = ms.iter().filter_map(|&i| raw[i]["id"].as_i64()).collect();
-        let Some(&canon) = ids.iter().min() else { continue };
-        let unread: i64 = ms.iter().map(|&i| raw[i]["unread_count"].as_i64().unwrap_or(0)).sum();
+        let Some(&canon) = ids.iter().min() else {
+            continue;
+        };
+        let unread: i64 = ms
+            .iter()
+            .map(|&i| raw[i]["unread_count"].as_i64().unwrap_or(0))
+            .sum();
         let c = &mut out[slot];
         c["id"] = Value::from(canon);
         c["unread_count"] = Value::from(unread);
@@ -3280,20 +3976,43 @@ fn merged_chats(raw: &[Value], contacts: Option<&crate::mac::Contacts>) -> (Vec<
 /// Order a group's people for showing: those with a contact name first, the people you wrote to most recently ahead of
 /// the others (numbers and emails last, in the order they came). Messages does something like this (a group of Jo, Rob
 /// and Drayven reads "Jo, Rob & Drayven": the people you message most).
-fn rank_members(handles: &[String], known: impl Fn(&str) -> bool, when: impl Fn(&str) -> Option<String>) -> Vec<String> {
-    let mut v: Vec<(bool, Option<String>, usize, &String)> = handles.iter().enumerate().map(|(i, h)| (known(h), when(h), i, h)).collect();
+fn rank_members(
+    handles: &[String],
+    known: impl Fn(&str) -> bool,
+    when: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let mut v: Vec<(bool, Option<String>, usize, &String)> = handles
+        .iter()
+        .enumerate()
+        .map(|(i, h)| (known(h), when(h), i, h))
+        .collect();
     // known first; then newest first (those with no conversation after the others); ties in the original order
-    v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| if a.0 { b.1.cmp(&a.1) } else { std::cmp::Ordering::Equal }).then(a.2.cmp(&b.2)));
+    v.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| {
+                if a.0 {
+                    b.1.cmp(&a.1)
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .then(a.2.cmp(&b.2))
+    });
     v.into_iter().map(|(_, _, _, h)| h.clone()).collect()
 }
 
 /// Put every group's `participants` in the order `rank_members` gives, from when you last wrote to each person.
 fn rank_group_members(st: &State, raw: &mut [Value]) {
-    let Some(k) = st.contacts.as_ref() else { return };
+    let Some(k) = st.contacts.as_ref() else {
+        return;
+    };
     let mut by_addr: HashMap<String, String> = HashMap::new();
     let mut by_person: HashMap<usize, String> = HashMap::new();
     for c in raw.iter().filter(|c| c["is_group"].as_bool() != Some(true)) {
-        let (Some(h), Some(t)) = (c["participants"][0].as_str(), c["last_message_at"].as_str()) else { continue };
+        let (Some(h), Some(t)) = (c["participants"][0].as_str(), c["last_message_at"].as_str())
+        else {
+            continue;
+        };
         if let Some(a) = crate::mac::addr_key(h) {
             let e = by_addr.entry(a).or_default();
             if t > e.as_str() {
@@ -3307,10 +4026,24 @@ fn rank_group_members(st: &State, raw: &mut [Value]) {
             }
         }
     }
-    let known = |h: &str| st.names.contains_key(h) || k.person(h).is_some_and(|p| !p.name.is_empty());
-    let when = |h: &str| k.person_id(h).and_then(|p| by_person.get(&p)).or_else(|| crate::mac::addr_key(h).and_then(|a| by_addr.get(&a))).cloned();
-    for c in raw.iter_mut().filter(|c| c["is_group"].as_bool() == Some(true)) {
-        let handles: Vec<String> = c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
+    let known =
+        |h: &str| st.names.contains_key(h) || k.person(h).is_some_and(|p| !p.name.is_empty());
+    let when = |h: &str| {
+        k.person_id(h)
+            .and_then(|p| by_person.get(&p))
+            .or_else(|| crate::mac::addr_key(h).and_then(|a| by_addr.get(&a)))
+            .cloned()
+    };
+    for c in raw
+        .iter_mut()
+        .filter(|c| c["is_group"].as_bool() == Some(true))
+    {
+        let handles: Vec<String> = c["participants"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_str().map(String::from))
+            .collect();
         if handles.len() > 1 {
             c["participants"] = Value::from(rank_members(&handles, known, when));
         }
@@ -3323,10 +4056,16 @@ fn raw_ids_of(raw: &[Value]) -> HashSet<i64> {
 }
 
 fn set_chats(st: &mut State, raw: Vec<Value>) -> Vec<(i64, Vec<i64>)> {
-    let mut raw: Vec<Value> = raw.into_iter().filter(|c| c["hidden"].as_bool() != Some(true)).collect(); // (chats without a message)
+    let mut raw: Vec<Value> = raw
+        .into_iter()
+        .filter(|c| c["hidden"].as_bool() != Some(true))
+        .collect(); // (chats without a message)
     rank_group_members(st, &mut raw);
     let (merged, groups) = merged_chats(&raw, st.contacts.as_ref());
-    let alias: HashMap<i64, i64> = groups.iter().flat_map(|(c, ids)| ids.iter().map(move |i| (*i, *c))).collect();
+    let alias: HashMap<i64, i64> = groups
+        .iter()
+        .flat_map(|(c, ids)| ids.iter().map(move |i| (*i, *c)))
+        .collect();
     if let Some(c) = st.sel.and_then(|s| alias.get(&s)) {
         st.sel = Some(*c); // the chat on show is now part of a merged one
     }
@@ -3335,7 +4074,12 @@ fn set_chats(st: &mut State, raw: Vec<Value>) -> Vec<(i64, Vec<i64>)> {
     let keep: Vec<Value> = st
         .chats
         .iter()
-        .filter(|c| c["id"].as_i64().is_some_and(|id| (st.sel == Some(id) || st.search_added.contains(&id)) && !merged.iter().any(|m| m["id"].as_i64() == Some(id))))
+        .filter(|c| {
+            c["id"].as_i64().is_some_and(|id| {
+                (st.sel == Some(id) || st.search_added.contains(&id))
+                    && !merged.iter().any(|m| m["id"].as_i64() == Some(id))
+            })
+        })
         .cloned()
         .collect();
     st.raw_chats = raw;
@@ -3343,9 +4087,13 @@ fn set_chats(st: &mut State, raw: Vec<Value>) -> Vec<(i64, Vec<i64>)> {
     for c in keep {
         insert_chat(&mut st.chats, c);
     }
-    let (sel, loaded): (Option<i64>, HashSet<i64>) = (st.sel, st.chats.iter().filter_map(|c| c["id"].as_i64()).collect());
+    let (sel, loaded): (Option<i64>, HashSet<i64>) = (
+        st.sel,
+        st.chats.iter().filter_map(|c| c["id"].as_i64()).collect(),
+    );
     let listed: HashSet<i64> = raw_ids_of(&st.raw_chats);
-    st.off_list.retain(|id| Some(*id) == sel && loaded.contains(id) && !listed.contains(id));
+    st.off_list
+        .retain(|id| Some(*id) == sel && loaded.contains(id) && !listed.contains(id));
     st.alias = alias;
     groups
 }
@@ -3358,7 +4106,11 @@ fn after_merge(u: &Rc<Ui>, groups: Vec<(i64, Vec<i64>)>) {
             return;
         }
         let old = std::mem::replace(&mut st.merge_sig, groups.clone());
-        let changed: Vec<i64> = groups.iter().filter(|g| !old.contains(g)).map(|g| g.0).collect();
+        let changed: Vec<i64> = groups
+            .iter()
+            .filter(|g| !old.contains(g))
+            .map(|g| g.0)
+            .collect();
         for c in &changed {
             st.hist.remove(c);
             st.preview.remove(c);
@@ -3383,27 +4135,47 @@ fn reorder_pins(u: &Rc<Ui>, order: Vec<gtk::Widget>) {
         let mut mine: Vec<String> = Vec::new();
         let mut used: Vec<String> = Vec::new();
         for t in &order {
-            let Ok(id) = t.widget_name().parse::<i64>() else { continue };
-            let Some(c) = st.chats.iter().find(|c| c["id"].as_i64() == Some(id)) else { continue };
+            let Ok(id) = t.widget_name().parse::<i64>() else {
+                continue;
+            };
+            let Some(c) = st.chats.iter().find(|c| c["id"].as_i64() == Some(id)) else {
+                continue;
+            };
             let keys = keys_of(c);
             // the key it is saved under now (or its first)
-            let pick = keys.iter().filter_map(|k| st.pins.iter().position(|p| p == k).map(|i| (i, k))).min().map(|(_, k)| k.clone()).or_else(|| keys.first().cloned());
+            let pick = keys
+                .iter()
+                .filter_map(|k| st.pins.iter().position(|p| p == k).map(|i| (i, k)))
+                .min()
+                .map(|(_, k)| k.clone())
+                .or_else(|| keys.first().cloned());
             used.extend(keys);
             mine.extend(pick);
         }
-        let rest: Vec<String> = st.pins.iter().filter(|p| !used.contains(p)).cloned().collect();
+        let rest: Vec<String> = st
+            .pins
+            .iter()
+            .filter(|p| !used.contains(p))
+            .cloned()
+            .collect();
         mine.extend(rest);
         st.pins = mine;
         if std::env::var_os("BF_PINS").is_none() {
             // (dev runs with invented pins must not overwrite the real file)
-            let _ = std::fs::write(&u.store.pins_file, st.pins.iter().map(|p| format!("{p}\n")).collect::<String>());
+            let _ = std::fs::write(
+                &u.store.pins_file,
+                st.pins.iter().map(|p| format!("{p}\n")).collect::<String>(),
+            );
         }
     }
     // the list's hidden rows follow the order of `chats`, not the pins: nothing else to redraw
 }
 
 fn insert_chat(chats: &mut Vec<Value>, chat: Value) {
-    let at = chats.iter().position(|c| c["last_message_at"].as_str() < chat["last_message_at"].as_str()).unwrap_or(chats.len());
+    let at = chats
+        .iter()
+        .position(|c| c["last_message_at"].as_str() < chat["last_message_at"].as_str())
+        .unwrap_or(chats.len());
     chats.insert(at, chat);
 }
 
@@ -3411,7 +4183,12 @@ fn insert_chat(chats: &mut Vec<Value>, chat: Value) {
 /// conversation per person, whichever of their addresses is used.
 fn person_addrs(u: &Ui, typed: &str) -> Vec<String> {
     let mut v = vec![clean_addr(typed)];
-    if let Some(p) = u.st.borrow().contacts.as_ref().and_then(|c| c.person(typed)) {
+    if let Some(p) =
+        u.st.borrow()
+            .contacts
+            .as_ref()
+            .and_then(|c| c.person(typed))
+    {
         for a in p.addrs.iter().map(|(a, _)| clean_addr(a)) {
             if is_addr(&a) && !v.contains(&a) {
                 v.push(a);
@@ -3434,13 +4211,21 @@ fn find_chat_for(chats: &[Value], addrs: &[String]) -> Option<i64> {
 /// Glide the sidebar's list so the row of this chat ends up at the top (or as near as the list's end allows). The
 /// row is looked up again every frame: the list is rebuilt when previews arrive.
 fn scroll_list_to(u: &Rc<Ui>, id: i64) {
-    let Some(adj) = side_adjustment(u) else { return };
+    let Some(adj) = side_adjustment(u) else {
+        return;
+    };
     u.side_anim.set(true);
     let (u, from, began) = (u.clone(), adj.value(), Cell::new(None::<i64>));
     glib::timeout_add_local_once(Duration::from_millis(150), move || {
         // already in view where the list was scrolled to (list rebuilds since may have reset it): leave it there
-        let idx = u.st.borrow().chats.iter().position(|c| c["id"].as_i64() == Some(id));
-        if let Some(b) = idx.and_then(|i| u.chat_list.row_at_index(i as i32)).and_then(|r| r.compute_bounds(&u.tiles.parent().unwrap()))
+        let idx =
+            u.st.borrow()
+                .chats
+                .iter()
+                .position(|c| c["id"].as_i64() == Some(id));
+        if let Some(b) = idx
+            .and_then(|i| u.chat_list.row_at_index(i as i32))
+            .and_then(|r| r.compute_bounds(&u.tiles.parent().unwrap()))
             && b.height() > 1.0
             && b.y() as f64 >= from
             && (b.y() + b.height()) as f64 <= from + adj.page_size()
@@ -3453,11 +4238,19 @@ fn scroll_list_to(u: &Rc<Ui>, id: i64) {
         let uu = u.clone();
         u.chat_list.add_tick_callback(move |_, clock| {
             let (u, adj) = (&uu, &adj);
-            let idx = u.st.borrow().chats.iter().position(|c| c["id"].as_i64() == Some(id));
-            if let Some(b) = idx.and_then(|i| u.chat_list.row_at_index(i as i32)).and_then(|r| r.compute_bounds(&u.tiles.parent().unwrap()))
+            let idx =
+                u.st.borrow()
+                    .chats
+                    .iter()
+                    .position(|c| c["id"].as_i64() == Some(id));
+            if let Some(b) = idx
+                .and_then(|i| u.chat_list.row_at_index(i as i32))
+                .and_then(|r| r.compute_bounds(&u.tiles.parent().unwrap()))
                 && b.height() > 1.0
             {
-                to.set(Some((b.y() as f64 - 6.0).clamp(0.0, (adj.upper() - adj.page_size()).max(0.0))));
+                to.set(Some(
+                    (b.y() as f64 - 6.0).clamp(0.0, (adj.upper() - adj.page_size()).max(0.0)),
+                ));
             }
             let t0 = began.get().unwrap_or_else(|| {
                 began.set(Some(clock.frame_time()));
@@ -3522,7 +4315,11 @@ fn send_new(u: &Rc<Ui>, text: &str) {
         return;
     }
     if !is_addr(&typed) {
-        show_banner(u, "Who's it to? Pick a conversation or type a phone number or email.", false);
+        show_banner(
+            u,
+            "Who's it to? Pick a conversation or type a phone number or email.",
+            false,
+        );
         u.to_entry.grab_focus();
         return;
     }
@@ -3536,13 +4333,27 @@ fn send_new(u: &Rc<Ui>, text: &str) {
         let mut st = u.st.borrow_mut();
         st.new_pending = Some(to.clone());
         for f in &files {
-            st.pending.push(Pending { token, chat_id: 0, item: PendingItem::File(f.clone()) });
+            st.pending.push(Pending {
+                token,
+                chat_id: 0,
+                item: PendingItem::File(f.clone()),
+            });
         }
         if !text.is_empty() {
-            st.pending.push(Pending { token, chat_id: 0, item: PendingItem::Text(text.to_string()) });
+            st.pending.push(Pending {
+                token,
+                chat_id: 0,
+                item: PendingItem::Text(text.to_string()),
+            });
         }
     }
-    u.send(Cmd::Send { chat_id: 0, to: Some(to), text: text.to_string(), files, token });
+    u.send(Cmd::Send {
+        chat_id: 0,
+        to: Some(to),
+        text: text.to_string(),
+        files,
+        token,
+    });
     show_new_ghosts(u);
     // the chat opens when the Mac's chat list includes it (Event::Chats)
 }
@@ -3568,12 +4379,20 @@ fn is_addr(s: &str) -> bool {
         return !user.is_empty() && host.contains('.') && !s.contains(' ');
     }
     let digits = s.chars().filter(char::is_ascii_digit).count();
-    digits >= 5 && s.chars().all(|c| c.is_ascii_digit() || " +-().".contains(c))
+    digits >= 5
+        && s.chars()
+            .all(|c| c.is_ascii_digit() || " +-().".contains(c))
 }
 
 fn clean_addr(s: &str) -> String {
     let s = s.trim();
-    if s.contains('@') { s.to_lowercase() } else { s.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect() }
+    if s.contains('@') {
+        s.to_lowercase()
+    } else {
+        s.chars()
+            .filter(|c| c.is_ascii_digit() || *c == '+')
+            .collect()
+    }
 }
 
 /// Typed address vs a chat identifier: emails ignore case; phone numbers compare their last digits,
@@ -3585,7 +4404,10 @@ fn same_addr(typed: &str, ident: &str) -> bool {
     let d = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
     let (a, b) = (d(typed), d(ident));
     let n = a.len().min(b.len());
-    n >= 5 && (a.len() == b.len() || n >= 7) && a.ends_with(&b[b.len() - n..]) && b.ends_with(&a[a.len() - n..])
+    n >= 5
+        && (a.len() == b.len() || n >= 7)
+        && a.ends_with(&b[b.len() - n..])
+        && b.ends_with(&a[a.len() - n..])
 }
 
 // ---------- chat list ----------
@@ -3607,15 +4429,30 @@ fn render_chats_soon(u: &Rc<Ui>) {
 fn row_info(st: &State, c: &Value) -> (String, String, Option<i64>, bool) {
     let id = c["id"].as_i64().unwrap_or(0);
     let p = st.preview.get(&id);
-    let when = p.and_then(|m| m["created_at"].as_str()).or(c["last_message_at"].as_str()).and_then(local).map(|d| d.to_unix());
+    let when = p
+        .and_then(|m| m["created_at"].as_str())
+        .or(c["last_message_at"].as_str())
+        .and_then(local)
+        .map(|d| d.to_unix());
     let text = p.map(|m| {
         let s = summary(m);
-        if m["is_from_me"].as_bool() == Some(true) { format!("You: {s}") } else { s }
+        if m["is_from_me"].as_bool() == Some(true) {
+            format!("You: {s}")
+        } else {
+            s
+        }
     });
     // read here but not on the Mac (imsg can't mark read): trust what we've shown
-    let seen_here = p.and_then(|m| m["id"].as_i64()).is_some_and(|last| st.seen.get(&id).is_some_and(|s| *s >= last));
+    let seen_here = p
+        .and_then(|m| m["id"].as_i64())
+        .is_some_and(|last| st.seen.get(&id).is_some_and(|s| *s >= last));
     let unread = c["unread_count"].as_i64().unwrap_or(0) > 0 && !seen_here;
-    (chat_title(c, &st.names), text.unwrap_or_default(), when, unread)
+    (
+        chat_title(c, &st.names),
+        text.unwrap_or_default(),
+        when,
+        unread,
+    )
 }
 
 /// `update_title` once, after the events that are waiting: it counts every chat, so doing it per preview is O(n²).
@@ -3632,7 +4469,9 @@ fn update_title_soon(u: &Rc<Ui>) {
 /// Put the icon in the tray (once: a second item would be a second icon) and keep the app alive while it's there.
 /// `hidden`: the app was started at login, so if there is no tray after all the window opens minimized.
 fn start_tray(u: &Rc<Ui>, hidden: bool) {
-    let Some(rt) = crate::setup::RT.get() else { return };
+    let Some(rt) = crate::setup::RT.get() else {
+        return;
+    };
     if u.tray.borrow().is_some() {
         return;
     }
@@ -3673,7 +4512,9 @@ fn start_tray(u: &Rc<Ui>, hidden: bool) {
         while let Some(e) = rx.recv().await {
             match e {
                 crate::tray::Event::Show => u.win.present(),
-                crate::tray::Event::Toggle if u.win.is_visible() && u.win.is_active() => u.win.set_visible(false),
+                crate::tray::Event::Toggle if u.win.is_visible() && u.win.is_active() => {
+                    u.win.set_visible(false)
+                }
                 crate::tray::Event::Toggle => u.win.present(),
                 crate::tray::Event::Quit => u.app.quit(),
             }
@@ -3698,7 +4539,9 @@ fn tray_hint(u: &Rc<Ui>) {
     // KDE's `x-kde-user-action-feedback` hint, which Plasma shows even in do-not-disturb (it's the answer to the user's own
     // action, like Spectacle's "screenshot saved").
     glib::spawn_future_local(async move {
-        let Ok(bus) = gio::bus_get_future(gio::BusType::Session).await else { return };
+        let Ok(bus) = gio::bus_get_future(gio::BusType::Session).await else {
+            return;
+        };
         let hints = HashMap::from([
             ("desktop-entry".to_string(), crate::APP_ID.to_variant()),
             ("x-kde-user-action-feedback".to_string(), true.to_variant()),
@@ -3715,7 +4558,16 @@ fn tray_hint(u: &Rc<Ui>) {
         )
             .to_variant();
         let sent = bus
-            .call_future(Some("org.freedesktop.Notifications"), "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "Notify", Some(&args), None, gio::DBusCallFlags::NONE, 2000)
+            .call_future(
+                Some("org.freedesktop.Notifications"),
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications",
+                "Notify",
+                Some(&args),
+                None,
+                gio::DBusCallFlags::NONE,
+                2000,
+            )
             .await;
         if sent.is_ok() {
             let _ = std::fs::write(flag, "");
@@ -3729,9 +4581,17 @@ fn update_title(u: &Ui) {
         let st = u.st.borrow();
         st.chats.iter().filter(|c| row_info(&st, c).3).count()
     };
-    u.win.set_title(Some(&if n > 0 { format!("({n}) BubbleFairy") } else { "BubbleFairy".into() }));
+    u.win.set_title(Some(&if n > 0 {
+        format!("({n}) BubbleFairy")
+    } else {
+        "BubbleFairy".into()
+    }));
     let (badge, gap) = &u.title_badge;
-    badge.set_text(&if n > 99 { "99+".to_string() } else { n.to_string() });
+    badge.set_text(&if n > 99 {
+        "99+".to_string()
+    } else {
+        n.to_string()
+    });
     badge.set_visible(n > 0);
     gap.set_visible(n > 0);
     if let (Some(h), Some(rt)) = (u.tray.borrow().clone(), crate::setup::RT.get()) {
@@ -3747,13 +4607,18 @@ fn update_row(u: &Rc<Ui>, id: i64) {
     let parts = u.row_parts.borrow().get(&id).cloned();
     let info = {
         let st = u.st.borrow();
-        st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).map(|c| (row_info(&st, c), pin_pos(&st.pins, c).is_some()))
+        st.chats
+            .iter()
+            .find(|c| c["id"].as_i64() == Some(id))
+            .map(|c| (row_info(&st, c), pin_pos(&st.pins, c).is_some()))
     };
     // a chat that isn't in the list any more (one a search had added): nothing to update, and no rebuild for it
     if info.is_none() {
         return;
     }
-    let (Some(parts), Some(((_, text, when, unread), pinned))) = (parts, info) else { return render_chats_soon(u) };
+    let (Some(parts), Some(((_, text, when, unread), pinned))) = (parts, info) else {
+        return render_chats_soon(u);
+    };
     if pinned {
         return render_chats_soon(u); // its tile shows the unread dot
     }
@@ -3761,7 +4626,14 @@ fn update_row(u: &Rc<Ui>, id: i64) {
         // a search is on: the row shows its match, not the newest message
         let words = search_words(u.search.text().trim());
         let st = u.st.borrow();
-        style_row(&st, &words, true, id, &parts, st.chats.iter().find(|c| c["id"].as_i64() == Some(id)));
+        style_row(
+            &st,
+            &words,
+            true,
+            id,
+            &parts,
+            st.chats.iter().find(|c| c["id"].as_i64() == Some(id)),
+        );
     } else {
         parts.prev.set_text(&text);
     }
@@ -3770,22 +4642,40 @@ fn update_row(u: &Rc<Ui>, id: i64) {
         parts.time.set_text(&rel_time(t, TimeKind::Row)); // only this row's: rewriting every tracked time per preview was O(n) each
     }
     for (c, on) in [("unread-dot", unread), ("read-dot", !unread)] {
-        if on { parts.dot.add_css_class(c) } else { parts.dot.remove_css_class(c) }
+        if on {
+            parts.dot.add_css_class(c)
+        } else {
+            parts.dot.remove_css_class(c)
+        }
     }
-    if unread { parts.row.add_css_class("unread") } else { parts.row.remove_css_class("unread") }
+    if unread {
+        parts.row.add_css_class("unread")
+    } else {
+        parts.row.remove_css_class("unread")
+    }
     update_title_soon(u);
 }
 
 /// Names and photos have arrived (the Contacts are read after the chat list is shown): change what the rows and
 /// tiles show in place. No rebuild of the list, so nothing hitches and the scroll position stays.
 fn refresh_identities(u: &Rc<Ui>) {
-    let parts: Vec<(i64, RowParts)> = u.row_parts.borrow().iter().map(|(k, v)| (*k, v.clone())).collect();
+    let parts: Vec<(i64, RowParts)> = u
+        .row_parts
+        .borrow()
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
     let info: HashMap<i64, (Value, String)> = {
         let st = u.st.borrow();
-        st.chats.iter().filter_map(|c| Some((c["id"].as_i64()?, (c.clone(), chat_title(c, &st.names))))).collect()
+        st.chats
+            .iter()
+            .filter_map(|c| Some((c["id"].as_i64()?, (c.clone(), chat_title(c, &st.names)))))
+            .collect()
     };
     for (id, p) in &parts {
-        let Some((chat, title)) = info.get(id) else { continue };
+        let Some((chat, title)) = info.get(id) else {
+            continue;
+        };
         if p.name.text() != *title {
             p.name.set_text(title);
         }
@@ -3796,7 +4686,11 @@ fn refresh_identities(u: &Rc<Ui>) {
     }
     // the collapsed sidebar's tooltips read the titles kept in `rows`
     for (row, _, t) in u.rows.borrow_mut().iter_mut() {
-        if let Some((_, title)) = parts.iter().find(|(_, p)| p.row == *row).and_then(|(id, _)| info.get(id)) {
+        if let Some((_, title)) = parts
+            .iter()
+            .find(|(_, p)| p.row == *row)
+            .and_then(|(id, _)| info.get(id))
+        {
             *t = title.clone();
             if u.collapsed.get() {
                 row.set_tooltip_text(Some(title));
@@ -3848,7 +4742,11 @@ fn render_chats(u: &Rc<Ui>) {
     let t0 = std::time::Instant::now();
     render_chats_inner(u);
     if std::env::var_os("BF_PROF").is_some() {
-        eprintln!("prof: render_chats {} ms ({} rows)", t0.elapsed().as_millis(), u.row_parts.borrow().len());
+        eprintln!(
+            "prof: render_chats {} ms ({} rows)",
+            t0.elapsed().as_millis(),
+            u.row_parts.borrow().len()
+        );
     }
 }
 
@@ -3859,7 +4757,14 @@ fn render_chats_inner(u: &Rc<Ui>) {
             .iter()
             .map(|c| {
                 let (title, text, when, unread) = row_info(&st, c);
-                (title, text, when, unread, c["id"].as_i64().unwrap_or(0), c.clone())
+                (
+                    title,
+                    text,
+                    when,
+                    unread,
+                    c["id"].as_i64().unwrap_or(0),
+                    c.clone(),
+                )
             })
             .collect()
     };
@@ -3871,7 +4776,10 @@ fn render_chats_inner(u: &Rc<Ui>) {
     u.selecting.set(true);
     u.chat_list.remove_all();
     let mut new_rows = Vec::new();
-    let (pins, muted) = { let st = u.st.borrow(); (st.pins.clone(), st.muted.clone()) };
+    let (pins, muted) = {
+        let st = u.st.borrow();
+        (st.pins.clone(), st.muted.clone())
+    };
     let mut pinned: Vec<(usize, i64, String, bool, Value)> = Vec::new();
     for (title, preview, when, unread, id, chat) in rows {
         let keys = keys_of(&chat);
@@ -3955,7 +4863,21 @@ fn render_chats_inner(u: &Rc<Ui>) {
             row.set_tooltip_text(Some(&title));
         }
         new_rows.push((row.clone(), slot, title.clone()));
-        u.row_parts.borrow_mut().insert(id, RowParts { row: row.clone(), time_unix, time: time.clone(), name: name.clone(), stack: stack.clone(), short: short.clone(), prev: prev.clone(), pill: pill.clone(), badge: badge.clone(), dot: dot.clone() });
+        u.row_parts.borrow_mut().insert(
+            id,
+            RowParts {
+                row: row.clone(),
+                time_unix,
+                time: time.clone(),
+                name: name.clone(),
+                stack: stack.clone(),
+                short: short.clone(),
+                prev: prev.clone(),
+                pill: pill.clone(),
+                badge: badge.clone(),
+                dot: dot.clone(),
+            },
+        );
         row.add_css_class("chat-row");
         if unread {
             row.add_css_class("unread");
@@ -3989,7 +4911,11 @@ fn render_chats_inner(u: &Rc<Ui>) {
             if !u.side_anim.get() {
                 adj.set_value(keep);
             }
-            if n.get() < 10 && adj.upper() - adj.page_size() < keep - 0.5 { glib::ControlFlow::Continue } else { glib::ControlFlow::Break }
+            if n.get() < 10 && adj.upper() - adj.page_size() < keep - 0.5 {
+                glib::ControlFlow::Continue
+            } else {
+                glib::ControlFlow::Break
+            }
         });
     }
 }
@@ -4000,18 +4926,42 @@ fn row_matches(u: &Ui, row: &gtk::ListBoxRow) -> bool {
     if q.is_empty() {
         return true;
     }
-    let Ok(st) = u.st.try_borrow() else { return true };
-    let Some(c) = usize::try_from(row.index()).ok().and_then(|i| st.chats.get(i)) else { return true };
-    if c["id"].as_i64().is_some_and(|id| st.find_counts.contains_key(&id) || st.find_hits.contains_key(&id)) {
+    let Ok(st) = u.st.try_borrow() else {
+        return true;
+    };
+    let Some(c) = usize::try_from(row.index())
+        .ok()
+        .and_then(|i| st.chats.get(i))
+    else {
+        return true;
+    };
+    if c["id"]
+        .as_i64()
+        .is_some_and(|id| st.find_counts.contains_key(&id) || st.find_hits.contains_key(&id))
+    {
         return true; // a message in it matches
     }
     let digits: String = q.chars().filter(char::is_ascii_digit).collect();
     chat_title(c, &st.names).to_lowercase().contains(&q)
-        || c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).any(|h| {
-            let name = st.names.get(h).map(|n| n.to_lowercase()).unwrap_or_default();
-            let plain: String = h.chars().filter(char::is_ascii_digit).collect();
-            name.contains(&q) || h.to_lowercase().contains(&q) || (digits.len() >= 3 && q.chars().all(|ch| ch.is_ascii_digit() || " -()+".contains(ch)) && plain.contains(&digits))
-        })
+        || c["participants"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_str())
+            .any(|h| {
+                let name = st
+                    .names
+                    .get(h)
+                    .map(|n| n.to_lowercase())
+                    .unwrap_or_default();
+                let plain: String = h.chars().filter(char::is_ascii_digit).collect();
+                name.contains(&q)
+                    || h.to_lowercase().contains(&q)
+                    || (digits.len() >= 3
+                        && q.chars()
+                            .all(|ch| ch.is_ascii_digit() || " -()+".contains(ch))
+                        && plain.contains(&digits))
+            })
 }
 
 const SEARCH_MS: f64 = 200.0;
@@ -4019,17 +4969,28 @@ const SEARCH_MS: f64 = 200.0;
 /// Put the field over the title: from the magnifier button's left edge to the settings button. `p` is how far it has
 /// grown (0 = the button's own size and invisible, 1 = full width), so the button fades out as the field fades in.
 fn search_place(u: &Ui, p: f64) {
-    let (Some(b), Some(s)) = (u.search_btn.compute_bounds(&u.head_overlay), u.settings_btn.compute_bounds(&u.head_overlay)) else { return };
+    let (Some(b), Some(s)) = (
+        u.search_btn.compute_bounds(&u.head_overlay),
+        u.settings_btn.compute_bounds(&u.head_overlay),
+    ) else {
+        return;
+    };
     let (x, w0) = (b.x() as f64, b.width() as f64);
     let full = (s.x() as f64 - 10.0 - x).max(w0);
     let e = 1.0 - (1.0 - p).powi(3);
     u.search_wrap.set_margin_start(x.round() as i32);
-    u.search_wrap.set_width_request((w0 + (full - w0) * e).round() as i32);
+    u.search_wrap
+        .set_width_request((w0 + (full - w0) * e).round() as i32);
     u.search_wrap.set_opacity(e);
     u.search_btn.set_opacity(1.0 - e);
     u.search_btn.set_can_target(p < 0.5);
     // the title gives way to the field (it would show through its translucent fill)
-    if let Some(t) = u.head_overlay.child().and_then(|h| h.downcast::<gtk::HeaderBar>().ok()).and_then(|h| h.title_widget()) {
+    if let Some(t) = u
+        .head_overlay
+        .child()
+        .and_then(|h| h.downcast::<gtk::HeaderBar>().ok())
+        .and_then(|h| h.title_widget())
+    {
         t.set_opacity(1.0 - e);
     }
 }
@@ -4046,11 +5007,19 @@ fn search_to(u: &Rc<Ui>, open: bool) {
     let (u2, last) = (u.clone(), Cell::new(0_i64));
     u.head_overlay.add_tick_callback(move |_, clock| {
         let now = clock.frame_time();
-        let dt = if last.get() == 0 { 16_000.0 } else { (now - last.get()) as f64 };
+        let dt = if last.get() == 0 {
+            16_000.0
+        } else {
+            (now - last.get()) as f64
+        };
         last.set(now);
         let target = if u2.search_open.get() { 1.0 } else { 0.0 };
         let p = u2.search_p.get();
-        let p = if p < target { (p + dt / 1000.0 / SEARCH_MS).min(target) } else { (p - dt / 1000.0 / SEARCH_MS).max(target) };
+        let p = if p < target {
+            (p + dt / 1000.0 / SEARCH_MS).min(target)
+        } else {
+            (p - dt / 1000.0 / SEARCH_MS).max(target)
+        };
         u2.search_p.set(p);
         search_place(&u2, p);
         if p == target {
@@ -4097,21 +5066,36 @@ fn apply_search_inner(u: &Rc<Ui>) {
     // pinned chats are in the list only as hidden rows: while searching they show there, and their tiles give way
     let pinned: Vec<bool> = {
         let st = u.st.borrow();
-        st.chats.iter().map(|c| pin_pos(&st.pins, c).is_some() || c["id"].as_i64().is_some_and(|id| st.off_list.contains(&id))).collect()
+        st.chats
+            .iter()
+            .map(|c| {
+                pin_pos(&st.pins, c).is_some()
+                    || c["id"].as_i64().is_some_and(|id| st.off_list.contains(&id))
+            })
+            .collect()
     };
     for (i, p) in pinned.into_iter().enumerate() {
         if p && let Some(row) = u.chat_list.row_at_index(i as i32) {
             row.set_visible(searching);
         }
     }
-    u.tiles.set_visible(!searching && u.tiles.first_child().is_some());
+    u.tiles
+        .set_visible(!searching && u.tiles.first_child().is_some());
     if !searching {
         u.tiles.queue_resize(); // shown again: measure it afresh (GTK keeps the height it was asked for while hidden)
     }
-    let any = (0..u.st.borrow().chats.len()).any(|i| u.chat_list.row_at_index(i as i32).is_some_and(|r| row_matches(u, &r)));
+    let any = (0..u.st.borrow().chats.len()).any(|i| {
+        u.chat_list
+            .row_at_index(i as i32)
+            .is_some_and(|r| row_matches(u, &r))
+    });
     // a message search can take several seconds: say so instead of "nothing found"
     let waiting = u.search_spin.is_visible();
-    u.side_none.set_text(if waiting { "Searching…" } else { "No conversations found" });
+    u.side_none.set_text(if waiting {
+        "Searching…"
+    } else {
+        "No conversations found"
+    });
     u.side_none_spin.set_visible(waiting);
     u.side_none_spin.set_spinning(waiting);
     u.side_none_box.set_visible(searching && !any);
@@ -4142,7 +5126,11 @@ fn search_words(q: &str) -> Vec<String> {
 /// Whole words get rounded pills (consecutive matched words share one) drawn under the label by `pilllabel`; a
 /// label that can't sit on that layer gets plain rectangles over just the matched letters.
 fn highlight(l: &gtk::Label, words: &[String], strong: bool) {
-    let (r, g, b) = if strong { (0xffff_u16, 0x7e7e_u16, 0xb9b9_u16) } else { (0xffff, 0xb8b8, 0xdcdc) };
+    let (r, g, b) = if strong {
+        (0xffff_u16, 0x7e7e_u16, 0xb9b9_u16)
+    } else {
+        (0xffff, 0xb8b8, 0xdcdc)
+    };
     let rgb = (r as f64 / 65535.0, g as f64 / 65535.0, b as f64 / 65535.0);
     if words.is_empty() {
         l.set_attributes(None);
@@ -4157,7 +5145,16 @@ fn highlight(l: &gtk::Label, words: &[String], strong: bool) {
     let plain: Vec<(usize, usize)> = if pilled {
         spans
     } else {
-        words.iter().filter(|w| !w.is_empty()).flat_map(|w| lower.match_indices(w.as_str()).map(|(at, _)| (at, at + w.len())).collect::<Vec<_>>()).collect()
+        words
+            .iter()
+            .filter(|w| !w.is_empty())
+            .flat_map(|w| {
+                lower
+                    .match_indices(w.as_str())
+                    .map(|(at, _)| (at, at + w.len()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     };
     for (s, e) in plain {
         let (start, end) = (s as u32, e as u32);
@@ -4186,7 +5183,11 @@ fn word_spans(text: &str, lower: &str, words: &[String]) -> Vec<(usize, usize)> 
     for w in words.iter().filter(|w| !w.is_empty()) {
         for (at, _) in lower.match_indices(w.as_str()) {
             let (mut s, mut e) = (at, at + w.len());
-            while let Some(c) = text[..s].chars().next_back().filter(|c| c.is_alphanumeric()) {
+            while let Some(c) = text[..s]
+                .chars()
+                .next_back()
+                .filter(|c| c.is_alphanumeric())
+            {
                 s -= c.len_utf8();
             }
             while let Some(c) = text[e..].chars().next().filter(|c| c.is_alphanumeric()) {
@@ -4199,7 +5200,9 @@ fn word_spans(text: &str, lower: &str, words: &[String]) -> Vec<(usize, usize)> 
     let mut out: Vec<(usize, usize)> = Vec::new();
     for (s, e) in spans {
         match out.last_mut() {
-            Some(last) if s <= last.1 || text[last.1..s].chars().all(char::is_whitespace) => last.1 = last.1.max(e),
+            Some(last) if s <= last.1 || text[last.1..s].chars().all(char::is_whitespace) => {
+                last.1 = last.1.max(e)
+            }
             _ => out.push((s, e)),
         }
     }
@@ -4208,9 +5211,16 @@ fn word_spans(text: &str, lower: &str, words: &[String]) -> Vec<(usize, usize)> 
 
 /// The part of a message around its first match, for a row's preview line.
 fn snippet(text: &str, words: &[String]) -> String {
-    let flat: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let flat: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     let lower = fold(&flat);
-    let at = words.iter().filter_map(|w| lower.find(w.as_str())).min().unwrap_or(0);
+    let at = words
+        .iter()
+        .filter_map(|w| lower.find(w.as_str()))
+        .min()
+        .unwrap_or(0);
     let start = flat[..at].char_indices().rev().nth(6).map_or(0, |(i, _)| i);
     format!("{}{}", if start > 0 { "…" } else { "" }, &flat[start..])
 }
@@ -4225,9 +5235,18 @@ fn style_rows(u: &Rc<Ui>) {
     }
     u.styled.set(searching);
     let words = search_words(&q);
-    let parts: Vec<(i64, RowParts)> = u.row_parts.borrow().iter().map(|(k, v)| (*k, v.clone())).collect();
+    let parts: Vec<(i64, RowParts)> = u
+        .row_parts
+        .borrow()
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
     let st = u.st.borrow();
-    let by_id: HashMap<i64, &Value> = st.chats.iter().filter_map(|c| Some((c["id"].as_i64()?, c))).collect(); // not a scan per row
+    let by_id: HashMap<i64, &Value> = st
+        .chats
+        .iter()
+        .filter_map(|c| Some((c["id"].as_i64()?, c)))
+        .collect(); // not a scan per row
     for (id, p) in parts {
         style_row(&st, &words, searching, id, &p, by_id.get(&id).copied());
     }
@@ -4235,10 +5254,25 @@ fn style_rows(u: &Rc<Ui>) {
 
 /// One row's name and preview while a search is on (or back to plain when it isn't), and its match count: a pill
 /// beside the preview in the wide sidebar, a badge on the avatar's corner in the avatars-only one.
-fn style_row(st: &State, words: &[String], searching: bool, id: i64, p: &RowParts, chat: Option<&Value>) {
+fn style_row(
+    st: &State,
+    words: &[String],
+    searching: bool,
+    id: i64,
+    p: &RowParts,
+    chat: Option<&Value>,
+) {
     highlight(&p.name, if searching { words } else { &[] }, false);
-    let hits = if searching { st.find_hits.get(&id) } else { None };
-    let count = if searching { st.find_counts.get(&id).copied().or(hits.map(Vec::len)) } else { None };
+    let hits = if searching {
+        st.find_hits.get(&id)
+    } else {
+        None
+    };
+    let count = if searching {
+        st.find_counts.get(&id).copied().or(hits.map(Vec::len))
+    } else {
+        None
+    };
     let text = match hits.and_then(|h| h.first()) {
         Some(m) => snippet(m["text"].as_str().unwrap_or(""), words),
         None => chat.map(|c| row_info(st, c).1).unwrap_or_default(),
@@ -4248,7 +5282,11 @@ fn style_row(st: &State, words: &[String], searching: bool, id: i64, p: &RowPart
     let n = count.unwrap_or(0);
     p.pill.set_text(&format!("{n} matches"));
     p.pill.set_visible(n > 1);
-    p.badge.set_text(&if n > 99 { "99+".to_string() } else { n.to_string() });
+    p.badge.set_text(&if n > 99 {
+        "99+".to_string()
+    } else {
+        n.to_string()
+    });
     p.badge.set_visible(n > 0);
 }
 
@@ -4259,7 +5297,10 @@ fn prof_list(u: &Ui, tag: &str) {
         return;
     }
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    let t = START.get_or_init(std::time::Instant::now).elapsed().as_secs_f32();
+    let t = START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f32();
     let (mut rows, mut shown, mut mapped) = (0, 0, 0);
     let mut c = u.chat_list.first_child();
     while let Some(w) = c {
@@ -4277,7 +5318,12 @@ fn prof_list(u: &Ui, tag: &str) {
             r.is_child_visible(),
             r.is_visible(),
             r.is_drawable(),
-            u.row_parts.borrow().values().next().map(|p| p.name.text().to_string()).unwrap_or_default()
+            u.row_parts
+                .borrow()
+                .values()
+                .next()
+                .map(|p| p.name.text().to_string())
+                .unwrap_or_default()
         );
     }
     eprintln!(
@@ -4296,11 +5342,18 @@ fn search_changed(u: &Rc<Ui>) {
         prof_list(u, "search cleared");
         for secs in [1, 5, 15, 30, 45] {
             let u2 = u.clone();
-            glib::timeout_add_local_once(Duration::from_secs(secs), move || prof_list(&u2, &format!("{secs}s after clear")));
+            glib::timeout_add_local_once(Duration::from_secs(secs), move || {
+                prof_list(&u2, &format!("{secs}s after clear"))
+            });
         }
     }
     if std::env::var_os("BF_PROF").is_some() {
-        eprintln!("prof: search_changed {} ms ({} chats, {} rows)", t0.elapsed().as_millis(), u.st.borrow().chats.len(), u.row_parts.borrow().len());
+        eprintln!(
+            "prof: search_changed {} ms ({} chats, {} rows)",
+            t0.elapsed().as_millis(),
+            u.st.borrow().chats.len(),
+            u.row_parts.borrow().len()
+        );
     }
 }
 
@@ -4336,8 +5389,18 @@ fn search_changed_inner(u: &Rc<Ui>) {
                 let q = u2.search.text().trim().to_string();
                 // chats older than the loaded ones, found by name: a group's name, or a contact whose name matches
                 if q.chars().count() >= 3 {
-                    let addrs = u2.st.borrow().contacts.as_ref().map(|k| k.search(&q).iter().map(|(_, a)| a.to_string()).collect()).unwrap_or_default();
-                    u2.send(Cmd::FindNamed { q: q.clone(), addrs, seq: gen_ });
+                    let addrs = u2
+                        .st
+                        .borrow()
+                        .contacts
+                        .as_ref()
+                        .map(|k| k.search(&q).iter().map(|(_, a)| a.to_string()).collect())
+                        .unwrap_or_default();
+                    u2.send(Cmd::FindNamed {
+                        q: q.clone(),
+                        addrs,
+                        seq: gen_,
+                    });
                 }
                 u2.send(Cmd::Search { q, seq: gen_ });
             }
@@ -4366,7 +5429,14 @@ fn on_found(u: &Rc<Ui>, seq: u64, hits: Vec<Value>, counts: HashMap<i64, usize>)
             let id = st.alias.get(&id).copied().unwrap_or(id);
             st.chats.iter().any(|c| c["id"].as_i64() == Some(id))
         };
-        by_chat.keys().chain(counts.keys()).copied().filter(|id| !known(*id)).collect::<HashSet<_>>().into_iter().collect()
+        by_chat
+            .keys()
+            .chain(counts.keys())
+            .copied()
+            .filter(|id| !known(*id))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
     };
     {
         let mut st = u.st.borrow_mut();
@@ -4387,7 +5457,10 @@ fn on_found(u: &Rc<Ui>, seq: u64, hits: Vec<Value>, counts: HashMap<i64, usize>)
     if let Some(chat) = showing {
         if u.st.borrow().find_hits.contains_key(&chat) {
             begin_find(u, chat, 0);
-            u.send(Cmd::ChatHits { chat, q: u.search.text().trim().to_string() });
+            u.send(Cmd::ChatHits {
+                chat,
+                q: u.search.text().trim().to_string(),
+            });
         } else if u.st.borrow().find_view.is_some() {
             end_find(u);
         }
@@ -4402,7 +5475,11 @@ fn exit_search(u: &Rc<Ui>) {
     let (removed, hide) = {
         let mut st = u.st.borrow_mut();
         let (sel, before) = (st.sel, st.chats.len());
-        st.chats.retain(|c| c["id"].as_i64().is_none_or(|id| !added.contains(&id) || Some(id) == sel));
+        st.chats.retain(|c| {
+            c["id"]
+                .as_i64()
+                .is_none_or(|id| !added.contains(&id) || Some(id) == sel)
+        });
         let hide = sel.filter(|id| added.contains(id));
         if let Some(id) = hide {
             st.off_list.insert(id); // like Messages: you stay in it, and it shows in the list once scrolling loads it
@@ -4414,9 +5491,17 @@ fn exit_search(u: &Rc<Ui>) {
         let t = std::time::Instant::now();
         render_chats(u);
         if std::env::var_os("BF_PROF").is_some() {
-            eprintln!("prof: exit_search rebuilt the list in {} ms", t.elapsed().as_millis());
+            eprintln!(
+                "prof: exit_search rebuilt the list in {} ms",
+                t.elapsed().as_millis()
+            );
         }
-    } else if let Some(i) = hide.and_then(|id| u.st.borrow().chats.iter().position(|c| c["id"].as_i64() == Some(id))) {
+    } else if let Some(i) = hide.and_then(|id| {
+        u.st.borrow()
+            .chats
+            .iter()
+            .position(|c| c["id"].as_i64() == Some(id))
+    }) {
         if let Some(row) = u.chat_list.row_at_index(i as i32) {
             row.set_visible(false);
         }
@@ -4430,13 +5515,29 @@ fn exit_search(u: &Rc<Ui>) {
 fn begin_find(u: &Rc<Ui>, chat: i64, idx: usize) {
     let (guid, row, loaded) = {
         let st = u.st.borrow();
-        let Some(hit) = st.find_hits.get(&chat).and_then(|h| h.get(idx)) else { return };
+        let Some(hit) = st.find_hits.get(&chat).and_then(|h| h.get(idx)) else {
+            return;
+        };
         let guid = hit["guid"].as_str().unwrap_or("").to_string();
-        let loaded = st.hist.get(&chat).is_some_and(|h| h.iter().any(|m| m["guid"].as_str() == Some(&guid)));
+        let loaded = st
+            .hist
+            .get(&chat)
+            .is_some_and(|h| h.iter().any(|m| m["guid"].as_str() == Some(&guid)));
         (guid, hit["id"].as_i64().unwrap_or(0), loaded)
     };
-    let more = u.st.borrow().find_view.as_ref().filter(|f| f.chat == chat).map_or(false, |f| f.more);
-    u.st.borrow_mut().find_view = Some(FindView { chat, idx, more: if loaded { more } else { true }, loading: !loaded, goto: Some(guid) });
+    let more =
+        u.st.borrow()
+            .find_view
+            .as_ref()
+            .filter(|f| f.chat == chat)
+            .map_or(false, |f| f.more);
+    u.st.borrow_mut().find_view = Some(FindView {
+        chat,
+        idx,
+        more: if loaded { more } else { true },
+        loading: !loaded,
+        goto: Some(guid),
+    });
     u.stick_bottom.set(false);
     if loaded {
         render_conv(u);
@@ -4478,7 +5579,13 @@ fn update_find_bar(u: &Ui) {
         return;
     };
     let n = st.find_hits.get(&f.chat).map_or(0, Vec::len);
-    u.find_label.set_text(&format!("“{}” · {} of {}{}", u.search.text().trim(), f.idx + 1, n, if f.loading { " · loading…" } else { "" }));
+    u.find_label.set_text(&format!(
+        "“{}” · {} of {}{}",
+        u.search.text().trim(),
+        f.idx + 1,
+        n,
+        if f.loading { " · loading…" } else { "" }
+    ));
     u.find_older.set_sensitive(f.idx + 1 < n);
     u.find_newer.set_sensitive(f.idx > 0);
     u.find_bar.set_visible(true);
@@ -4488,28 +5595,52 @@ fn update_find_bar(u: &Ui) {
 fn load_newer(u: &Rc<Ui>) {
     let req = {
         let mut st = u.st.borrow_mut();
-        let Some(chat) = st.find_view.as_ref().filter(|f| f.more && !f.loading).map(|f| f.chat) else { return };
+        let Some(chat) = st
+            .find_view
+            .as_ref()
+            .filter(|f| f.more && !f.loading)
+            .map(|f| f.chat)
+        else {
+            return;
+        };
         if !st.connected {
             return;
         }
-        let Some((last, iso)) = st.hist.get(&chat).and_then(|h| h.last()).and_then(|m| Some((m["id"].as_i64()?, m["created_at"].as_str()?.to_string()))) else { return };
+        let Some((last, iso)) = st
+            .hist
+            .get(&chat)
+            .and_then(|h| h.last())
+            .and_then(|m| Some((m["id"].as_i64()?, m["created_at"].as_str()?.to_string())))
+        else {
+            return;
+        };
         if let Some(f) = st.find_view.as_mut() {
             f.loading = true;
         }
         (chat, last, iso)
     };
-    u.send(Cmd::Newer { id: req.0, iso: req.2 });
+    u.send(Cmd::Newer {
+        id: req.0,
+        iso: req.2,
+    });
 }
 
 /// After a redraw: scroll to the message a search hit points at (its words are drawn in the strong colour).
 fn show_goto(u: &Rc<Ui>) {
-    let guid = u.st.borrow_mut().find_view.as_mut().and_then(|f| f.goto.take());
+    let guid =
+        u.st.borrow_mut()
+            .find_view
+            .as_mut()
+            .and_then(|f| f.goto.take());
     let Some(guid) = guid else { return };
     // the target's widget is looked up again every frame: the chat is redrawn by other events (previews, file
     // info, contacts) while we wait, and the widgets we saw first are gone by then
     let target = move |u: &Ui| {
         let st = u.st.borrow();
-        let i = st.sel.and_then(|c| st.hist.get(&c)).and_then(|h| h.iter().position(|m| m["guid"].as_str() == Some(&guid)))?;
+        let i = st
+            .sel
+            .and_then(|c| st.hist.get(&c))
+            .and_then(|h| h.iter().position(|m| m["guid"].as_str() == Some(&guid)))?;
         u.msg_widgets.borrow().get(i).cloned()
     };
     // Keep the message a third of the way down for a moment: pictures and link cards below it get their size
@@ -4526,8 +5657,15 @@ fn show_goto(u: &Rc<Ui>) {
             && let Some(w) = ws.first()
             && w.height() > 0
             && adj.upper() > adj.page_size()
-            && let Some(y) = match_y(&ws, &search_words(u2.search.text().trim()), u2.msgs.upcast_ref())
-                .or_else(|| w.compute_point(&u2.msgs, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| p.y()))
+            && let Some(y) = match_y(
+                &ws,
+                &search_words(u2.search.text().trim()),
+                u2.msgs.upcast_ref(),
+            )
+            .or_else(|| {
+                w.compute_point(&u2.msgs, &gtk::graphene::Point::new(0.0, 0.0))
+                    .map(|p| p.y())
+            })
         {
             let want = (y as f64 - adj.page_size() / 3.0).max(0.0);
             if (adj.value() - want).abs() > 1.0 {
@@ -4571,22 +5709,38 @@ fn load_more_chats(u: &Rc<Ui>) {
 
 /// A chat's stable identity for pinning (its row id changes between runs of the Mac's database).
 fn pin_key(c: &Value) -> String {
-    c["identifier"].as_str().or(c["guid"].as_str()).map(String::from).unwrap_or_else(|| {
-        c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).collect::<Vec<_>>().join(",")
-    })
+    c["identifier"]
+        .as_str()
+        .or(c["guid"].as_str())
+        .map(String::from)
+        .unwrap_or_else(|| {
+            c["participants"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        })
 }
 
 /// The keys a chat can be pinned or muted under: its own, or one for each chat behind a merged conversation.
 fn keys_of(c: &Value) -> Vec<String> {
     match c["merged_keys"].as_array() {
-        Some(a) => a.iter().filter_map(|k| k.as_str().map(String::from)).collect(),
+        Some(a) => a
+            .iter()
+            .filter_map(|k| k.as_str().map(String::from))
+            .collect(),
         None => vec![pin_key(c)],
     }
 }
 
 /// Where this chat is in the pin order (None: not pinned).
 fn pin_pos(pins: &[String], c: &Value) -> Option<usize> {
-    keys_of(c).iter().filter_map(|k| pins.iter().position(|p| p == k)).min()
+    keys_of(c)
+        .iter()
+        .filter_map(|k| pins.iter().position(|p| p == k))
+        .min()
 }
 
 fn is_muted(muted: &[String], c: &Value) -> bool {
@@ -4643,7 +5797,13 @@ fn toggle_mute(u: &Rc<Ui>, keys: &[String]) {
             st.muted.push(k.clone());
         }
         let _ = std::fs::create_dir_all(u.store.muted_file.parent().unwrap());
-        let _ = std::fs::write(&u.store.muted_file, st.muted.iter().map(|p| format!("{p}\n")).collect::<String>());
+        let _ = std::fs::write(
+            &u.store.muted_file,
+            st.muted
+                .iter()
+                .map(|p| format!("{p}\n"))
+                .collect::<String>(),
+        );
     }
     render_chats(u);
 }
@@ -4658,7 +5818,10 @@ fn toggle_pin(u: &Rc<Ui>, keys: &[String]) {
             st.pins.push(k.clone());
         }
         let _ = std::fs::create_dir_all(u.store.pins_file.parent().unwrap());
-        let _ = std::fs::write(&u.store.pins_file, st.pins.iter().map(|p| format!("{p}\n")).collect::<String>());
+        let _ = std::fs::write(
+            &u.store.pins_file,
+            st.pins.iter().map(|p| format!("{p}\n")).collect::<String>(),
+        );
     }
     render_chats(u);
 }
@@ -4669,12 +5832,19 @@ const AV_PAD: i32 = 8;
 /// Width of a row's avatar column: just the avatar and its room, or (avatars-only sidebar, margins 4 + padding 4) the
 /// whole row, so the names under the avatars get all the width there is. The avatar's x is 24 either way.
 fn stack_w(collapsed: bool) -> i32 {
-    if collapsed { COLLAPSED_W - 20 - 16 } else { AV_PAD * 2 + AVATAR }
+    if collapsed {
+        COLLAPSED_W - 20 - 16
+    } else {
+        AV_PAD * 2 + AVATAR
+    }
 }
 
 /// The avatar goes first in a row's stack (replacing the one there).
 fn put_avatar(stack: &gtk::Box, av: &gtk::Widget) {
-    if let Some(old) = stack.first_child().filter(|c| !c.has_css_class("tile-name")) {
+    if let Some(old) = stack
+        .first_child()
+        .filter(|c| !c.has_css_class("tile-name"))
+    {
         stack.remove(&old);
     }
     av.set_halign(gtk::Align::Center); // centred in the stack, whose width is `stack_w`
@@ -4685,13 +5855,20 @@ fn put_avatar(stack: &gtk::Box, av: &gtk::Widget) {
 /// What shows under an avatar: a person is just their first name (the list has room for the whole name); a group, a
 /// number or an email stays whole.
 fn short_title(chat: &Value, title: &str) -> String {
-    if chat["is_group"].as_bool() == Some(true) || title.chars().any(|c| c.is_ascii_digit() || c == '@') { title.to_string() } else { first_name(title) }
+    if chat["is_group"].as_bool() == Some(true)
+        || title.chars().any(|c| c.is_ascii_digit() || c == '@')
+    {
+        title.to_string()
+    } else {
+        first_name(title)
+    }
 }
 
 /// The pinned chats as avatar tiles above the list (names hide when the sidebar is avatars-only).
 fn render_tiles(u: &Rc<Ui>, pinned: Vec<(usize, i64, String, bool, Value)>, sel: Option<i64>) {
     u.tiles.remove_all();
-    u.tiles.set_visible(!pinned.is_empty() && u.search.text().trim().is_empty());
+    u.tiles
+        .set_visible(!pinned.is_empty() && u.search.text().trim().is_empty());
     for (_, id, title, unread, chat) in pinned {
         let av = chat_avatar(u, &chat, &title);
         av.set_halign(gtk::Align::Center);
@@ -4738,11 +5915,13 @@ fn render_tiles(u: &Rc<Ui>, pinned: Vec<(usize, i64, String, bool, Value)>, sel:
 }
 
 fn side_adjustment(u: &Ui) -> Option<gtk::Adjustment> {
-    u.chat_list.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>().map(|sw| sw.vadjustment())
+    u.chat_list
+        .ancestor(gtk::ScrolledWindow::static_type())
+        .and_downcast::<gtk::ScrolledWindow>()
+        .map(|sw| sw.vadjustment())
 }
 
 // ---------- conversation ----------
-
 
 /// What drawing one message needs to know about the whole conversation.
 struct ConvCtx {
@@ -4759,12 +5938,19 @@ struct ConvCtx {
 /// the whole conversation: that took ~150 ms to lay out again for 150 messages. False when it can't (nothing
 /// drawn, the view changed since, or the message has pictures, which the viewer's list is kept in step with).
 fn redraw_message(u: &Rc<Ui>, i: usize) -> bool {
-    let Some(ctx) = u.conv_ctx.borrow().clone() else { return false };
+    let Some(ctx) = u.conv_ctx.borrow().clone() else {
+        return false;
+    };
     let mut parts = u.msg_widgets.borrow_mut();
-    let Some(old) = parts.get(i).filter(|o| !o.is_empty()) else { return false };
+    let Some(old) = parts.get(i).filter(|o| !o.is_empty()) else {
+        return false;
+    };
     let first = old[0].clone();
     // (a link message's own attachment is just its preview's payload: no picture for the viewer's list)
-    let pictures = preview_row(&ctx.msgs[i]).is_none() && ctx.msgs[i]["attachments"].as_array().is_some_and(|a| !a.is_empty());
+    let pictures = preview_row(&ctx.msgs[i]).is_none()
+        && ctx.msgs[i]["attachments"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty());
     if first.parent().as_ref() != Some(u.msgs.upcast_ref()) || pictures {
         return false;
     }
@@ -4795,10 +5981,19 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     }
     // a group event (joined, left, renamed) is a line of its own, not a message; one we can't word is left out
     let event = group_event(m, names);
-    if m["item_type"].as_i64().unwrap_or(0) != 0 && event.is_none() && clean_text(m).is_empty() && m["attachments"].as_array().is_none_or(|a| a.is_empty()) {
+    if m["item_type"].as_i64().unwrap_or(0) != 0
+        && event.is_none()
+        && clean_text(m).is_empty()
+        && m["attachments"].as_array().is_none_or(|a| a.is_empty())
+    {
         return out;
     }
-    let who = |m: &Value| (m["is_from_me"].as_bool() == Some(true), m["sender"].as_str().unwrap_or("").to_string());
+    let who = |m: &Value| {
+        (
+            m["is_from_me"].as_bool() == Some(true),
+            m["sender"].as_str().unwrap_or("").to_string(),
+        )
+    };
     let me = m["is_from_me"].as_bool() == Some(true);
     let gap = |a: usize, b: usize| match (times[a], times[b]) {
         (Some(x), Some(y)) => (y - x).abs(),
@@ -4820,7 +6015,13 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     if svc_changed || show_time {
         let l = gtk::Label::new(None);
         if show_time {
-            track_time(u, &l, dt.as_ref().map(|d| d.to_unix()), TimeKind::Sep, svc_changed.then(|| svc_name.to_string()));
+            track_time(
+                u,
+                &l,
+                dt.as_ref().map(|d| d.to_unix()),
+                TimeKind::Sep,
+                svc_changed.then(|| svc_name.to_string()),
+            );
         } else {
             l.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(svc_name)));
         }
@@ -4839,7 +6040,10 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     }
     // a "run" = same sender, close together: shares one name label and one avatar
     let run_prev = !sep && i > 0 && who(&msgs[i - 1]) == who(m) && gap(i - 1, i) < 300;
-    let run_next = i + 1 < msgs.len() && who(&msgs[i + 1]) == who(m) && gap(i, i + 1) < 300 && day(times[i]) == day(times[i + 1]);
+    let run_next = i + 1 < msgs.len()
+        && who(&msgs[i + 1]) == who(m)
+        && gap(i, i + 1) < 300
+        && day(times[i]) == day(times[i + 1]);
     // my messages still on their way continue my last run: no tail on the one above them
     let run_next = run_next || (i + 1 == msgs.len() && me && c.pending_tail);
     let mut name_w = 0; // width of the name above the message (0: none), which a reaction pill must clear
@@ -4851,9 +6055,14 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         out.push(n.upcast());
     }
     // hovering a message shows its full date and time (the separators only show them for a group of messages)
-    let when = dt.and_then(|d| d.format("%A, %B %-d, %Y at %H:%M").ok()).map(|g| g.to_string());
+    let when = dt
+        .and_then(|d| d.format("%A, %B %-d, %Y at %H:%M").ok())
+        .map(|g| g.to_string());
     let failed_msg = me && m["error"].as_i64().unwrap_or(0) != 0;
-    let resending = failed_msg && m["id"].as_i64().is_some_and(|id| u.st.borrow().resending.contains(&id));
+    let resending = failed_msg
+        && m["id"]
+            .as_i64()
+            .is_some_and(|id| u.st.borrow().resending.contains(&id));
     let (parts, saves) = message_parts(u, m, me, svc != "iMessage", !run_next);
     // a chat open on a search hit: mark the words wherever they show (text, link and file cards)
     let (words, current) = find_words(u, m);
@@ -4865,8 +6074,16 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     // a reply: the message it answers in a small outlined bubble above the first reply of a run (like Messages),
     // then a bar down to the replies; further replies to the same message just continue the bar
     if let Some(g) = m["reply_to_guid"].as_str().filter(|g| !g.is_empty()) {
-        let prev_same = msgs[..i].iter().rev().find(|x| x["is_reaction"].as_bool() != Some(true)).is_some_and(|x| x["reply_to_guid"].as_str() == Some(g));
-        let side = if me { gtk::Align::End } else { gtk::Align::Start };
+        let prev_same = msgs[..i]
+            .iter()
+            .rev()
+            .find(|x| x["is_reaction"].as_bool() != Some(true))
+            .is_some_and(|x| x["reply_to_guid"].as_str() == Some(g));
+        let side = if me {
+            gtk::Align::End
+        } else {
+            gtk::Align::Start
+        };
         let indent = |line: &gtk::Box| {
             if group && !me {
                 let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -4877,7 +6094,11 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         if !prev_same {
             let said = match msgs.iter().find(|x| x["guid"].as_str() == Some(g)) {
                 Some(o) => {
-                    let who = if o["is_from_me"].as_bool() == Some(true) { None } else { Some(sender_name(o, names)) };
+                    let who = if o["is_from_me"].as_bool() == Some(true) {
+                        None
+                    } else {
+                        Some(sender_name(o, names))
+                    };
                     let t = clip_words(&summary(o), 160);
                     match who.filter(|_| group) {
                         Some(w) => format!("{w}: {t}"),
@@ -4927,7 +6148,11 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         if turn {
             line.add_css_class("turn");
         }
-        line.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+        line.set_halign(if me {
+            gtk::Align::End
+        } else {
+            gtk::Align::Start
+        });
         line.set_tooltip_text(when.as_deref());
         if group && !me {
             if last && !run_next {
@@ -4940,7 +6165,10 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
                 line.append(&spacer);
             }
         }
-        let save = saves.iter().find(|(i, _)| *i == k).map(|(_, s)| save_button(u, s.clone()));
+        let save = saves
+            .iter()
+            .find(|(i, _)| *i == k)
+            .map(|(_, s)| save_button(u, s.clone()));
         if me && let Some(b) = &save {
             line.append(b); // beside the bubble, on the side away from the edge
         }
@@ -4970,7 +6198,11 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
                 ov.set_child(Some(&part));
                 pill.add_css_class("rise"); // moved up by REACT_UP in CSS (a negative margin stretched it)
                 pill.set_valign(gtk::Align::Start);
-                pill.set_halign(if me { gtk::Align::Start } else { gtk::Align::End });
+                pill.set_halign(if me {
+                    gtk::Align::Start
+                } else {
+                    gtk::Align::End
+                });
                 ov.add_overlay(&pill);
                 line.append(&ov);
             }
@@ -4987,19 +6219,39 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     }
     // the message that was answered: how many replies it has (among the loaded ones); a click goes to the first
     if let Some(g) = m["guid"].as_str() {
-        let first = msgs.iter().position(|x| x["reply_to_guid"].as_str() == Some(g));
-        let n = msgs.iter().filter(|x| x["reply_to_guid"].as_str() == Some(g)).count();
+        let first = msgs
+            .iter()
+            .position(|x| x["reply_to_guid"].as_str() == Some(g));
+        let n = msgs
+            .iter()
+            .filter(|x| x["reply_to_guid"].as_str() == Some(g))
+            .count();
         if let Some(first) = first {
-            let l = gtk::Label::new(Some(&format!("{n} {}", if n == 1 { "Reply" } else { "Replies" })));
+            let l = gtk::Label::new(Some(&format!(
+                "{n} {}",
+                if n == 1 { "Reply" } else { "Replies" }
+            )));
             l.add_css_class("reply-count");
-            l.set_halign(if me { gtk::Align::End } else { gtk::Align::Start });
+            l.set_halign(if me {
+                gtk::Align::End
+            } else {
+                gtk::Align::Start
+            });
             l.set_cursor_from_name(Some("pointer"));
             let click = gtk::GestureClick::new();
             let u2 = u.clone();
             click.connect_released(move |_, _, _, _| {
-                let w = u2.msg_widgets.borrow().get(first).and_then(|ws| ws.iter().find(|w| w.has_css_class("msg-line") || w.has_css_class("tight")).or(ws.first()).cloned());
+                let w = u2.msg_widgets.borrow().get(first).and_then(|ws| {
+                    ws.iter()
+                        .find(|w| w.has_css_class("msg-line") || w.has_css_class("tight"))
+                        .or(ws.first())
+                        .cloned()
+                });
                 let adj = u2.scroller.vadjustment();
-                if let Some(y) = w.and_then(|w| w.compute_point(&u2.msgs, &gtk::graphene::Point::new(0.0, 0.0))).map(|p| p.y()) {
+                if let Some(y) = w
+                    .and_then(|w| w.compute_point(&u2.msgs, &gtk::graphene::Point::new(0.0, 0.0)))
+                    .map(|p| p.y())
+                {
                     u2.stick_bottom.set(false);
                     adj.set_value((y as f64 - adj.page_size() / 3.0).max(0.0));
                 }
@@ -5020,7 +6272,13 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
     // under a message that failed (any of mine), or my newest one: not delivered / delivered / read
     let failed = failed_msg && !resending; // (while it is sent again: no "Not delivered" and no "!")
     let receipt = if me && !failed_msg {
-        m["chat_id"].as_i64().and_then(|chat| u.st.borrow().receipts.get(&chat).filter(|r| Some(r.msg) == m["id"].as_i64()).cloned())
+        m["chat_id"].as_i64().and_then(|chat| {
+            u.st.borrow()
+                .receipts
+                .get(&chat)
+                .filter(|r| Some(r.msg) == m["id"].as_i64())
+                .cloned()
+        })
     } else {
         None
     };
@@ -5060,9 +6318,26 @@ fn render_conv(u: &Rc<Ui>) {
     let (chat, msgs, names, older, preview_svc) = {
         let st = u.st.borrow();
         let Some(id) = st.sel else { return };
-        let Some(chat) = st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).cloned() else { return };
-        let preview_svc = st.preview.get(&id).and_then(|m| m["service"].as_str()).map(String::from);
-        (chat, st.hist.get(&id).cloned().unwrap_or_default(), st.names.clone(), st.older_loading, preview_svc)
+        let Some(chat) = st
+            .chats
+            .iter()
+            .find(|c| c["id"].as_i64() == Some(id))
+            .cloned()
+        else {
+            return;
+        };
+        let preview_svc = st
+            .preview
+            .get(&id)
+            .and_then(|m| m["service"].as_str())
+            .map(String::from);
+        (
+            chat,
+            st.hist.get(&id).cloned().unwrap_or_default(),
+            st.names.clone(),
+            st.older_loading,
+            preview_svc,
+        )
     };
     u.stack.set_visible_child_name("conv");
     let title = chat_title(&chat, &names);
@@ -5076,12 +6351,19 @@ fn render_conv(u: &Rc<Ui>) {
         .or(preview_svc)
         .unwrap_or_else(|| chat_svc.clone());
     let sms = now_svc != "iMessage";
-    u.compose_hint.set_text(&if sms { format!("Text Message · {now_svc}") } else { "iMessage".into() });
+    u.compose_hint.set_text(&if sms {
+        format!("Text Message · {now_svc}")
+    } else {
+        "iMessage".into()
+    });
     let group = chat["is_group"].as_bool() == Some(true);
     let people_n = chat["participants"].as_array().map_or(0, Vec::len);
     let big = group && people_n > BIG_GROUP;
     // a big group: its name (or "Chat with N People"), not every name; the avatar opens the list
-    let named = chat["display_name"].as_str().filter(|s| !s.is_empty()).map(String::from);
+    let named = chat["display_name"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
     let head = match (&named, big) {
         (Some(n), _) => n.clone(),
         (None, true) => big_group_title(&chat, &names),
@@ -5096,13 +6378,26 @@ fn render_conv(u: &Rc<Ui>) {
     u.head_sub.set_text(&sub);
     set_head_avatar(u, &chat, &title);
     // dev aid BF_PEOPLE=<ms>: open the people list of a big group, click the first person 0.6 s later and report
-    if big && let Some(ms) = std::env::var("BF_PEOPLE").ok().and_then(|v| v.parse::<u64>().ok()) {
+    if big
+        && let Some(ms) = std::env::var("BF_PEOPLE")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+    {
         static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !ONCE.swap(true, std::sync::atomic::Ordering::SeqCst) {
             let (u2, chat2) = (u.clone(), chat.clone());
             glib::timeout_add_local_once(Duration::from_millis(ms), move || {
-                let members: Vec<String> = chat2["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
-                let w = u2.head_avatar.first_child().and_then(|c| c.first_child()).unwrap_or_else(|| u2.head_avatar.clone().upcast());
+                let members: Vec<String> = chat2["participants"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| p.as_str().map(String::from))
+                    .collect();
+                let w = u2
+                    .head_avatar
+                    .first_child()
+                    .and_then(|c| c.first_child())
+                    .unwrap_or_else(|| u2.head_avatar.clone().upcast());
                 show_people(&u2, &w, &members);
             });
         }
@@ -5110,7 +6405,8 @@ fn render_conv(u: &Rc<Ui>) {
     for c in ["sms", "imessage"] {
         u.send_btn.remove_css_class(c);
     }
-    u.send_btn.add_css_class(if sms { "sms" } else { "imessage" });
+    u.send_btn
+        .add_css_class(if sms { "sms" } else { "imessage" });
 
     // the scroll position is kept by the adjustment handlers in build() (anchored to the bottom)
     u.st.borrow_mut().photos.clear();
@@ -5131,10 +6427,29 @@ fn render_conv(u: &Rc<Ui>) {
     }
     let pending: Vec<Pending> = {
         let st = u.st.borrow();
-        st.pending.iter().filter(|p| Some(p.chat_id) == st.sel && !matches!(p.item, PendingItem::Seed(..))).cloned().collect()
+        st.pending
+            .iter()
+            .filter(|p| Some(p.chat_id) == st.sel && !matches!(p.item, PendingItem::Seed(..)))
+            .cloned()
+            .collect()
     };
-    let times: Vec<Option<i64>> = msgs.iter().map(|m| m["created_at"].as_str().and_then(local).map(|d| d.to_unix())).collect();
-    let ctx = Rc::new(ConvCtx { msgs, times, names, group, chat_svc, pending_tail: !pending.is_empty() });
+    let times: Vec<Option<i64>> = msgs
+        .iter()
+        .map(|m| {
+            m["created_at"]
+                .as_str()
+                .and_then(local)
+                .map(|d| d.to_unix())
+        })
+        .collect();
+    let ctx = Rc::new(ConvCtx {
+        msgs,
+        times,
+        names,
+        group,
+        chat_svc,
+        pending_tail: !pending.is_empty(),
+    });
     // All at once: with the pictures decoded on another thread this takes ~45 ms for 150 messages. Building the
     // newest part first and the rest afterwards was tried; both parts showed up together anyway.
     let mut drawn = Vec::with_capacity(ctx.msgs.len());
@@ -5166,7 +6481,13 @@ fn mark_seen(u: &Rc<Ui>) {
     let (changed, id) = {
         let mut st = u.st.borrow_mut();
         let Some(id) = st.sel else { return };
-        let Some(last) = st.hist.get(&id).and_then(|h| h.iter().filter_map(|m| m["id"].as_i64()).max()) else { return };
+        let Some(last) = st
+            .hist
+            .get(&id)
+            .and_then(|h| h.iter().filter_map(|m| m["id"].as_i64()).max())
+        else {
+            return;
+        };
         let old = st.seen.insert(id, last);
         (old.is_none_or(|o| o < last), id)
     };
@@ -5214,7 +6535,13 @@ fn show_new_ghosts(u: &Ui) {
     if !u.new_mode.get() {
         return;
     }
-    let ghosts: Vec<Pending> = u.st.borrow().pending.iter().filter(|p| p.chat_id == 0).cloned().collect();
+    let ghosts: Vec<Pending> =
+        u.st.borrow()
+            .pending
+            .iter()
+            .filter(|p| p.chat_id == 0)
+            .cloned()
+            .collect();
     while let Some(c) = u.msgs.first_child() {
         u.msgs.remove(&c);
     }
@@ -5225,9 +6552,15 @@ fn show_new_ghosts(u: &Ui) {
 
 /// A message on its way: faded, drawn like the real one will be (blue or green, tail on the last).
 fn pending_bubble(p: &Pending, sms: bool, last: bool) -> gtk::Widget {
-    let look = bubble::Look { me: true, sms, tail: last };
+    let look = bubble::Look {
+        me: true,
+        sms,
+        tail: last,
+    };
     let w: gtk::Widget = match &p.item {
-        PendingItem::File(f) if is_image("", &f.to_string_lossy()) && gdk::Texture::from_filename(f).is_ok() => {
+        PendingItem::File(f)
+            if is_image("", &f.to_string_lossy()) && gdk::Texture::from_filename(f).is_ok() =>
+        {
             let t = gdk::Texture::from_filename(f).expect("checked");
             let b = bubble::Bubble::photo(look, 160, 120);
             show_texture(&b, &t);
@@ -5238,7 +6571,12 @@ fn pending_bubble(p: &Pending, sms: bool, last: bool) -> gtk::Widget {
             let text = match item {
                 PendingItem::Seed(_, n) => format!("📎 {n}"),
                 PendingItem::Text(t) => t.clone(),
-                PendingItem::File(f) => format!("📎 {}", f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+                PendingItem::File(f) => format!(
+                    "📎 {}",
+                    f.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ),
             };
             let l = gtk::Label::new(Some(&text));
             l.set_wrap(true);
@@ -5269,7 +6607,8 @@ fn photo_paths(m: &Value) -> Vec<String> {
                 return None;
             }
             let name = path.rsplit('/').next().unwrap_or(path);
-            seen.insert(name.split('.').next().unwrap_or(name).to_string()).then(|| path.to_string())
+            seen.insert(name.split('.').next().unwrap_or(name).to_string())
+                .then(|| path.to_string())
         })
         .collect()
 }
@@ -5278,8 +6617,18 @@ fn photo_paths(m: &Value) -> Vec<String> {
 /// text and any other attachments. Only the bubble of the last message in a run gets a tail.
 /// `end_of_run`: this message is the sender's last in the run, so its last item (bubble or photo)
 /// carries the tail. Nothing else does.
-fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -> (Vec<gtk::Widget>, Vec<(usize, Vec<Save>)>) {
-    let look = bubble::Look { me, sms, tail: end_of_run };
+fn message_parts(
+    u: &Rc<Ui>,
+    m: &Value,
+    me: bool,
+    sms: bool,
+    end_of_run: bool,
+) -> (Vec<gtk::Widget>, Vec<(usize, Vec<Save>)>) {
+    let look = bubble::Look {
+        me,
+        sms,
+        tail: end_of_run,
+    };
     if m["unsent_at"].as_str().is_some() || m["type"].as_str() == Some("unsent") {
         let b = bubble::Bubble::new(look);
         let l = gtk::Label::new(Some("Message unsent"));
@@ -5293,7 +6642,10 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
     let photos = photo_paths(m);
     let mut others = Vec::new(); // a photo that isn't on the Mac
     let mut files: Vec<FileRef> = Vec::new();
-    for a in atts.into_iter().filter(|a| !any_present || a["missing"].as_bool() != Some(true)) {
+    for a in atts
+        .into_iter()
+        .filter(|a| !any_present || a["missing"].as_bool() != Some(true))
+    {
         let path = a["original_path"].as_str().unwrap_or("");
         if path.ends_with(".pluginPayloadAttachment") {
             continue; // ponytail: link-preview data; drawn as a preview card in Phase 1.1
@@ -5302,17 +6654,29 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
         if is_image(mime, path) && !path.is_empty() && a["missing"].as_bool() != Some(true) {
             continue; // shown as a photo card (photo_paths)
         } else {
-            let name = a["transfer_name"].as_str().or(a["filename"].as_str()).unwrap_or("Attachment");
+            let name = a["transfer_name"]
+                .as_str()
+                .or(a["filename"].as_str())
+                .unwrap_or("Attachment");
             let missing = a["missing"].as_bool() == Some(true);
             if missing && is_image(mime, name) {
                 let l = gtk::Label::new(None);
-                l.set_markup(&format!("<span size='170%'>📷</span>  {}", glib::markup_escape_text("Photo not downloaded on your Mac")));
+                l.set_markup(&format!(
+                    "<span size='170%'>📷</span>  {}",
+                    glib::markup_escape_text("Photo not downloaded on your Mac")
+                ));
                 l.add_css_class("file");
                 l.set_xalign(0.0);
                 others.push(l);
             } else {
                 let size = a["total_bytes"].as_i64().unwrap_or(0);
-                files.push(FileRef { path: path.to_string(), name: name.to_string(), kind: file_kind(mime, name), size, missing });
+                files.push(FileRef {
+                    path: path.to_string(),
+                    name: name.to_string(),
+                    kind: file_kind(mime, name),
+                    size,
+                    missing,
+                });
             }
         }
     }
@@ -5332,23 +6696,56 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
         plain = Some(url);
     }
     let has_bubble = !text.is_empty() || !others.is_empty();
-    let look = bubble::Look { tail: end_of_run && plain.is_none(), ..look };
+    let look = bubble::Look {
+        tail: end_of_run && plain.is_none(),
+        ..look
+    };
     if !photos.is_empty() {
-        let tail = end_of_run && !has_bubble && link.is_none() && plain.is_none() && files.is_empty();
-        saves.push((out.len(), photos.iter().map(|p| Save::new(p, &save_name(m, p), 0, true)).collect()));
+        let tail =
+            end_of_run && !has_bubble && link.is_none() && plain.is_none() && files.is_empty();
+        saves.push((
+            out.len(),
+            photos
+                .iter()
+                .map(|p| Save::new(p, &save_name(m, p), 0, true))
+                .collect(),
+        ));
         out.push(photo_stack(u, &photos, bubble::Look { me, sms, tail }));
     }
     for (i, f) in files.iter().enumerate() {
-        let look = bubble::Look { me, sms, tail: end_of_run && !has_bubble && link.is_none() && plain.is_none() && i + 1 == files.len() };
+        let look = bubble::Look {
+            me,
+            sms,
+            tail: end_of_run
+                && !has_bubble
+                && link.is_none()
+                && plain.is_none()
+                && i + 1 == files.len(),
+        };
         // a video on the Mac is a big first-frame picture like a photo; anything else (or no frame) is a card
         if !f.missing && !f.path.is_empty() {
             saves.push((out.len(), vec![Save::new(&f.path, &f.name, f.size, false)]));
         }
-        let framed = f.kind == FileKind::Video && !f.missing && !f.path.is_empty() && !u.st.borrow().bad_images.contains(&f.path);
-        out.push(if framed { video_preview(u, f, look) } else { file_card(u, f, look) });
+        let framed = f.kind == FileKind::Video
+            && !f.missing
+            && !f.path.is_empty()
+            && !u.st.borrow().bad_images.contains(&f.path);
+        out.push(if framed {
+            video_preview(u, f, look)
+        } else {
+            file_card(u, f, look)
+        });
     }
     if let Some(l) = &link {
-        out.push(link_card(u, l, bubble::Look { me, sms, tail: end_of_run && !has_bubble }));
+        out.push(link_card(
+            u,
+            l,
+            bubble::Look {
+                me,
+                sms,
+                tail: end_of_run && !has_bubble,
+            },
+        ));
     }
     if has_bubble {
         let b = bubble::Bubble::new(look);
@@ -5362,7 +6759,11 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
             // WordChar (break inside a word if it has to) takes 3-4 times as long to lay out as Word, and 150 of them
             // were most of the ~150 ms the first frame took: only a text with a very long word (a link) needs it
             let long_word = text.split_whitespace().any(|w| w.chars().count() > 30);
-            l.set_wrap_mode(if long_word { gtk::pango::WrapMode::WordChar } else { gtk::pango::WrapMode::Word });
+            l.set_wrap_mode(if long_word {
+                gtk::pango::WrapMode::WordChar
+            } else {
+                gtk::pango::WrapMode::Word
+            });
             l.set_xalign(0.0);
             l.set_max_width_chars(60);
             l.set_selectable(true);
@@ -5379,7 +6780,11 @@ fn message_parts(u: &Rc<Ui>, m: &Value, me: bool, sms: bool, end_of_run: bool) -
         out.push(b.upcast());
     }
     if let Some(url) = plain {
-        let look = bubble::Look { me, sms, tail: end_of_run };
+        let look = bubble::Look {
+            me,
+            sms,
+            tail: end_of_run,
+        };
         out.push(match web_preview(u, &url) {
             Some(lp) => link_card(u, &lp, look),
             None => plain_link_card(u, &url, look),
@@ -5417,8 +6822,12 @@ fn glyph(icon: &str) -> gtk::Widget {
 fn load_web_links(path: &std::path::Path) -> HashMap<String, Option<crate::mac::LinkPreview>> {
     let mut out = HashMap::new();
     for l in std::fs::read_to_string(path).unwrap_or_default().lines() {
-        let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
-        let Some(url) = v["url"].as_str() else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(l) else {
+            continue;
+        };
+        let Some(url) = v["url"].as_str() else {
+            continue;
+        };
         let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
         let size = |k: &str| Some((v[k][0].as_i64()? as i32, v[k][1].as_i64()? as i32));
         let lp = (!v["failed"].as_bool().unwrap_or(false)).then(|| crate::mac::LinkPreview {
@@ -5436,7 +6845,10 @@ fn load_web_links(path: &std::path::Path) -> HashMap<String, Option<crate::mac::
     out
 }
 
-fn save_web_links(path: &std::path::Path, links: &HashMap<String, Option<crate::mac::LinkPreview>>) {
+fn save_web_links(
+    path: &std::path::Path,
+    links: &HashMap<String, Option<crate::mac::LinkPreview>>,
+) {
     let lines: Vec<String> = links
         .iter()
         .map(|(url, lp)| match lp {
@@ -5457,10 +6869,19 @@ fn web_preview(u: &Rc<Ui>, url: &str) -> Option<crate::mac::LinkPreview> {
     let known = u.st.borrow().web_links.get(url).cloned();
     match known {
         // the picture was cleared out of the cache since: fetch it all again
-        Some(Some(lp)) if lp.image.as_ref().is_some_and(|k| !cache_path(u, k, false).exists()) => {
+        Some(Some(lp))
+            if lp
+                .image
+                .as_ref()
+                .is_some_and(|k| !cache_path(u, k, false).exists()) =>
+        {
             u.st.borrow_mut().web_links.remove(url);
             request_web_preview(u, url);
-            Some(crate::mac::LinkPreview { image: None, image_size: None, ..lp })
+            Some(crate::mac::LinkPreview {
+                image: None,
+                image_size: None,
+                ..lp
+            })
         }
         Some(lp) => lp,
         None => {
@@ -5488,12 +6909,24 @@ fn request_web_preview(u: &Rc<Ui>, url: &str) {
     });
 }
 
-async fn web_get(session: &webkit6::soup::Session, url: &str, max: usize, html: bool) -> Option<Vec<u8>> {
+async fn web_get(
+    session: &webkit6::soup::Session,
+    url: &str,
+    max: usize,
+    html: bool,
+) -> Option<Vec<u8>> {
     use webkit6::soup::prelude::*;
     let msg = webkit6::soup::Message::new("GET", url).ok()?;
-    let bytes = session.send_and_read_future(&msg, glib::Priority::DEFAULT).await.ok()?;
-    let is_html = msg.response_headers().and_then(|h| h.content_type()).is_some_and(|(t, _)| t.contains("html"));
-    (msg.status() == webkit6::soup::Status::Ok && bytes.len() <= max && is_html == html).then(|| bytes.to_vec())
+    let bytes = session
+        .send_and_read_future(&msg, glib::Priority::DEFAULT)
+        .await
+        .ok()?;
+    let is_html = msg
+        .response_headers()
+        .and_then(|h| h.content_type())
+        .is_some_and(|(t, _)| t.contains("html"));
+    (msg.status() == webkit6::soup::Status::Ok && bytes.len() <= max && is_html == html)
+        .then(|| bytes.to_vec())
 }
 
 async fn fetch_web_preview(u: &Rc<Ui>, url: &str) -> Option<crate::mac::LinkPreview> {
@@ -5514,12 +6947,26 @@ async fn fetch_web_preview(u: &Rc<Ui>, url: &str) -> Option<crate::mac::LinkPrev
             image = Some(key);
         }
     }
-    Some(crate::mac::LinkPreview { url: url.to_string(), alt_url: None, title: page.title, site: page.site, image, image_size: size, icon: None, icon_size: None })
+    Some(crate::mac::LinkPreview {
+        url: url.to_string(),
+        alt_url: None,
+        title: page.title,
+        site: page.site,
+        image,
+        image_size: size,
+        icon: None,
+        icon_size: None,
+    })
 }
 
 fn plain_link_card(u: &Rc<Ui>, url: &str, look: bubble::Look) -> gtk::Widget {
     let b = bubble::Bubble::card(look, LINK_W, 0);
-    let host = url.split('/').nth(2).unwrap_or(url).trim_start_matches("www.").to_string();
+    let host = url
+        .split('/')
+        .nth(2)
+        .unwrap_or(url)
+        .trim_start_matches("www.")
+        .to_string();
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let title = gtk::Label::new(Some(&host));
     title.add_css_class("link-title");
@@ -5537,7 +6984,11 @@ fn plain_link_card(u: &Rc<Ui>, url: &str, look: bubble::Look) -> gtk::Widget {
     }
     b.set_cursor_from_name(Some("pointer"));
     let key = chat_youtube(u, url, b.upcast_ref());
-    let (u2, url, b2) = (u.clone(), url.to_string(), b.clone().upcast::<gtk::Widget>());
+    let (u2, url, b2) = (
+        u.clone(),
+        url.to_string(),
+        b.clone().upcast::<gtk::Widget>(),
+    );
     let click = gtk::GestureClick::new();
     click.connect_released(move |g, _, _, _| {
         g.set_state(gtk::EventSequenceState::Claimed);
@@ -5572,7 +7023,13 @@ fn linkify(text: &str) -> String {
 /// different form of the address than the preview saved (tracking parameters, a redirect), so any
 /// link to the same site goes too.
 fn without_url(text: &str, l: &crate::mac::LinkPreview) -> String {
-    let host = |u: &str| u.split('/').nth(2).unwrap_or("").trim_start_matches("www.").to_lowercase();
+    let host = |u: &str| {
+        u.split('/')
+            .nth(2)
+            .unwrap_or("")
+            .trim_start_matches("www.")
+            .to_lowercase()
+    };
     let want = host(&l.url);
     let mut out = String::new();
     for word in text.split_inclusive(char::is_whitespace) {
@@ -5583,14 +7040,20 @@ fn without_url(text: &str, l: &crate::mac::LinkPreview) -> String {
         }
     }
     let t = out.trim();
-    if t.chars().all(|c| c == '/') { String::new() } else { t.to_string() }
+    if t.chars().all(|c| c == '/') {
+        String::new()
+    } else {
+        t.to_string()
+    }
 }
 
 /// The row holding Apple's preview for this message: folded in by imsg (`url_preview`), or the
 /// message itself when it is the preview row.
 fn preview_row(m: &Value) -> Option<i64> {
     m["url_preview"]["id"].as_i64().or_else(|| {
-        (m["balloon_bundle_id"].as_str() == Some("com.apple.messages.URLBalloonProvider")).then(|| m["id"].as_i64()).flatten()
+        (m["balloon_bundle_id"].as_str() == Some("com.apple.messages.URLBalloonProvider"))
+            .then(|| m["id"].as_i64())
+            .flatten()
     })
 }
 
@@ -5632,23 +7095,39 @@ fn usable(u: &Ui, l: &crate::mac::LinkPreview) -> crate::mac::LinkPreview {
 /// site's icon. A very wide or tall picture (a button graphic: 87x23 on thegentlechef.com) loses to the icon.
 fn small_picture(l: &crate::mac::LinkPreview) -> Option<&String> {
     let area = |s: Option<(i32, i32)>| s.map_or(0, |(w, h)| i64::from(w) * i64::from(h));
-    let odd = |s: Option<(i32, i32)>| s.is_some_and(|(w, h)| w > 0 && h > 0 && (w > 3 * h || h > 3 * w));
+    let odd =
+        |s: Option<(i32, i32)>| s.is_some_and(|(w, h)| w > 0 && h > 0 && (w > 3 * h || h > 3 * w));
     match (&l.image, &l.icon) {
-        (Some(i), Some(c)) => Some(if odd(l.image_size) || area(l.icon_size) > area(l.image_size) { c } else { i }),
+        (Some(i), Some(c)) => Some(
+            if odd(l.image_size) || area(l.icon_size) > area(l.image_size) {
+                c
+            } else {
+                i
+            },
+        ),
         (i, c) => i.as_ref().or(c.as_ref()),
     }
 }
 
 /// `link_card` at a given width (the info panel's cards follow the panel).
-fn link_card_w(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look, link_w: i32) -> gtk::Widget {
+fn link_card_w(
+    u: &Rc<Ui>,
+    l: &crate::mac::LinkPreview,
+    look: bubble::Look,
+    link_w: i32,
+) -> gtk::Widget {
     let l = &usable(u, l);
     // a real preview picture goes across the top; a small one (the site's logo) sits beside the text
-    let big = l.image.is_some() && l.image_size.is_none_or(|(w, h)| crate::mac::is_preview_size(w, h));
+    let big = l.image.is_some()
+        && l.image_size
+            .is_none_or(|(w, h)| crate::mac::is_preview_size(w, h));
     let small = if big { None } else { small_picture(l) };
     // the preview shows whole, in its own proportions (portrait ones too); only a freak shape is capped
     let img_h = match l.image_size {
         _ if !big => 0,
-        Some((w, h)) if w > 0 => (link_w as f64 * h as f64 / w as f64).clamp(60.0, 2.0 * link_w as f64) as i32,
+        Some((w, h)) if w > 0 => {
+            (link_w as f64 * h as f64 / w as f64).clamp(60.0, 2.0 * link_w as f64) as i32
+        }
         _ => link_w * 52 / 100,
     };
     let b = bubble::Bubble::card(look, link_w, img_h);
@@ -5669,7 +7148,10 @@ fn link_card_w(u: &Rc<Ui>, l: &crate::mac::LinkPreview, look: bubble::Look, link
         texts.append(&t);
     }
     // ponytail: the site's icon (l.icon) isn't drawn; a link glyph stands in
-    let site = gtk::Label::new(Some(&format!("🔗 {}", if l.site.is_empty() { &l.url } else { &l.site })));
+    let site = gtk::Label::new(Some(&format!(
+        "🔗 {}",
+        if l.site.is_empty() { &l.url } else { &l.site }
+    )));
     site.add_css_class("link-site");
     site.set_xalign(0.0);
     site.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -5718,7 +7200,11 @@ fn photo_stack(u: &Rc<Ui>, paths: &[String], look: bubble::Look) -> gtk::Widget 
         return image(u, &paths[0], None, look).upcast();
     }
     let shown = paths.len().min(CARDS_SHOWN);
-    let side = if me { gtk::Align::End } else { gtk::Align::Start };
+    let side = if me {
+        gtk::Align::End
+    } else {
+        gtk::Align::Start
+    };
     let base = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     let o = gtk::Overlay::new();
     o.set_child(Some(&base));
@@ -5728,7 +7214,17 @@ fn photo_stack(u: &Rc<Ui>, paths: &[String], look: bubble::Look) -> gtk::Widget 
     let all: Vec<bubble::Bubble> = paths
         .iter()
         .enumerate()
-        .map(|(i, path)| image(u, path, Some(CARD), bubble::Look { tail: look.tail && i == 0, ..look }))
+        .map(|(i, path)| {
+            image(
+                u,
+                path,
+                Some(CARD),
+                bubble::Look {
+                    tail: look.tail && i == 0,
+                    ..look
+                },
+            )
+        })
         .collect();
     let mut cards = Vec::new();
     for i in (0..shown).rev() {
@@ -5744,7 +7240,11 @@ fn photo_stack(u: &Rc<Ui>, paths: &[String], look: bubble::Look) -> gtk::Widget 
         base.set_size_request(card_w + (step * (shown as f64 - 1.0)) as i32, CARD);
         for (i, p) in &cards {
             let off = (step * *i as f64) as i32;
-            if me { p.set_margin_end(off) } else { p.set_margin_start(off) }
+            if me {
+                p.set_margin_end(off)
+            } else {
+                p.set_margin_start(off)
+            }
         }
     };
     // the widest spacing that still fits the chat; resting never exceeds it, hovering uses all of it
@@ -5753,7 +7253,12 @@ fn photo_stack(u: &Rc<Ui>, paths: &[String], look: bubble::Look) -> gtk::Widget 
         move || {
             let w = u.upgrade().map_or(0.0, |u| stack_room(&u));
             // never further apart than side by side
-            if w <= 0.0 { CARD_STEP } else { ((w - (CARD as f64 + bubble::TAIL as f64)) / (shown as f64 - 1.0)).clamp(0.0, CARD as f64 + 12.0) }
+            if w <= 0.0 {
+                CARD_STEP
+            } else {
+                ((w - (CARD as f64 + bubble::TAIL as f64)) / (shown as f64 - 1.0))
+                    .clamp(0.0, CARD as f64 + 12.0)
+            }
         }
     };
     let step = Rc::new(Cell::new(CARD_STEP.min(room())));
@@ -5761,7 +7266,11 @@ fn photo_stack(u: &Rc<Ui>, paths: &[String], look: bubble::Look) -> gtk::Widget 
     place(step.get());
     let (st2, pl2, rm2, hv2) = (step.clone(), place.clone(), room.clone(), hovered.clone());
     u.stacks.borrow_mut().push(Rc::new(move || {
-        let s = if hv2.get() { rm2() } else { CARD_STEP.min(rm2()) };
+        let s = if hv2.get() {
+            rm2()
+        } else {
+            CARD_STEP.min(rm2())
+        };
         st2.set(s);
         pl2(s);
     }));
@@ -5777,7 +7286,11 @@ fn photo_stack(u: &Rc<Ui>, paths: &[String], look: bubble::Look) -> gtk::Widget 
             let e = 1.0 - (1.0 - p).powi(3);
             step.set(from + (to - from) * e);
             place(step.get());
-            if p >= 1.0 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+            if p >= 1.0 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
         });
     };
     let (sp, o2, rm, hv) = (spread.clone(), o.clone(), room.clone(), hovered.clone());
@@ -5797,7 +7310,11 @@ fn photo_stack(u: &Rc<Ui>, paths: &[String], look: bubble::Look) -> gtk::Widget 
         more.set_halign(side);
         more.set_valign(gtk::Align::End);
         let inset = 10 + bubble::TAIL as i32;
-        if me { more.set_margin_end(inset) } else { more.set_margin_start(inset) }
+        if me {
+            more.set_margin_end(inset)
+        } else {
+            more.set_margin_start(inset)
+        }
         more.set_margin_bottom(10);
         o.add_overlay(&more);
     }
@@ -5814,7 +7331,11 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
     }
     p.set_cursor_from_name(Some("pointer"));
     let click = gtk::GestureClick::new();
-    let (u2, path2, p2) = (u.clone(), path.to_string(), p.clone().upcast::<gtk::Widget>());
+    let (u2, path2, p2) = (
+        u.clone(),
+        path.to_string(),
+        p.clone().upcast::<gtk::Widget>(),
+    );
     click.connect_released(move |g, _, _, _| {
         g.set_state(gtk::EventSequenceState::Claimed);
         open_media(&u2, &path2, &p2);
@@ -5850,11 +7371,16 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
             p3.popdown();
             let name = path3.rsplit('/').next().unwrap_or("photo").to_string();
             let near = save_button_near(photo.upcast_ref());
-            save_items(&u3, vec![Save::new(&path3, &name, 0, true)], true, Rc::new(move |ok| {
-                if let (true, Some(b)) = (ok, &near) {
-                    show_saved(b);
-                }
-            }));
+            save_items(
+                &u3,
+                vec![Save::new(&path3, &name, 0, true)],
+                true,
+                Rc::new(move |ok| {
+                    if let (true, Some(b)) = (ok, &near) {
+                        show_saved(b);
+                    }
+                }),
+            );
         });
         pop.connect_closed(|p| {
             let p = p.clone();
@@ -5863,7 +7389,9 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
         pop.popup();
     });
     p.add_controller(menu);
-    u.st.borrow_mut().photos.push((path.to_string(), p.clone().upcast()));
+    u.st.borrow_mut()
+        .photos
+        .push((path.to_string(), p.clone().upcast()));
     load_texture(u, &p, path);
     p
 }
@@ -5889,17 +7417,25 @@ fn load_texture_in(u: &Rc<Ui>, p: &bubble::Bubble, path: &str, bulk: bool) {
             };
             if first {
                 let (u2, path2, f2, f3) = (u.clone(), path.to_string(), file.clone(), file.clone());
-                bg(move || decode_file(&f3), move |tex| match tex {
-                    Some(_) => image_done(&u2, path2, false, tex),
-                    None => {
-                        // unreadable copy: forget it and fetch it again
-                        let _ = std::fs::remove_file(&f2);
-                        let pics = u2.st.borrow_mut().waiting.remove(&path2).unwrap_or_default();
-                        for p in pics {
-                            load_texture_in(&u2, &p, &path2, bulk);
+                bg(
+                    move || decode_file(&f3),
+                    move |tex| match tex {
+                        Some(_) => image_done(&u2, path2, false, tex),
+                        None => {
+                            // unreadable copy: forget it and fetch it again
+                            let _ = std::fs::remove_file(&f2);
+                            let pics = u2
+                                .st
+                                .borrow_mut()
+                                .waiting
+                                .remove(&path2)
+                                .unwrap_or_default();
+                            for p in pics {
+                                load_texture_in(&u2, &p, &path2, bulk);
+                            }
                         }
-                    }
-                });
+                    },
+                );
             }
             return;
         }
@@ -5957,7 +7493,10 @@ type Job = Box<dyn FnOnce() + Send>;
 /// Run `work` on one of two background threads and hand its result to `done` on the GTK thread. Jobs run in the
 /// order they were queued (a chat is built newest first, so the pictures you can see come first). Widgets stay on
 /// the GTK thread; reading files and decoding pictures don't need to.
-fn bg<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static, done: impl FnOnce(T) + 'static) {
+fn bg<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    done: impl FnOnce(T) + 'static,
+) {
     use std::sync::{Arc, Mutex, OnceLock, mpsc};
     static POOL: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
     let tx = POOL.get_or_init(|| {
@@ -6010,7 +7549,10 @@ fn stop_spin(p: &bubble::Bubble) {
 /// Where a bubble's loading spinner lives: a link card has a slot over its picture; others hold it directly.
 fn spin_host(p: &bubble::Bubble) -> gtk::Box {
     if p.has_css_class("linkcard")
-        && let Some(slot) = p.first_child().and_then(|inner| inner.first_child()).and_downcast::<gtk::Box>()
+        && let Some(slot) = p
+            .first_child()
+            .and_then(|inner| inner.first_child())
+            .and_downcast::<gtk::Box>()
     {
         return slot;
     }
@@ -6034,7 +7576,11 @@ fn cache_path(u: &Ui, path: &str, full: bool) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut h);
-    u.store.image_cache.join(format!("{:016x}{}.jpg", h.finish(), if full { "-full" } else { "" }))
+    u.store.image_cache.join(format!(
+        "{:016x}{}.jpg",
+        h.finish(),
+        if full { "-full" } else { "" }
+    ))
 }
 
 /// The viewer wants the big version of a photo: disk cache, else ask the Mac (once).
@@ -6045,16 +7591,22 @@ fn fetch_full(u: &Rc<Ui>, path: &str) {
     let file = cache_path(u, path, true);
     if file.exists() {
         let (u2, path2) = (u.clone(), path.to_string());
-        bg(move || decode_file(&file), move |tex| match tex {
-            Some(_) => image_done(&u2, path2, true, tex),
-            None => {
-                let _ = std::fs::remove_file(cache_path(&u2, &path2, true));
-                u2.st.borrow_mut().waiting_full.remove(&path2);
-                fetch_full(&u2, &path2);
-            }
-        });
+        bg(
+            move || decode_file(&file),
+            move |tex| match tex {
+                Some(_) => image_done(&u2, path2, true, tex),
+                None => {
+                    let _ = std::fs::remove_file(cache_path(&u2, &path2, true));
+                    u2.st.borrow_mut().waiting_full.remove(&path2);
+                    fetch_full(&u2, &path2);
+                }
+            },
+        );
     } else {
-        u.send(Cmd::Image { path: path.to_string(), full: true });
+        u.send(Cmd::Image {
+            path: path.to_string(),
+            full: true,
+        });
     }
 }
 
@@ -6151,11 +7703,27 @@ fn build_info() -> Info {
     };
     let stack = gtk::Stack::new();
     stack.set_vhomogeneous(false); // else a short tab scrolls as far as the tallest one
-    stack.add_titled(&tab(photos.upcast_ref(), &more[0]), Some("photos"), "Photos");
-    stack.add_titled(&tab(videos.upcast_ref(), &more[1]), Some("videos"), "Videos");
+    stack.add_titled(
+        &tab(photos.upcast_ref(), &more[0]),
+        Some("photos"),
+        "Photos",
+    );
+    stack.add_titled(
+        &tab(videos.upcast_ref(), &more[1]),
+        Some("videos"),
+        "Videos",
+    );
     stack.add_titled(&tab(files.upcast_ref(), &more[2]), Some("files"), "Files");
     stack.add_titled(&tab(links.upcast_ref(), &more[3]), Some("links"), "Links");
-    let switcher = tab_switcher(&stack, &[("photos", "Photos"), ("videos", "Videos"), ("files", "Files"), ("links", "Links")]);
+    let switcher = tab_switcher(
+        &stack,
+        &[
+            ("photos", "Photos"),
+            ("videos", "Videos"),
+            ("files", "Files"),
+            ("links", "Links"),
+        ],
+    );
     // narrow panel: "‹ Photos ›". Both carets take the same room even when one is hidden, so the name stays centred.
     let prev = gtk::Button::from_icon_name("pan-start-symbolic");
     let next = gtk::Button::from_icon_name("pan-end-symbolic");
@@ -6177,7 +7745,10 @@ fn build_info() -> Info {
     let show = {
         let (stack, prev, next, name) = (stack.clone(), prev.clone(), next.clone(), name.clone());
         move || {
-            let i = stack.visible_child_name().and_then(|n| TABS.iter().position(|t| *t == n)).unwrap_or(0);
+            let i = stack
+                .visible_child_name()
+                .and_then(|n| TABS.iter().position(|t| *t == n))
+                .unwrap_or(0);
             let names = ["Photos", "Videos", "Files", "Links"];
             name.set_text(names[i]);
             prev.set_tooltip_text(i.checked_sub(1).map(|j| names[j]));
@@ -6194,7 +7765,10 @@ fn build_info() -> Info {
     for (b, step) in [(&prev, -1i32), (&next, 1)] {
         let stack = stack.clone();
         b.connect_clicked(move |_| {
-            let i = stack.visible_child_name().and_then(|n| TABS.iter().position(|t| *t == n)).unwrap_or(0) as i32;
+            let i = stack
+                .visible_child_name()
+                .and_then(|n| TABS.iter().position(|t| *t == n))
+                .unwrap_or(0) as i32;
             if let Some(t) = TABS.get((i + step).max(0) as usize) {
                 stack.set_visible_child_name(t);
             }
@@ -6213,7 +7787,10 @@ fn build_info() -> Info {
     twin.set_can_target(false);
     twin.set_can_focus(false);
     twin.set_focusable(false);
-    carets.bind_property("visible", &twin, "visible").sync_create().build();
+    carets
+        .bind_property("visible", &twin, "visible")
+        .sync_create()
+        .build();
     head.append(&twin);
     head.append(&switcher);
     head.append(&carets);
@@ -6222,7 +7799,11 @@ fn build_info() -> Info {
     stack.set_margin_start(14);
     stack.set_margin_end(14);
     stack.set_margin_bottom(14);
-    let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&stack).build();
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&stack)
+        .build();
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
     panel.append(&head);
     panel.append(&scroll);
@@ -6230,10 +7811,27 @@ fn build_info() -> Info {
     panel.set_hexpand(false);
     panel.set_overflow(gtk::Overflow::Hidden); // the rounded corners clip it
     panel.add_css_class("info-panel");
-    let revealer = gtk::Revealer::builder().child(&panel).transition_type(gtk::RevealerTransitionType::SlideLeft).reveal_child(false).build();
+    let revealer = gtk::Revealer::builder()
+        .child(&panel)
+        .transition_type(gtk::RevealerTransitionType::SlideLeft)
+        .reveal_child(false)
+        .build();
     // expand flags pass up from the children: without this, the closed panel still takes a share of the width
     revealer.set_hexpand(false);
-    Info { revealer, panel, btn, refresh, close, switcher, carets, photos, videos, files, links, more }
+    Info {
+        revealer,
+        panel,
+        btn,
+        refresh,
+        close,
+        switcher,
+        carets,
+        photos,
+        videos,
+        files,
+        links,
+        more,
+    }
 }
 
 const THUMB: i32 = 92;
@@ -6268,7 +7866,11 @@ fn relayout(u: &Rc<Ui>, total: i32) {
     let side = if narrow {
         // expanded: the chat's 6 px margin and the 2 px divider lie beyond the window edge, so the sidebar's own 6 px
         // right margin leaves it 14 px from the edge, the same as on the left
-        if u.side_open.get() { total - 8 } else { COLLAPSED_W }
+        if u.side_open.get() {
+            total - 8
+        } else {
+            COLLAPSED_W
+        }
     } else {
         pref.clamp(SIDEBAR_MIN, total - CHAT_MIN)
     };
@@ -6281,7 +7883,11 @@ fn relayout(u: &Rc<Ui>, total: i32) {
     // sidebar: avatars only, or with names
     let collapsed = narrow && !u.side_open.get();
     u.side_toggle.set_visible(narrow);
-    u.side_toggle.set_tooltip_text(Some(if collapsed { "Show conversation names" } else { "Hide conversation names" }));
+    u.side_toggle.set_tooltip_text(Some(if collapsed {
+        "Show conversation names"
+    } else {
+        "Hide conversation names"
+    }));
     if narrow && !collapsed {
         u.conv_panel.add_css_class("away"); // fades while the sidebar pushes it out of the window: no shadow left at the edge
     } else {
@@ -6295,7 +7901,8 @@ fn relayout(u: &Rc<Ui>, total: i32) {
     if !collapsed {
         // room the names will have once the sidebar is settled (row width minus avatar, gaps and dot)
         let inner = side - 20;
-        u.text_target.set((inner - 32 - AV_PAD - AVATAR - 11 - 11 - 10).max(40));
+        u.text_target
+            .set((inner - 32 - AV_PAD - AVATAR - 11 - 11 - 10).max(40));
     }
     if u.slide_to.get() == NO_SLIDE {
         settle(u);
@@ -6363,7 +7970,9 @@ fn move_side(u: &Rc<Ui>, side: i32, animate: bool) {
     let start = std::cell::Cell::new(None::<i64>);
     let weak = Rc::downgrade(u);
     u.paned.add_tick_callback(move |p, clock| {
-        let Some(u) = weak.upgrade() else { return glib::ControlFlow::Break };
+        let Some(u) = weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
         if u.slide.get() != id {
             return glib::ControlFlow::Break;
         }
@@ -6417,7 +8026,11 @@ fn wire_info(u: &Rc<Ui>) {
                 let Some(chat) = st.info_chat else { return };
                 (chat, st.media.get(&(chat, kind)).map_or(0, |m| m.0))
             };
-            u2.send(Cmd::Media { chat_id: chat, kind, offset: off });
+            u2.send(Cmd::Media {
+                chat_id: chat,
+                kind,
+                offset: off,
+            });
         });
     }
 }
@@ -6440,7 +8053,9 @@ fn open_link(u: &Rc<Ui>, url: &str, from: &gtk::Widget, key: Option<&str>) {
     match (key, crate::mac::youtube_id(url)) {
         (Some(k), _) => open_media(u, k, from),
         (None, Some(id)) => open_media(u, &crate::viewer::yt_key(&id, 0), from), // alone: not in any list
-        (None, None) => gtk::UriLauncher::new(url).launch(Some(&u.win), gio::Cancellable::NONE, |_| {}),
+        (None, None) => {
+            gtk::UriLauncher::new(url).launch(Some(&u.win), gio::Cancellable::NONE, |_| {})
+        }
     }
 }
 
@@ -6457,7 +8072,11 @@ fn chat_youtube(u: &Rc<Ui>, url: &str, card: &gtk::Widget) -> Option<String> {
 /// the photos or the videos and YouTube links (newest first) of the tab it is in, if it is in the panel.
 fn open_media(u: &Rc<Ui>, key: &str, from: &gtk::Widget) {
     let in_panel = from.is_ancestor(&u.info.panel);
-    let mut items = if in_panel { info_sequence(u, from.is_ancestor(&u.info.videos)) } else { u.st.borrow().photos.clone() };
+    let mut items = if in_panel {
+        info_sequence(u, from.is_ancestor(&u.info.videos))
+    } else {
+        u.st.borrow().photos.clone()
+    };
     u.st.borrow_mut().viewer_panel = in_panel;
     if !items.iter().any(|i| i.0 == key) {
         items = vec![(key.to_string(), from.clone())]; // not in the list (yet): just this one
@@ -6469,15 +8088,30 @@ fn open_media(u: &Rc<Ui>, key: &str, from: &gtk::Widget) {
 /// YouTube links together (you chose one kind to look at). The tiles carry "<date>|<key>" as their widget name.
 fn info_sequence(u: &Rc<Ui>, videos: bool) -> Vec<crate::viewer::Item> {
     let mut v: Vec<(i64, crate::viewer::Item)> = vec![];
-    for flow in [if videos { &u.info.videos } else { &u.info.photos }] {
+    for flow in [if videos {
+        &u.info.videos
+    } else {
+        &u.info.photos
+    }] {
         let mut c = flow.first_child();
         while let Some(fc) = c {
-            if let Some(w) = fc.downcast_ref::<gtk::FlowBoxChild>().and_then(|f| f.child()) {
+            if let Some(w) = fc
+                .downcast_ref::<gtk::FlowBoxChild>()
+                .and_then(|f| f.child())
+            {
                 if let Some((date, key)) = w.widget_name().split_once('|')
                     && let Ok(date) = date.parse::<i64>()
                 {
                     // a video's picture is the tile's inner bubble; a YouTube tile is its own widget
-                    let item = if key.starts_with("yt:") { w.clone() } else { w.clone().downcast::<gtk::Overlay>().ok().and_then(|o| o.child()).unwrap_or(w.clone()) };
+                    let item = if key.starts_with("yt:") {
+                        w.clone()
+                    } else {
+                        w.clone()
+                            .downcast::<gtk::Overlay>()
+                            .ok()
+                            .and_then(|o| o.child())
+                            .unwrap_or(w.clone())
+                    };
                     v.push((date, (key.to_string(), item)));
                 }
             }
@@ -6513,12 +8147,20 @@ fn refresh_info(u: &Rc<Ui>) {
     for kind in [Kind::Photos, Kind::Videos, Kind::Files, Kind::Links] {
         u.info.more[kind_idx(kind)].set_visible(false);
         u.st.borrow_mut().media.insert((id, kind), (0, false));
-        u.send(Cmd::Media { chat_id: id, kind, offset: 0 });
+        u.send(Cmd::Media {
+            chat_id: id,
+            kind,
+            offset: 0,
+        });
     }
 }
 
 fn fmt_date(unix: i64) -> String {
-    glib::DateTime::from_unix_local(unix).ok().and_then(|d| d.format("%b %-d, %Y").ok()).map(|s| s.to_string()).unwrap_or_default()
+    glib::DateTime::from_unix_local(unix)
+        .ok()
+        .and_then(|d| d.format("%b %-d, %Y").ok())
+        .map(|s| s.to_string())
+        .unwrap_or_default()
 }
 
 fn fmt_size(b: i64) -> String {
@@ -6531,11 +8173,21 @@ fn fmt_size(b: i64) -> String {
 }
 
 /// A page of photos, files or links arrived for the panel.
-fn on_media(u: &Rc<Ui>, chat_id: i64, kind: Kind, offset: usize, items: Vec<MediaItem>, next: usize, more: bool) {
+fn on_media(
+    u: &Rc<Ui>,
+    chat_id: i64,
+    kind: Kind,
+    offset: usize,
+    items: Vec<MediaItem>,
+    next: usize,
+    more: bool,
+) {
     {
         let mut st = u.st.borrow_mut();
         // for another chat (the panel moved on) or an out-of-date page: drop it
-        if st.info_chat != Some(chat_id) || st.media.get(&(chat_id, kind)).map(|m| m.0) != Some(offset) {
+        if st.info_chat != Some(chat_id)
+            || st.media.get(&(chat_id, kind)).map(|m| m.0) != Some(offset)
+        {
             return;
         }
         st.media.insert((chat_id, kind), (next, more));
@@ -6562,14 +8214,20 @@ fn on_media(u: &Rc<Ui>, chat_id: i64, kind: Kind, offset: usize, items: Vec<Medi
                     l.set_valign(gtk::Align::Center);
                     l.set_vexpand(true);
                     tile.append(&l);
-                    tile.set_tooltip_text(Some("Messages hasn't downloaded this photo to your Mac"));
+                    tile.set_tooltip_text(Some(
+                        "Messages hasn't downloaded this photo to your Mac",
+                    ));
                     u.info.photos.append(&tile);
                     continue;
                 }
                 let b = bubble::Bubble::tile(THUMB);
                 b.add_css_class("fixed");
                 b.set_cursor_from_name(Some("pointer"));
-                let (u2, path, b2) = (u.clone(), it.path.clone(), b.clone().upcast::<gtk::Widget>());
+                let (u2, path, b2) = (
+                    u.clone(),
+                    it.path.clone(),
+                    b.clone().upcast::<gtk::Widget>(),
+                );
                 let g = gtk::GestureClick::new();
                 g.connect_released(move |g, _, _, _| {
                     g.set_state(gtk::EventSequenceState::Claimed);
@@ -6581,7 +8239,9 @@ fn on_media(u: &Rc<Ui>, chat_id: i64, kind: Kind, offset: usize, items: Vec<Medi
                 u.info.photos.append(&b);
             }
             if offset == 0 && u.info.photos.first_child().is_none() {
-                u.info.photos.insert(&empty("No photos in this conversation"), -1);
+                u.info
+                    .photos
+                    .insert(&empty("No photos in this conversation"), -1);
             }
         }
         Kind::Videos => {
@@ -6592,7 +8252,9 @@ fn on_media(u: &Rc<Ui>, chat_id: i64, kind: Kind, offset: usize, items: Vec<Medi
             u.st.borrow_mut().info_files.extend(items);
             render_files(u);
             if offset == 0 && u.st.borrow().info_files.is_empty() {
-                u.info.files.insert(&empty("No files in this conversation"), -1);
+                u.info
+                    .files
+                    .insert(&empty("No files in this conversation"), -1);
             }
         }
         Kind::Links => {
@@ -6654,23 +8316,47 @@ fn file_tile(u: &Rc<Ui>, it: &MediaItem) -> gtk::Widget {
     caption.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     caption.set_xalign(0.0);
     frame.add_overlay(&caption);
-    let detail: Vec<String> = [kind.label().to_string(), fmt_size(it.size), fmt_date(it.date)].into_iter().filter(|s| !s.is_empty()).collect();
+    let detail: Vec<String> = [
+        kind.label().to_string(),
+        fmt_size(it.size),
+        fmt_date(it.date),
+    ]
+    .into_iter()
+    .filter(|s| !s.is_empty())
+    .collect();
     if it.missing {
         frame.add_css_class("file-missing");
-        frame.set_tooltip_text(Some(&format!("{}\n{}\nMessages hasn't downloaded this file to your Mac", it.name, detail.join(" · "))));
+        frame.set_tooltip_text(Some(&format!(
+            "{}\n{}\nMessages hasn't downloaded this file to your Mac",
+            it.name,
+            detail.join(" · ")
+        )));
     } else if kind == FileKind::Video && thumb {
-        frame.set_tooltip_text(Some(&format!("{}\n{}\nClick to play", it.name, detail.join(" · "))));
+        frame.set_tooltip_text(Some(&format!(
+            "{}\n{}\nClick to play",
+            it.name,
+            detail.join(" · ")
+        )));
         frame.set_cursor_from_name(Some("pointer"));
-        let b = frame.child().and_downcast::<bubble::Bubble>().expect("video tile picture");
+        let b = frame
+            .child()
+            .and_downcast::<bubble::Bubble>()
+            .expect("video tile picture");
         b.add_css_class("video");
-        u.st.borrow_mut().video_meta.insert(it.path.clone(), (it.name.clone(), it.size));
+        u.st.borrow_mut()
+            .video_meta
+            .insert(it.path.clone(), (it.name.clone(), it.size));
         frame.set_widget_name(&format!("{}|{}", it.date, it.path)); // read back by `info_sequence`
         let (u2, path) = (u.clone(), it.path.clone());
         let g = gtk::GestureClick::new();
         g.connect_released(move |_, _, _, _| open_media(&u2, &path, b.upcast_ref()));
         frame.add_controller(g);
     } else {
-        frame.set_tooltip_text(Some(&format!("{}\n{}\nClick to copy from the Mac and open", it.name, detail.join(" · "))));
+        frame.set_tooltip_text(Some(&format!(
+            "{}\n{}\nClick to copy from the Mac and open",
+            it.name,
+            detail.join(" · ")
+        )));
         frame.set_cursor_from_name(Some("pointer"));
         let (u2, it2, f2) = (u.clone(), it.clone(), frame.clone());
         let g = gtk::GestureClick::new();
@@ -6739,17 +8425,36 @@ fn file_kind(mime: &str, name: &str) -> FileKind {
     let ext = ext.as_str();
     if mime == "application/pdf" || ext == "pdf" {
         FileKind::Pdf
-    } else if mime.starts_with("video/") || matches!(ext, "mov" | "mp4" | "m4v" | "3gp" | "avi" | "mkv" | "mpg" | "mpeg") {
+    } else if mime.starts_with("video/")
+        || matches!(
+            ext,
+            "mov" | "mp4" | "m4v" | "3gp" | "avi" | "mkv" | "mpg" | "mpeg"
+        )
+    {
         FileKind::Video
-    } else if mime.starts_with("audio/") || matches!(ext, "mp3" | "m4a" | "wav" | "caf" | "aac" | "amr" | "aiff" | "flac") {
+    } else if mime.starts_with("audio/")
+        || matches!(
+            ext,
+            "mp3" | "m4a" | "wav" | "caf" | "aac" | "amr" | "aiff" | "flac"
+        )
+    {
         FileKind::Audio
     } else if mime == "text/vcard" || ext == "vcf" {
         FileKind::Contact
-    } else if mime.contains("spreadsheet") || mime.contains("excel") || matches!(ext, "xls" | "xlsx" | "csv" | "numbers" | "ods") {
+    } else if mime.contains("spreadsheet")
+        || mime.contains("excel")
+        || matches!(ext, "xls" | "xlsx" | "csv" | "numbers" | "ods")
+    {
         FileKind::Sheet
-    } else if mime.contains("zip") || mime.contains("compressed") || matches!(ext, "zip" | "gz" | "tar" | "7z" | "rar") {
+    } else if mime.contains("zip")
+        || mime.contains("compressed")
+        || matches!(ext, "zip" | "gz" | "tar" | "7z" | "rar")
+    {
         FileKind::Archive
-    } else if mime.contains("word") || mime.starts_with("text/") || matches!(ext, "doc" | "docx" | "txt" | "rtf" | "pages" | "odt" | "md") {
+    } else if mime.contains("word")
+        || mime.starts_with("text/")
+        || matches!(ext, "doc" | "docx" | "txt" | "rtf" | "pages" | "odt" | "md")
+    {
         FileKind::Doc
     } else {
         FileKind::Other
@@ -6770,8 +8475,15 @@ fn clip_middle(s: &str, max: usize) -> String {
     let head: String = chars[..head].iter().collect();
     let tail: String = chars[chars.len() - tail..].iter().collect();
     // back to a word end on the head side, forward to a word start on the tail side (when that costs little)
-    let head = head.rfind(' ').filter(|i| *i > head.len() / 2).map_or(head.as_str(), |i| &head[..i]).trim_end_matches([' ', ',', '-', '–', '|', ':']);
-    let tail = tail.find(' ').filter(|i| *i < tail.len() / 2).map_or(tail.as_str(), |i| &tail[i + 1..]);
+    let head = head
+        .rfind(' ')
+        .filter(|i| *i > head.len() / 2)
+        .map_or(head.as_str(), |i| &head[..i])
+        .trim_end_matches([' ', ',', '-', '–', '|', ':']);
+    let tail = tail
+        .find(' ')
+        .filter(|i| *i < tail.len() / 2)
+        .map_or(tail.as_str(), |i| &tail[i + 1..]);
     format!("{head}…{tail}")
 }
 
@@ -6779,7 +8491,11 @@ fn clip_middle(s: &str, max: usize) -> String {
 fn fmt_duration(secs: f64) -> String {
     let t = secs.round() as i64;
     let (h, m, s) = (t / 3600, t / 60 % 60, t % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
 }
 
 /// A file of a message, as the chat card needs it.
@@ -6795,14 +8511,23 @@ const FILE_W: i32 = MEDIA_W;
 
 /// The extra facts for a file, asked of the Mac once (the chat redraws when they arrive).
 fn file_info_for(u: &Ui, f: &FileRef) -> Option<crate::mac::FileInfo> {
-    if f.missing || f.path.is_empty() || !matches!(f.kind, FileKind::Video | FileKind::Audio | FileKind::Contact) {
+    if f.missing
+        || f.path.is_empty()
+        || !matches!(
+            f.kind,
+            FileKind::Video | FileKind::Audio | FileKind::Contact
+        )
+    {
         return None;
     }
     if let Some(i) = u.st.borrow().file_info.get(&f.path) {
         return i.clone();
     }
     u.st.borrow_mut().file_info.insert(f.path.clone(), None);
-    u.send(Cmd::FileInfo { path: f.path.clone(), contact: f.kind == FileKind::Contact });
+    u.send(Cmd::FileInfo {
+        path: f.path.clone(),
+        contact: f.kind == FileKind::Contact,
+    });
     None
 }
 
@@ -6851,7 +8576,10 @@ fn file_card(u: &Rc<Ui>, f: &FileRef, look: bubble::Look) -> gtk::Widget {
     d.set_max_width_chars(24);
     texts.append(&d);
 
-    let thumb = f.kind.thumb() && !f.missing && !f.path.is_empty() && !u.st.borrow().bad_images.contains(&f.path);
+    let thumb = f.kind.thumb()
+        && !f.missing
+        && !f.path.is_empty()
+        && !u.st.borrow().bad_images.contains(&f.path);
     let tile: gtk::Widget = if thumb {
         let t = bubble::Bubble::tile(56);
         t.add_css_class("fixed");
@@ -6879,7 +8607,11 @@ fn file_card(u: &Rc<Ui>, f: &FileRef, look: bubble::Look) -> gtk::Widget {
     } else if !f.path.is_empty() {
         b.set_tooltip_text(Some("Copy from the Mac and open"));
         b.set_cursor_from_name(Some("pointer"));
-        let item = crate::mac::MediaItem { path: f.path.clone(), name: f.name.clone(), ..Default::default() };
+        let item = crate::mac::MediaItem {
+            path: f.path.clone(),
+            name: f.name.clone(),
+            ..Default::default()
+        };
         let (u2, b2) = (u.clone(), b.clone());
         let click = gtk::GestureClick::new();
         click.connect_released(move |g, _, _, _| {
@@ -6912,13 +8644,22 @@ fn video_preview(u: &Rc<Ui>, f: &FileRef, look: bubble::Look) -> gtk::Widget {
         over.append(&pill);
     }
     p.append(&over);
-    let tip = [f.name.clone(), [f.kind.label().to_string(), fmt_size(f.size)].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "), "Click to play".into()];
+    let tip = [
+        f.name.clone(),
+        [f.kind.label().to_string(), fmt_size(f.size)]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · "),
+        "Click to play".into(),
+    ];
     p.set_tooltip_text(Some(&tip.join("\n")));
     p.set_cursor_from_name(Some("pointer"));
     p.add_css_class("video");
     {
         let mut st = u.st.borrow_mut();
-        st.video_meta.insert(f.path.clone(), (f.name.clone(), f.size));
+        st.video_meta
+            .insert(f.path.clone(), (f.name.clone(), f.size));
         st.photos.push((f.path.clone(), p.clone().upcast()));
     }
     let (u2, path, p2) = (u.clone(), f.path.clone(), p.clone().upcast::<gtk::Widget>());
@@ -6947,7 +8688,11 @@ fn files_dir(u: &Ui) -> PathBuf {
 }
 
 fn open_file(u: &Ui, path: &std::path::Path) {
-    gtk::FileLauncher::new(Some(&gio::File::for_path(path))).launch(Some(&u.win), gio::Cancellable::NONE, |_| {});
+    gtk::FileLauncher::new(Some(&gio::File::for_path(path))).launch(
+        Some(&u.win),
+        gio::Cancellable::NONE,
+        |_| {},
+    );
 }
 
 /// Copy a chat file from the Mac (once; kept under the cache folder) and open it with the default app.
@@ -6956,18 +8701,34 @@ fn file_dest(u: &Ui, path: &str, name: &str) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut h);
-    let name: String = name.chars().map(|c| if c == '/' || c.is_control() { '_' } else { c }).collect();
-    files_dir(u).join(format!("{:016x}", h.finish())).join(if name.is_empty() { "file" } else { &name })
+    let name: String = name
+        .chars()
+        .map(|c| if c == '/' || c.is_control() { '_' } else { c })
+        .collect();
+    files_dir(u)
+        .join(format!("{:016x}", h.finish()))
+        .join(if name.is_empty() { "file" } else { &name })
 }
 
 /// The viewer wants a video: use our copy, or copy it from the Mac (progress comes back as events).
 fn fetch_video(u: &Rc<Ui>, path: &str) {
-    let (name, size) = u.st.borrow().video_meta.get(path).cloned().unwrap_or_default();
+    let (name, size) =
+        u.st.borrow()
+            .video_meta
+            .get(path)
+            .cloned()
+            .unwrap_or_default();
     let dest = file_dest(u, path, &name);
-    if dest.exists() && std::fs::metadata(&dest).is_ok_and(|m| size <= 0 || m.len() as i64 >= size * 98 / 100) {
+    if dest.exists()
+        && std::fs::metadata(&dest).is_ok_and(|m| size <= 0 || m.len() as i64 >= size * 98 / 100)
+    {
         u.viewer.video_ready(path, dest);
     } else if u.st.borrow_mut().video_wait.insert(path.to_string()) {
-        u.send(Cmd::Download { path: path.to_string(), dest, size });
+        u.send(Cmd::Download {
+            path: path.to_string(),
+            dest,
+            size,
+        });
     }
 }
 
@@ -6982,8 +8743,14 @@ fn start_download(u: &Rc<Ui>, it: &MediaItem, chip: &gtk::Widget) {
     }
     chip.set_opacity(0.5);
     chip.set_tooltip_text(Some("Copying from the Mac…"));
-    u.st.borrow_mut().downloading.insert(it.path.clone(), chip.downgrade());
-    u.send(Cmd::Download { path: it.path.clone(), dest, size: it.size });
+    u.st.borrow_mut()
+        .downloading
+        .insert(it.path.clone(), chip.downgrade());
+    u.send(Cmd::Download {
+        path: it.path.clone(),
+        dest,
+        size: it.size,
+    });
 }
 
 /// A link as a square tile like the photos: Messages' preview picture cropped to fit (or a link glyph
@@ -6999,11 +8766,20 @@ fn link_tile(u: &Rc<Ui>, url: &str, l: Option<&crate::mac::LinkPreview>) -> gtk:
     frame.set_vexpand(false);
     // a big picture is cropped to fill; a small one is the site's logo, which is shown whole on a white tile
     let image = l.and_then(|l| match &l.image {
-        Some(i) if l.image_size.is_none_or(|(w, h)| crate::mac::is_preview_size(w, h)) => Some((i, true)),
+        Some(i)
+            if l.image_size
+                .is_none_or(|(w, h)| crate::mac::is_preview_size(w, h)) =>
+        {
+            Some((i, true))
+        }
         _ => small_picture(l).map(|i| (i, false)), // whole on the white tile
     });
     if let Some((img, big)) = image {
-        let b = if big { bubble::Bubble::tile(THUMB) } else { bubble::Bubble::thumb(THUMB) };
+        let b = if big {
+            bubble::Bubble::tile(THUMB)
+        } else {
+            bubble::Bubble::thumb(THUMB)
+        };
         b.add_css_class("fixed");
         load_texture_in(u, &b, img, true);
         frame.set_child(Some(&b));
@@ -7021,26 +8797,45 @@ fn link_tile(u: &Rc<Ui>, url: &str, l: Option<&crate::mac::LinkPreview>) -> gtk:
         base.append(&g);
         frame.set_child(Some(&base));
     }
-    let host = url.split('/').nth(2).unwrap_or(url).trim_start_matches("www.").to_string();
-    let caption = gtk::Label::new(Some(l.map(|l| l.site.as_str()).filter(|s| !s.is_empty()).unwrap_or(&host)));
+    let host = url
+        .split('/')
+        .nth(2)
+        .unwrap_or(url)
+        .trim_start_matches("www.")
+        .to_string();
+    let caption = gtk::Label::new(Some(
+        l.map(|l| l.site.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&host),
+    ));
     caption.add_css_class("tile-caption");
     caption.set_halign(gtk::Align::Fill);
     caption.set_valign(gtk::Align::End);
     caption.set_ellipsize(gtk::pango::EllipsizeMode::End);
     caption.set_xalign(0.0);
     frame.add_overlay(&caption);
-    frame.set_tooltip_text(Some(&match l.map(|l| l.title.as_str()).filter(|t| !t.is_empty()) {
-        Some(t) => format!("{t}\n{url}"),
-        None => url.to_string(),
-    }));
+    frame.set_tooltip_text(Some(
+        &match l.map(|l| l.title.as_str()).filter(|t| !t.is_empty()) {
+            Some(t) => format!("{t}\n{url}"),
+            None => url.to_string(),
+        },
+    ));
     frame.set_cursor_from_name(Some("pointer"));
     let (u2, url, f2) = (u.clone(), url.to_string(), frame.clone());
     let g = gtk::GestureClick::new();
     g.connect_released(move |_, _, _, _| {
         // a YouTube tile's slot (its parent) is named "<date>|<key>": the key in the panel's sequence
         let slot = f2.parent();
-        let key = slot.as_ref().map(|p| p.widget_name().to_string()).and_then(|n| n.split_once('|').map(|x| x.1.to_string()));
-        open_link(&u2, &url, slot.as_ref().unwrap_or(f2.upcast_ref()), key.as_deref());
+        let key = slot
+            .as_ref()
+            .map(|p| p.widget_name().to_string())
+            .and_then(|n| n.split_once('|').map(|x| x.1.to_string()));
+        open_link(
+            &u2,
+            &url,
+            slot.as_ref().unwrap_or(f2.upcast_ref()),
+            key.as_deref(),
+        );
     });
     frame.add_controller(g);
     frame.upcast()
@@ -7049,7 +8844,11 @@ fn link_tile(u: &Rc<Ui>, url: &str, l: Option<&crate::mac::LinkPreview>) -> gtk:
 /// A link as a tile in a slot, with Messages' preview picture where it made one (asked for from the Mac).
 fn link_slot(u: &Rc<Ui>, it: &MediaItem) -> gtk::Box {
     let slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let cached = if it.preview && it.row != 0 { u.st.borrow().links.get(&it.row).cloned() } else { None };
+    let cached = if it.preview && it.row != 0 {
+        u.st.borrow().links.get(&it.row).cloned()
+    } else {
+        None
+    };
     match cached {
         Some(Some(l)) => slot.append(&link_tile(u, &l.url, Some(&l))),
         _ => {
@@ -7061,7 +8860,10 @@ fn link_slot(u: &Rc<Ui>, it: &MediaItem) -> gtk::Box {
                     if first {
                         st.links.insert(it.row, None);
                     }
-                    st.link_waiters.entry(it.row).or_default().push(slot.downgrade());
+                    st.link_waiters
+                        .entry(it.row)
+                        .or_default()
+                        .push(slot.downgrade());
                     first
                 };
                 if first {
@@ -7077,7 +8879,10 @@ fn link_slot(u: &Rc<Ui>, it: &MediaItem) -> gtk::Box {
 fn render_links(u: &Rc<Ui>) {
     u.info.links.remove_all();
     let items = u.st.borrow().info_links.clone();
-    for it in items.iter().filter(|i| crate::mac::youtube_id(&i.url).is_none()) {
+    for it in items
+        .iter()
+        .filter(|i| crate::mac::youtube_id(&i.url).is_none())
+    {
         u.info.links.append(&link_slot(u, it));
     }
 }
@@ -7089,7 +8894,14 @@ fn render_videos(u: &Rc<Ui>) {
         let st = u.st.borrow();
         (st.info_videos.clone(), st.info_links.clone())
     };
-    let mut all: Vec<MediaItem> = files.into_iter().chain(links.into_iter().filter(|i| crate::mac::youtube_id(&i.url).is_some())).collect();
+    let mut all: Vec<MediaItem> = files
+        .into_iter()
+        .chain(
+            links
+                .into_iter()
+                .filter(|i| crate::mac::youtube_id(&i.url).is_some()),
+        )
+        .collect();
     all.sort_by_key(|i| std::cmp::Reverse(i.date));
     for it in &all {
         if it.url.is_empty() {
@@ -7097,7 +8909,11 @@ fn render_videos(u: &Rc<Ui>) {
         } else {
             let slot = link_slot(u, it);
             if let Some(id) = crate::mac::youtube_id(&it.url) {
-                slot.set_widget_name(&format!("{}|{}", it.date, crate::viewer::yt_key(&id, it.row as usize)));
+                slot.set_widget_name(&format!(
+                    "{}|{}",
+                    it.date,
+                    crate::viewer::yt_key(&id, it.row as usize)
+                ));
             }
             u.info.videos.append(&slot);
         }
@@ -7146,7 +8962,6 @@ fn tab_switcher(stack: &gtk::Stack, items: &[(&'static str, &str)]) -> gtk::Box 
     switcher
 }
 
-
 /// Settings' second tab: where BubbleFairy connects, read only. Changing any of it is what the setup wizard is for.
 fn mac_tab(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Box {
     let cfg = u.st.borrow().cfg.clone();
@@ -7163,11 +8978,22 @@ fn mac_tab(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Box {
         for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
             card.set_property(m, 14);
         }
-        let grid = gtk::Grid::builder().row_spacing(10).column_spacing(14).build();
+        let grid = gtk::Grid::builder()
+            .row_spacing(10)
+            .column_spacing(14)
+            .build();
         let hk = u.st.borrow().host_key.clone();
-        let hk = if hk.is_empty() { std::fs::read_to_string(&u.store.known_host).unwrap_or_default() } else { hk };
+        let hk = if hk.is_empty() {
+            std::fs::read_to_string(&u.store.known_host).unwrap_or_default()
+        } else {
+            hk
+        };
         let ours = cfg.imsg.contains("/BubbleFairy");
-        let mut rows = vec![("Mac", cfg.host.clone()), ("Mac user", cfg.user.clone()), ("imsg", cfg.imsg.clone())];
+        let mut rows = vec![
+            ("Mac", cfg.host.clone()),
+            ("Mac user", cfg.user.clone()),
+            ("imsg", cfg.imsg.clone()),
+        ];
         if ours {
             rows.push(("imsg version", crate::setup::IMSG_VERSION.to_string()));
         }
@@ -7197,7 +9023,7 @@ fn mac_tab(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Box {
             "The Mac identity is how BubbleFairy recognises your Mac. It is saved on the first connection, and BubbleFairy refuses to connect if it ever changes. To use a different Mac, or to fix the connection, run the setup again.",
         ));
         note.set_wrap(true);
-    note.set_max_width_chars(58);
+        note.set_max_width_chars(58);
         note.set_xalign(0.0);
         note.add_css_class("dim");
         card.append(&note);
@@ -7219,7 +9045,12 @@ fn mac_tab(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Box {
 }
 
 fn settings(u: &Rc<Ui>) {
-    let w = gtk::Window::builder().transient_for(&u.win).modal(true).title("Settings").default_width(520).build();
+    let w = gtk::Window::builder()
+        .transient_for(&u.win)
+        .modal(true)
+        .title("Settings")
+        .default_width(520)
+        .build();
     w.set_application(u.win.application().as_ref()); // so the light/dark class reaches it, as for the other windows
     w.add_css_class("bf");
     w.add_css_class("bf-settings");
@@ -7227,7 +9058,14 @@ fn settings(u: &Rc<Ui>) {
     head.add_css_class("bf-head");
     head.set_title_widget(Some(&brand()));
     w.set_titlebar(Some(&head));
-    let grid = gtk::Grid::builder().row_spacing(10).column_spacing(12).margin_top(18).margin_bottom(18).margin_start(18).margin_end(18).build();
+    let grid = gtk::Grid::builder()
+        .row_spacing(10)
+        .column_spacing(12)
+        .margin_top(18)
+        .margin_bottom(18)
+        .margin_start(18)
+        .margin_end(18)
+        .build();
     let cfg = u.st.borrow().cfg.clone();
     let previews = gtk::CheckButton::with_label("Show map previews on contact cards");
     previews.set_active(cfg.map_previews);
@@ -7267,24 +9105,50 @@ fn settings(u: &Rc<Ui>) {
     // The file chooser hands a Flatpak app a portal path (/run/user/1000/doc/<id>/Pictures); that is what
     // saving needs, but the field shows the real folder, which the portal keeps in an attribute.
     let shown = |path: &str| {
-        let info = gio::File::for_path(path).query_info("xattr::document-portal.host-path", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE).ok();
-        info.and_then(|i| i.attribute_string("xattr::document-portal.host-path")).map(|s| s.to_string()).unwrap_or_else(|| path.to_string())
+        let info = gio::File::for_path(path)
+            .query_info(
+                "xattr::document-portal.host-path",
+                gio::FileQueryInfoFlags::NONE,
+                gio::Cancellable::NONE,
+            )
+            .ok();
+        info.and_then(|i| i.attribute_string("xattr::document-portal.host-path"))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| path.to_string())
     };
     let folder_row = |label: &str, value: &str| {
         let l = gtk::Label::new(Some(label));
         l.set_xalign(0.0);
         l.set_width_chars(8);
         let path = Rc::new(RefCell::new(value.to_string()));
-        let e = gtk::Entry::builder().text(if value.is_empty() { String::new() } else { shown(value) }).editable(false).can_focus(false).hexpand(true).placeholder_text("Ask every time").build();
+        let e = gtk::Entry::builder()
+            .text(if value.is_empty() {
+                String::new()
+            } else {
+                shown(value)
+            })
+            .editable(false)
+            .can_focus(false)
+            .hexpand(true)
+            .placeholder_text("Ask every time")
+            .build();
         let choose = gtk::Button::with_label("Choose…");
         let clear = gtk::Button::with_label("Clear");
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        for w in [l.upcast_ref::<gtk::Widget>(), e.upcast_ref(), choose.upcast_ref(), clear.upcast_ref()] {
+        for w in [
+            l.upcast_ref::<gtk::Widget>(),
+            e.upcast_ref(),
+            choose.upcast_ref(),
+            clear.upcast_ref(),
+        ] {
             row.append(w);
         }
         let (e2, p2, win, label) = (e.clone(), path.clone(), u.win.clone(), label.to_lowercase());
         choose.connect_clicked(move |_| {
-            let d = gtk::FileDialog::builder().title(format!("Default folder for {label}")).modal(true).build();
+            let d = gtk::FileDialog::builder()
+                .title(format!("Default folder for {label}"))
+                .modal(true)
+                .build();
             if !p2.borrow().is_empty() {
                 d.set_initial_folder(Some(&gio::File::for_path(p2.borrow().as_str())));
             }
@@ -7331,13 +9195,34 @@ fn settings(u: &Rc<Ui>) {
     let sound_on = gtk::CheckButton::with_label("Play a sound");
     sound_on.set_active(cfg.notify_sound);
     // the sound: the bundled ones, then "Custom file…" (which shows the chosen file's name once there is one)
-    let custom: Rc<RefCell<String>> = Rc::new(RefCell::new(cfg.sound.strip_prefix("file:").unwrap_or("").to_string()));
+    let custom: Rc<RefCell<String>> = Rc::new(RefCell::new(
+        cfg.sound.strip_prefix("file:").unwrap_or("").to_string(),
+    ));
     let sounds = gtk::StringList::new(&crate::sound::BUNDLED.map(|(_, n)| n));
-    let custom_label = |c: &str| if c.is_empty() { "Custom file…".to_string() } else { format!("Custom: {}", std::path::Path::new(c).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) };
+    let custom_label = |c: &str| {
+        if c.is_empty() {
+            "Custom file…".to_string()
+        } else {
+            format!(
+                "Custom: {}",
+                std::path::Path::new(c)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            )
+        }
+    };
     sounds.append(&custom_label(&custom.borrow()));
     let picker = gtk::DropDown::new(Some(sounds.clone()), gtk::Expression::NONE);
     picker.set_hexpand(true);
-    let current = crate::sound::BUNDLED.iter().position(|(n, _)| *n == cfg.sound).unwrap_or(if custom.borrow().is_empty() { 0 } else { crate::sound::BUNDLED.len() });
+    let current = crate::sound::BUNDLED
+        .iter()
+        .position(|(n, _)| *n == cfg.sound)
+        .unwrap_or(if custom.borrow().is_empty() {
+            0
+        } else {
+            crate::sound::BUNDLED.len()
+        });
     picker.set_selected(current as u32);
     let chosen: Rc<RefCell<String>> = Rc::new(RefCell::new(cfg.sound.clone()));
     let listen = gtk::Button::from_icon_name("media-playback-start-symbolic");
@@ -7346,7 +9231,13 @@ fn settings(u: &Rc<Ui>) {
     listen2.connect_clicked(move |_| crate::sound::play(&chosen2.borrow()));
     let last_ok = Rc::new(Cell::new(current as u32));
     {
-        let (win, custom, chosen, sounds, last_ok) = (w.clone(), custom.clone(), chosen.clone(), sounds.clone(), last_ok.clone());
+        let (win, custom, chosen, sounds, last_ok) = (
+            w.clone(),
+            custom.clone(),
+            chosen.clone(),
+            sounds.clone(),
+            last_ok.clone(),
+        );
         picker.connect_selected_notify(move |p| {
             let i = p.selected() as usize;
             if i < crate::sound::BUNDLED.len() {
@@ -7362,19 +9253,35 @@ fn settings(u: &Rc<Ui>) {
                 filter.add_mime_type("audio/*");
                 let filters = gio::ListStore::new::<gtk::FileFilter>();
                 filters.append(&filter);
-                let d = gtk::FileDialog::builder().title("Notification sound").modal(true).filters(&filters).build();
-                let (p2, custom, chosen, sounds, last_ok) = (p.clone(), custom.clone(), chosen.clone(), sounds.clone(), last_ok.clone());
-                d.open(Some(&win), gio::Cancellable::NONE, move |r| match r.ok().and_then(|f| f.path()) {
-                    Some(path) => {
-                        let path = path.to_string_lossy().to_string();
-                        *custom.borrow_mut() = path.clone();
-                        sounds.splice(crate::sound::BUNDLED.len() as u32, 1, &[&custom_label(&path)]);
-                        *chosen.borrow_mut() = format!("file:{path}");
-                        last_ok.set(crate::sound::BUNDLED.len() as u32);
-                        p2.set_selected(crate::sound::BUNDLED.len() as u32);
-                        crate::sound::play(&chosen.borrow());
+                let d = gtk::FileDialog::builder()
+                    .title("Notification sound")
+                    .modal(true)
+                    .filters(&filters)
+                    .build();
+                let (p2, custom, chosen, sounds, last_ok) = (
+                    p.clone(),
+                    custom.clone(),
+                    chosen.clone(),
+                    sounds.clone(),
+                    last_ok.clone(),
+                );
+                d.open(Some(&win), gio::Cancellable::NONE, move |r| {
+                    match r.ok().and_then(|f| f.path()) {
+                        Some(path) => {
+                            let path = path.to_string_lossy().to_string();
+                            *custom.borrow_mut() = path.clone();
+                            sounds.splice(
+                                crate::sound::BUNDLED.len() as u32,
+                                1,
+                                &[&custom_label(&path)],
+                            );
+                            *chosen.borrow_mut() = format!("file:{path}");
+                            last_ok.set(crate::sound::BUNDLED.len() as u32);
+                            p2.set_selected(crate::sound::BUNDLED.len() as u32);
+                            crate::sound::play(&chosen.borrow());
+                        }
+                        None => p2.set_selected(last_ok.get()),
                     }
-                    None => p2.set_selected(last_ok.get()),
                 });
             }
         });
@@ -7390,7 +9297,11 @@ fn settings(u: &Rc<Ui>) {
     let text_label = gtk::Label::new(Some("Shows"));
     text_label.set_width_chars(8);
     text_label.set_xalign(0.0);
-    let text_pick = gtk::DropDown::from_strings(&["Sender and message", "Sender only", "Nothing about the message"]);
+    let text_pick = gtk::DropDown::from_strings(&[
+        "Sender and message",
+        "Sender only",
+        "Nothing about the message",
+    ]);
     text_pick.set_hexpand(true);
     text_pick.set_selected(u32::from(cfg.notify_text.min(2)));
     text_row.append(&text_label);
@@ -7402,7 +9313,13 @@ fn settings(u: &Rc<Ui>) {
     notify_help.set_max_width_chars(58);
     notify_help.set_xalign(0.0);
     notify_help.add_css_class("dim");
-    for wd in [notify_on.upcast_ref::<gtk::Widget>(), sound_on.upcast_ref(), sound_row.upcast_ref(), text_row.upcast_ref(), notify_help.upcast_ref()] {
+    for wd in [
+        notify_on.upcast_ref::<gtk::Widget>(),
+        sound_on.upcast_ref(),
+        sound_row.upcast_ref(),
+        text_row.upcast_ref(),
+        notify_help.upcast_ref(),
+    ] {
         nb.append(wd);
     }
     let notify_frame = gtk::Frame::new(Some("Notifications"));
@@ -7447,12 +9364,26 @@ fn settings(u: &Rc<Ui>) {
     buttons.append(&cancel);
     buttons.append(&save);
     // the settings scroll, the buttons stay in view; the window is never taller than the screen
-    let max_h = u.win.surface().and_then(|s| gdk::Display::default()?.monitor_at_surface(&s)).map_or(700, |m| (m.geometry().height() * 85 / 100).min(780));
+    let max_h = u
+        .win
+        .surface()
+        .and_then(|s| gdk::Display::default()?.monitor_at_surface(&s))
+        .map_or(700, |m| (m.geometry().height() * 85 / 100).min(780));
     w.set_default_height(max_h);
-    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&grid).build();
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&grid)
+        .build();
     let pages = gtk::Stack::new();
     pages.add_named(&scroller, Some("app"));
-    pages.add_named(&gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&mac_tab(u, &w)).build(), Some("mac"));
+    pages.add_named(
+        &gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(&mac_tab(u, &w))
+            .build(),
+        Some("mac"),
+    );
     let tabs = tab_switcher(&pages, &[("app", "Settings"), ("mac", "Mac connection")]);
     tabs.set_halign(gtk::Align::Center);
     tabs.set_hexpand(false);
@@ -7475,7 +9406,18 @@ fn settings(u: &Rc<Ui>) {
     cancel.connect_clicked(move |_| w2.close());
     let (u2, w2) = (u.clone(), w.clone());
     save.connect_clicked(move |_| {
-        let cfg = Config { map_previews: previews.is_active(), link_previews: links.is_active(), dir_images: dir_images.borrow().clone(), dir_files: dir_files.borrow().clone(), notify: notify_on.is_active(), notify_sound: sound_on.is_active(), sound: chosen.borrow().clone(), notify_text: text_pick.selected() as u8, autostart: auto_on.is_active(), ..u2.st.borrow().cfg.clone() };
+        let cfg = Config {
+            map_previews: previews.is_active(),
+            link_previews: links.is_active(),
+            dir_images: dir_images.borrow().clone(),
+            dir_files: dir_files.borrow().clone(),
+            notify: notify_on.is_active(),
+            notify_sound: sound_on.is_active(),
+            sound: chosen.borrow().clone(),
+            notify_text: text_pick.selected() as u8,
+            autostart: auto_on.is_active(),
+            ..u2.st.borrow().cfg.clone()
+        };
         crate::save_config(&u2.store.config_file, &cfg);
         let old = std::mem::replace(&mut u2.st.borrow_mut().cfg, cfg.clone());
         if cfg.autostart != old.autostart
@@ -7494,7 +9436,15 @@ fn settings(u: &Rc<Ui>) {
                     cfg.autostart = !want;
                     crate::save_config(&u3.store.config_file, &cfg);
                     u3.st.borrow_mut().cfg = cfg;
-                    show_banner(&u3, if want { "Couldn't set up starting at login" } else { "Couldn't remove the login entry" }, false);
+                    show_banner(
+                        &u3,
+                        if want {
+                            "Couldn't set up starting at login"
+                        } else {
+                            "Couldn't remove the login entry"
+                        },
+                        false,
+                    );
                 }
             });
         }
@@ -7526,7 +9476,12 @@ fn settings(u: &Rc<Ui>) {
 /// Some RCS attachments come without a MIME type, so fall back to the file extension.
 fn is_image(mime: &str, path: &str) -> bool {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    mime.starts_with("image/") || (mime.is_empty() && matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "heic" | "heif" | "gif" | "webp"))
+    mime.starts_with("image/")
+        || (mime.is_empty()
+            && matches!(
+                ext.as_str(),
+                "jpg" | "jpeg" | "png" | "heic" | "heif" | "gif" | "webp"
+            ))
 }
 
 /// A phone number as people write it: +1 (888) 555-1212 for North American numbers. Emails, short
@@ -7553,12 +9508,27 @@ fn chat_title(c: &Value, names: &HashMap<String, String>) -> String {
     }
     // a group without a name: its people by first name, "Jo & Kari", "Jo, Rob & Drayven" (numbers stay whole)
     // (people with a contact name first, then numbers and emails, each in the order they come)
-    let handles: Vec<&str> = c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).collect();
-    if let [one] = handles.as_slice() && let Some(n) = names.get(*one) {
+    let handles: Vec<&str> = c["participants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.as_str())
+        .collect();
+    if let [one] = handles.as_slice()
+        && let Some(n) = names.get(*one)
+    {
         return n.clone(); // one person: the full name
     }
-    let mut people: Vec<String> = handles.iter().filter_map(|p| names.get(*p).map(|n| first_name(n))).collect();
-    people.extend(handles.iter().filter(|p| !names.contains_key(**p)).map(|p| pretty_handle(p)));
+    let mut people: Vec<String> = handles
+        .iter()
+        .filter_map(|p| names.get(*p).map(|n| first_name(n)))
+        .collect();
+    people.extend(
+        handles
+            .iter()
+            .filter(|p| !names.contains_key(**p))
+            .map(|p| pretty_handle(p)),
+    );
     match people.as_slice() {
         [] => {}
         [one] => return one.clone(),
@@ -7581,7 +9551,9 @@ fn clip_words(s: &str, max: usize) -> String {
         return s.to_string();
     }
     let cut: String = s.chars().take(max).collect();
-    let cut = cut.rsplit_once(char::is_whitespace).map_or(cut.as_str(), |(a, _)| a);
+    let cut = cut
+        .rsplit_once(char::is_whitespace)
+        .map_or(cut.as_str(), |(a, _)| a);
     format!("{}…", cut.trim_end())
 }
 
@@ -7593,9 +9565,16 @@ fn group_event(m: &Value, names: &HashMap<String, String>) -> Option<String> {
     let me = m["is_from_me"].as_bool() == Some(true);
     let who = e["who"].as_str().filter(|s| !s.is_empty()).map(name);
     let whom = e["whom"].as_str().filter(|s| !s.is_empty()).map(name);
-    let actor = if me { Some("You".to_string()) } else { who.clone() };
+    let actor = if me {
+        Some("You".to_string())
+    } else {
+        who.clone()
+    };
     match (item, e["action"].as_i64().unwrap_or(0)) {
-        (3, _) => Some(format!("{} left the conversation.", if me { "You".to_string() } else { who.or(whom)? })),
+        (3, _) => Some(format!(
+            "{} left the conversation.",
+            if me { "You".to_string() } else { who.or(whom)? }
+        )),
         (1, 1) => match (actor, whom) {
             (Some(a), Some(w)) if a != w => Some(format!("{a} removed {w} from the conversation.")),
             (_, Some(w)) => Some(format!("{w} left the conversation.")),
@@ -7627,13 +9606,26 @@ fn first_name(name: &str) -> String {
 /// more there are. Numbers and emails are never listed (they count among the others); with no names at all it is
 /// just the number of people.
 fn big_group_title(c: &Value, names: &HashMap<String, String>) -> String {
-    let handles: Vec<&str> = c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).collect();
-    let known: Vec<String> = handles.iter().filter_map(|p| names.get(*p).map(|n| first_name(n))).take(3).collect();
+    let handles: Vec<&str> = c["participants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.as_str())
+        .collect();
+    let known: Vec<String> = handles
+        .iter()
+        .filter_map(|p| names.get(*p).map(|n| first_name(n)))
+        .take(3)
+        .collect();
     if known.is_empty() {
         return format!("Chat with {} People", handles.len());
     }
     let others = handles.len() - known.len();
-    let others = if others == 1 { "1 other".to_string() } else { format!("{others} others") };
+    let others = if others == 1 {
+        "1 other".to_string()
+    } else {
+        format!("{others} others")
+    };
     match known.as_slice() {
         [one] => format!("{one} & {others}"),
         _ => format!("{} & {others}", known.join(", ")),
@@ -7642,13 +9634,22 @@ fn big_group_title(c: &Value, names: &HashMap<String, String>) -> String {
 
 /// People with a contact name first, the rest after them, each group in the order it came.
 fn known_first(members: &[String], names: &HashMap<String, String>) -> Vec<String> {
-    let mut v: Vec<String> = members.iter().filter(|m| names.contains_key(*m)).cloned().collect();
+    let mut v: Vec<String> = members
+        .iter()
+        .filter(|m| names.contains_key(*m))
+        .cloned()
+        .collect();
     v.extend(members.iter().filter(|m| !names.contains_key(*m)).cloned());
     v
 }
 
 fn clean_text(m: &Value) -> String {
-    m["text"].as_str().unwrap_or("").replace(OBJ, "").trim().to_string()
+    m["text"]
+        .as_str()
+        .unwrap_or("")
+        .replace(OBJ, "")
+        .trim()
+        .to_string()
 }
 
 /// One-line description of a message, for the chat list and notifications.
@@ -7658,7 +9659,9 @@ fn summary(m: &Value) -> String {
         return t.lines().next().unwrap_or("").to_string();
     }
     let atts = m["attachments"].as_array().map(|a| a.len()).unwrap_or(0);
-    let image = m["attachments"][0]["mime_type"].as_str().is_some_and(|s| s.starts_with("image/"));
+    let image = m["attachments"][0]["mime_type"]
+        .as_str()
+        .is_some_and(|s| s.starts_with("image/"));
     match (atts, image) {
         (0, _) if m["unsent_at"].as_str().is_some() => "Message unsent".into(),
         (0, _) => String::new(),
@@ -7673,7 +9676,11 @@ pub fn initials(name: &str) -> String {
     if !first.is_alphabetic() {
         return "#".into();
     }
-    name.split_whitespace().filter_map(|w| w.chars().find(|c| c.is_alphanumeric())).take(2).flat_map(char::to_uppercase).collect()
+    name.split_whitespace()
+        .filter_map(|w| w.chars().find(|c| c.is_alphanumeric()))
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect()
 }
 
 /// The contact's photo for a phone number or email, if the Mac has one.
@@ -7687,7 +9694,12 @@ fn photo_for(u: &Ui, handle: &str) -> Option<gdk::Texture> {
         return None; // on its way
     }
     // someone outside the chat list (a suggestion, a card): one small photo, decoded at once
-    let t = st.contacts.as_ref()?.photo(handle).map(<[u8]>::to_vec).and_then(decode_avatar);
+    let t = st
+        .contacts
+        .as_ref()?
+        .photo(handle)
+        .map(<[u8]>::to_vec)
+        .and_then(decode_avatar);
     st.avatar_tex.insert(key, t.clone());
     t
 }
@@ -7702,8 +9714,15 @@ fn prefetch_avatars(u: &Rc<Ui>) {
         let Some(contacts) = &st.contacts else { return };
         let mut out = Vec::new();
         for c in &st.chats {
-            for h in c["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str()) {
-                let Some(key) = crate::mac::addr_key(h) else { continue };
+            for h in c["participants"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.as_str())
+            {
+                let Some(key) = crate::mac::addr_key(h) else {
+                    continue;
+                };
                 if st.avatar_tex.contains_key(&key) || !st.avatar_asked.insert(key.clone()) {
                     continue;
                 }
@@ -7735,7 +9754,12 @@ fn prefetch_avatars(u: &Rc<Ui>) {
                 // the open chat: its header avatar only, unless it is a group (senders' avatars are in the messages)
                 let open = {
                     let st = u2.st.borrow();
-                    st.sel.and_then(|id| st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).cloned())
+                    st.sel.and_then(|id| {
+                        st.chats
+                            .iter()
+                            .find(|c| c["id"].as_i64() == Some(id))
+                            .cloned()
+                    })
                 };
                 if let Some(chat) = open {
                     if chat["is_group"].as_bool() == Some(true) {
@@ -7780,7 +9804,10 @@ fn avatar(u: &Ui, name: &str, handle: Option<&str>, small: bool) -> gtk::Widget 
 
 /// Initials on a colour, or a generic person for numbers and other names with no letters.
 fn initials_avatar(name: &str, small: bool) -> gtk::Widget {
-    let hue = name.bytes().fold(0u32, |a, c| a.wrapping_mul(31).wrapping_add(c as u32)) % 8;
+    let hue = name
+        .bytes()
+        .fold(0u32, |a, c| a.wrapping_mul(31).wrapping_add(c as u32))
+        % 8;
     let w: gtk::Widget = if name.chars().next().is_some_and(char::is_alphabetic) {
         let l = gtk::Label::new(Some(&initials(name)));
         l.set_halign(gtk::Align::Center);
@@ -7842,7 +9869,12 @@ fn more_width(n: usize, d: i32) -> i32 {
 
 /// A group's avatar, like Messages: a disc with the other members' small avatars inside it. With
 /// more than four people it shows three and a "+N" circle for the rest.
-fn group_avatar(u: &Ui, title: &str, members: &[String], names: &HashMap<String, String>) -> gtk::Widget {
+fn group_avatar(
+    u: &Ui,
+    title: &str,
+    members: &[String],
+    names: &HashMap<String, String>,
+) -> gtk::Widget {
     let members = &known_first(members, names)[..];
     let n = members.len();
     if n < 2 {
@@ -7887,7 +9919,13 @@ type Slot = Rc<Cell<Option<usize>>>;
 // GTK4's Overlay can't reorder children, so raising one means removing and re-adding it, which would
 // fire leave/enter events on it. The avatars therefore don't take events at all: the stack does the
 // hit-testing itself, by position.
-fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<String, String>, open_card: OpenCard) -> gtk::Widget {
+fn stacked_avatars(
+    u: &Ui,
+    title: &str,
+    members: &[String],
+    names: &HashMap<String, String>,
+    open_card: OpenCard,
+) -> gtk::Widget {
     let members = &known_first(members, names)[..];
     let n = members.len();
     if n < 2 {
@@ -7915,7 +9953,15 @@ fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<Stri
         (0..slots)
             .map(|i| {
                 let w = if i < shown {
-                    mini_avatar(u, &names.get(&members[i]).cloned().unwrap_or_else(|| pretty_handle(&members[i])), &members[i], d)
+                    mini_avatar(
+                        u,
+                        &names
+                            .get(&members[i])
+                            .cloned()
+                            .unwrap_or_else(|| pretty_handle(&members[i])),
+                        &members[i],
+                        d,
+                    )
                 } else {
                     more_pill(n - shown, d)
                 };
@@ -7939,7 +9985,10 @@ fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<Stri
         Rc::new(move || {
             let Some(o) = o.upgrade() else { return };
             let (hv, op) = (hover.get(), open.get());
-            let mut order: Vec<usize> = (0..ws.len()).rev().filter(|i| Some(*i) != hv && Some(*i) != op).collect();
+            let mut order: Vec<usize> = (0..ws.len())
+                .rev()
+                .filter(|i| Some(*i) != hv && Some(*i) != op)
+                .collect();
             order.extend(op);
             if hv != op {
                 order.extend(hv);
@@ -7954,8 +10003,13 @@ fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<Stri
     let hit = {
         let (hover, open) = (hover.clone(), open.clone());
         move |x: f64| -> Option<usize> {
-            let inside = |i: usize| x >= (i as i32 * step) as f64 && x < (i as i32 * step + d) as f64;
-            [hover.get(), open.get()].into_iter().flatten().find(|i| inside(*i)).or_else(|| (0..slots).find(|i| inside(*i)))
+            let inside =
+                |i: usize| x >= (i as i32 * step) as f64 && x < (i as i32 * step + d) as f64;
+            [hover.get(), open.get()]
+                .into_iter()
+                .flatten()
+                .find(|i| inside(*i))
+                .or_else(|| (0..slots).find(|i| inside(*i)))
         }
     };
     let m = gtk::EventControllerMotion::new();
@@ -7978,12 +10032,20 @@ fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<Stri
     let (members, names, ws2) = (members.to_vec(), names.clone(), ws.clone());
     g.connect_released(move |_, _, x, _| {
         if let Some(i) = hit(x).filter(|i| *i < shown) {
-            let name = names.get(&members[i]).cloned().unwrap_or_else(|| pretty_handle(&members[i]));
+            let name = names
+                .get(&members[i])
+                .cloned()
+                .unwrap_or_else(|| pretty_handle(&members[i]));
             let (open, restack) = (open.clone(), restack.clone());
-            open_card(&ws2[i], &members[i], &name, Rc::new(move |on| {
-                open.set(on.then_some(i));
-                restack();
-            }));
+            open_card(
+                &ws2[i],
+                &members[i],
+                &name,
+                Rc::new(move |on| {
+                    open.set(on.then_some(i));
+                    restack();
+                }),
+            );
         }
     });
     o.add_controller(g);
@@ -7993,7 +10055,12 @@ fn stacked_avatars(u: &Ui, title: &str, members: &[String], names: &HashMap<Stri
 /// The avatar for a chat in the list: the member circles for a group, the person's own for a 1:1 chat.
 fn chat_avatar(u: &Ui, chat: &Value, title: &str) -> gtk::Widget {
     if chat["is_group"].as_bool() == Some(true) {
-        let members: Vec<String> = chat["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
+        let members: Vec<String> = chat["participants"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_str().map(String::from))
+            .collect();
         let names = u.st.borrow().names.clone();
         group_avatar(u, title, &members, &names)
     } else {
@@ -8010,7 +10077,12 @@ fn header_avatar(u: &Rc<Ui>, chat: &Value, title: &str) -> gtk::Widget {
         Rc::new(move |w, handle, name, open| show_card(&u, w, handle, name, open))
     };
     if chat["is_group"].as_bool() == Some(true) {
-        let members: Vec<String> = chat["participants"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect();
+        let members: Vec<String> = chat["participants"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_str().map(String::from))
+            .collect();
         let names = u.st.borrow().names.clone();
         if members.len() > BIG_GROUP {
             // too many to show one by one: the list's avatar, which opens the list of people
@@ -8047,10 +10119,19 @@ fn show_card(u: &Rc<Ui>, w: &gtk::Widget, handle: &str, name: &str, open: CardOp
     // room below the avatar, inside the window and the monitor; taller cards scroll
     let mut room = u.win.height();
     if let Some(r) = w.compute_bounds(&u.win) {
-        pop.set_pointing_to(Some(&gdk::Rectangle::new(r.x() as i32, r.y() as i32, r.width() as i32, r.height() as i32)));
+        pop.set_pointing_to(Some(&gdk::Rectangle::new(
+            r.x() as i32,
+            r.y() as i32,
+            r.width() as i32,
+            r.height() as i32,
+        )));
         room -= (r.y() + r.height()) as i32;
     }
-    if let Some(mon) = u.win.surface().and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s)) {
+    if let Some(mon) = u
+        .win
+        .surface()
+        .and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s))
+    {
         room = room.min(mon.geometry().height() - 120);
     }
     let body = card_body(u, &pop, handle, name);
@@ -8085,10 +10166,19 @@ fn show_people(u: &Rc<Ui>, w: &gtk::Widget, members: &[String]) {
     pop.set_position(gtk::PositionType::Bottom);
     let mut room = u.win.height();
     if let Some(r) = w.compute_bounds(&u.win) {
-        pop.set_pointing_to(Some(&gdk::Rectangle::new(r.x() as i32, r.y() as i32, r.width() as i32, r.height() as i32)));
+        pop.set_pointing_to(Some(&gdk::Rectangle::new(
+            r.x() as i32,
+            r.y() as i32,
+            r.width() as i32,
+            r.height() as i32,
+        )));
         room -= (r.y() + r.height()) as i32;
     }
-    if let Some(mon) = u.win.surface().and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s)) {
+    if let Some(mon) = u
+        .win
+        .surface()
+        .and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s))
+    {
         room = room.min(mon.geometry().height() - 120);
     }
     let max_h = (room - 30).max(200);
@@ -8131,7 +10221,14 @@ fn show_people(u: &Rc<Ui>, w: &gtk::Widget, members: &[String]) {
         }
         line.append(&col);
         row.set_child(Some(&line));
-        let (u2, pop2, stack2, h2, name2, count) = (u.clone(), pop.clone(), stack.clone(), h.clone(), name.clone(), members.len());
+        let (u2, pop2, stack2, h2, name2, count) = (
+            u.clone(),
+            pop.clone(),
+            stack.clone(),
+            h.clone(),
+            name.clone(),
+            members.len(),
+        );
         row.connect_clicked(move |_| {
             if let Some(old) = stack2.child_by_name("card") {
                 stack2.remove(&old);
@@ -8171,13 +10268,23 @@ fn show_people(u: &Rc<Ui>, w: &gtk::Widget, members: &[String]) {
     if std::env::var_os("BF_PEOPLE").is_some() {
         let (stack2, pop2) = (stack.clone(), pop.clone());
         glib::timeout_add_local_once(Duration::from_millis(600), move || {
-            eprintln!("people: before click visible={} page={:?} width={}", pop2.is_visible(), stack2.visible_child_name(), stack2.width());
+            eprintln!(
+                "people: before click visible={} page={:?} width={}",
+                pop2.is_visible(),
+                stack2.visible_child_name(),
+                stack2.width()
+            );
             if let Some(b) = first_row {
                 b.emit_clicked();
             }
             let (stack3, pop3) = (stack2.clone(), pop2.clone());
             glib::timeout_add_local_once(Duration::from_millis(600), move || {
-                eprintln!("people: after click visible={} page={:?} width={}", pop3.is_visible(), stack3.visible_child_name(), stack3.width());
+                eprintln!(
+                    "people: after click visible={} page={:?} width={}",
+                    pop3.is_visible(),
+                    stack3.visible_child_name(),
+                    stack3.width()
+                );
             });
         });
     }
@@ -8203,15 +10310,32 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
     // (value, label, has an iMessage history)
     let (title, org, rows, places, birthday) = {
         let st = u.st.borrow();
-        match st.contacts.as_ref().and_then(|c| Some((c, c.person(handle)?))) {
+        match st
+            .contacts
+            .as_ref()
+            .and_then(|c| Some((c, c.person(handle)?)))
+        {
             Some((c, p)) => (
                 p.name.clone(),
                 p.org.clone(),
-                p.addrs.iter().map(|(a, l)| (a.clone(), l.clone(), c.has_imessage(a))).collect::<Vec<_>>(),
+                p.addrs
+                    .iter()
+                    .map(|(a, l)| (a.clone(), l.clone(), c.has_imessage(a)))
+                    .collect::<Vec<_>>(),
                 p.places.clone(),
                 p.birthday.clone(),
             ),
-            None => (name.to_string(), String::new(), vec![(handle.to_string(), String::new(), st.contacts.as_ref().is_some_and(|c| c.has_imessage(handle)))], vec![], None),
+            None => (
+                name.to_string(),
+                String::new(),
+                vec![(
+                    handle.to_string(),
+                    String::new(),
+                    st.contacts.as_ref().is_some_and(|c| c.has_imessage(handle)),
+                )],
+                vec![],
+                None,
+            ),
         }
     };
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -8264,7 +10388,9 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
         v.set_wrap_mode(gtk::pango::WrapMode::Char);
         v.set_selectable(true);
         // a star on the number or address this chat uses (the one the latest messages went to or came from)
-        let used = crate::mac::addr_key(&addr).is_some_and(|k| crate::mac::addr_key(handle) == Some(k)) || addr.eq_ignore_ascii_case(handle);
+        let used = crate::mac::addr_key(&addr)
+            .is_some_and(|k| crate::mac::addr_key(handle) == Some(k))
+            || addr.eq_ignore_ascii_case(handle);
         if used {
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             line.set_halign(gtk::Align::Start);
@@ -8294,7 +10420,9 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
             win.clipboard().set_text(&text);
             b.set_icon_name("object-select-symbolic"); // a moment of "done"
             let b = b.clone();
-            glib::timeout_add_local_once(Duration::from_millis(1500), move || b.set_icon_name("edit-copy-symbolic"));
+            glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+                b.set_icon_name("edit-copy-symbolic")
+            });
         });
         row.append(&copy);
         let msg = card_button("bf-message-symbolic", "Send a message");
@@ -8314,7 +10442,11 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
                     p.popdown();
                 }
                 // not gio::AppInfo::launch_default_for_uri: that handed Thunderbird "mailto:///addr"
-                gtk::UriLauncher::new(&format!("mailto:{addr}")).launch(Some(&win), gio::Cancellable::NONE, |_| {});
+                gtk::UriLauncher::new(&format!("mailto:{addr}")).launch(
+                    Some(&win),
+                    gio::Cancellable::NONE,
+                    |_| {},
+                );
             });
             row.append(&mail);
         }
@@ -8341,11 +10473,18 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
             row.append(&map_box(u, &query)); // always there, so nothing shifts when the map arrives
         } else {
             // no lookups: the maps app searches for the address itself
-            let b = card_button("bf-map-pin-symbolic", "Show on a map\nTo see a small map here, turn on map previews in Settings > Privacy");
+            let b = card_button(
+                "bf-map-pin-symbolic",
+                "Show on a map\nTo see a small map here, turn on map previews in Settings > Privacy",
+            );
             let win = u.win.clone();
             b.connect_clicked(move |_| {
                 let q = crate::mac::url_encode(&query);
-                open_map(&win, &format!("geo:0,0?q={q}"), &format!("https://www.openstreetmap.org/search?query={q}"));
+                open_map(
+                    &win,
+                    &format!("geo:0,0?q={q}"),
+                    &format!("https://www.openstreetmap.org/search?query={q}"),
+                );
             });
             row.append(&b);
         }
@@ -8375,7 +10514,17 @@ fn map_cache_path(u: &Ui, query: &str) -> PathBuf {
 /// says where a contact lives.
 fn map_cache_bytes(d: &crate::mac::MapData) -> Vec<u8> {
     let lens: Vec<String> = d.tiles.iter().map(|t| t.len().to_string()).collect();
-    let mut b = format!("{} {} {} {} {} {} {}\n", d.lat, d.lon, d.cols, d.rows, d.pin_x, d.pin_y, lens.join(" ")).into_bytes();
+    let mut b = format!(
+        "{} {} {} {} {} {} {}\n",
+        d.lat,
+        d.lon,
+        d.cols,
+        d.rows,
+        d.pin_x,
+        d.pin_y,
+        lens.join(" ")
+    )
+    .into_bytes();
     for t in &d.tiles {
         b.extend_from_slice(t);
     }
@@ -8384,7 +10533,14 @@ fn map_cache_bytes(d: &crate::mac::MapData) -> Vec<u8> {
 
 fn map_view(d: &crate::mac::MapData) -> Option<MapView> {
     let tiles: Vec<gdk::Texture> = d.tiles.iter().filter_map(|t| texture(t)).collect();
-    (tiles.len() == d.tiles.len() && !tiles.is_empty()).then(|| MapView { lat: d.lat, lon: d.lon, cols: d.cols, pin_x: d.pin_x, pin_y: d.pin_y, tiles })
+    (tiles.len() == d.tiles.len() && !tiles.is_empty()).then(|| MapView {
+        lat: d.lat,
+        lon: d.lon,
+        cols: d.cols,
+        pin_x: d.pin_x,
+        pin_y: d.pin_y,
+        tiles,
+    })
 }
 
 fn read_map_cache(u: &Ui, query: &str) -> Option<MapView> {
@@ -8400,7 +10556,15 @@ fn read_map_cache(u: &Ui, query: &str) -> Option<MapView> {
         tiles.push(b.get(at..at + len)?.to_vec());
         at += len;
     }
-    map_view(&crate::mac::MapData { lat: num(0)?, lon: num(1)?, cols, rows, pin_x: num(4)?, pin_y: num(5)?, tiles })
+    map_view(&crate::mac::MapData {
+        lat: num(0)?,
+        lon: num(1)?,
+        cols,
+        rows,
+        pin_x: num(4)?,
+        pin_y: num(5)?,
+        tiles,
+    })
 }
 
 const MAP_BOX: i32 = 96;
@@ -8465,11 +10629,18 @@ fn map_box(u: &Rc<Ui>, query: &str) -> gtk::Overlay {
     let (win, loc2, q) = (u.win.clone(), loc.clone(), query.to_string());
     let g = gtk::GestureClick::new();
     g.connect_released(move |_, _, _, _| match loc2.get() {
-        Some((lat, lon)) => open_map(&win, &format!("geo:{lat},{lon}"), // no q=: apps search for q, and "lat,lon" matches nothing
-             &format!("https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=17/{lat}/{lon}")),
+        Some((lat, lon)) => open_map(
+            &win,
+            &format!("geo:{lat},{lon}"), // no q=: apps search for q, and "lat,lon" matches nothing
+            &format!("https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=17/{lat}/{lon}"),
+        ),
         None => {
             let q = crate::mac::url_encode(&q); // not found (yet): the maps app searches for the address itself
-            open_map(&win, &format!("geo:0,0?q={q}"), &format!("https://www.openstreetmap.org/search?query={q}"));
+            open_map(
+                &win,
+                &format!("geo:0,0?q={q}"),
+                &format!("https://www.openstreetmap.org/search?query={q}"),
+            );
         }
     });
     frame.add_controller(g);
@@ -8477,7 +10648,9 @@ fn map_box(u: &Rc<Ui>, query: &str) -> gtk::Overlay {
     let known = u.st.borrow().maps.get(query).cloned();
     let known = known.or_else(|| {
         let v = read_map_cache(u, query)?;
-        u.st.borrow_mut().maps.insert(query.to_string(), Some(v.clone()));
+        u.st.borrow_mut()
+            .maps
+            .insert(query.to_string(), Some(v.clone()));
         Some(Some(v))
     });
     match known {
@@ -8524,18 +10697,29 @@ fn fill_map(frame: &gtk::Overlay, loc: &Rc<Cell<Option<(f64, f64)>>>, map: Optio
     };
     // the tiles are 256 px; shown at half size, so the 192 px window around the pin fills the box
     let half = 128;
-    let (ox, oy) = (m.pin_x / 2.0 - f64::from(MAP_BOX) / 2.0, m.pin_y / 2.0 - f64::from(MAP_BOX) / 2.0);
+    let (ox, oy) = (
+        m.pin_x / 2.0 - f64::from(MAP_BOX) / 2.0,
+        m.pin_y / 2.0 - f64::from(MAP_BOX) / 2.0,
+    );
     let fixed = gtk::Fixed::new();
     for (i, t) in m.tiles.iter().enumerate() {
         let pic = gtk::Picture::for_paintable(t);
         pic.set_can_shrink(true);
         pic.set_size_request(half, half);
-        fixed.put(&pic, (i % m.cols) as f64 * f64::from(half) - ox, (i / m.cols) as f64 * f64::from(half) - oy);
+        fixed.put(
+            &pic,
+            (i % m.cols) as f64 * f64::from(half) - ox,
+            (i / m.cols) as f64 * f64::from(half) - oy,
+        );
     }
     let pin = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     pin.add_css_class("map-pin");
     pin.set_size_request(14, 14);
-    fixed.put(&pin, f64::from(MAP_BOX) / 2.0 - 7.0, f64::from(MAP_BOX) / 2.0 - 7.0);
+    fixed.put(
+        &pin,
+        f64::from(MAP_BOX) / 2.0 - 7.0,
+        f64::from(MAP_BOX) / 2.0 - 7.0,
+    );
     if let Some(base) = frame.child().and_downcast::<gtk::Box>()
         && let Some(icon) = base.first_child()
     {
@@ -8574,7 +10758,10 @@ fn message_to(u: &Rc<Ui>, addr: &str) {
 }
 
 fn local(iso: &str) -> Option<glib::DateTime> {
-    glib::DateTime::from_iso8601(iso, None).ok()?.to_local().ok()
+    glib::DateTime::from_iso8601(iso, None)
+        .ok()?
+        .to_local()
+        .ok()
 }
 
 fn day(unix: Option<i64>) -> Option<(i32, i32, i32)> {
@@ -8583,8 +10770,22 @@ fn day(unix: Option<i64>) -> Option<(i32, i32, i32)> {
 
 /// Whole calendar days from `d` to today (0 = today, 1 = yesterday).
 fn days_ago(d: &glib::DateTime) -> i64 {
-    let midnight = |t: &glib::DateTime| glib::DateTime::new(&glib::TimeZone::local(), t.year(), t.month(), t.day_of_month(), 0, 0, 0.0).map(|m| m.to_unix()).unwrap_or(0);
-    let Ok(now) = glib::DateTime::now_local() else { return 0 };
+    let midnight = |t: &glib::DateTime| {
+        glib::DateTime::new(
+            &glib::TimeZone::local(),
+            t.year(),
+            t.month(),
+            t.day_of_month(),
+            0,
+            0,
+            0.0,
+        )
+        .map(|m| m.to_unix())
+        .unwrap_or(0)
+    };
+    let Ok(now) = glib::DateTime::now_local() else {
+        return 0;
+    };
     ((midnight(&now) - midnight(d) + 43_200).div_euclid(86_400)).max(0)
 }
 
@@ -8600,7 +10801,9 @@ enum TimeKind {
 }
 
 fn rel_time(unix: i64, kind: TimeKind) -> String {
-    let Ok(d) = glib::DateTime::from_unix_local(unix) else { return String::new() };
+    let Ok(d) = glib::DateTime::from_unix_local(unix) else {
+        return String::new();
+    };
     let fmt = |f: &str| d.format(f).map(|s| s.to_string()).unwrap_or_default();
     let (days, clock) = (days_ago(&d), fmt("%H:%M"));
     let this_year = glib::DateTime::now_local().is_ok_and(|n| n.year() == d.year());
@@ -8630,20 +10833,37 @@ struct TimeLabel {
 
 impl TimeLabel {
     fn apply(&self) {
-        let (Some(l), Some(t)) = (self.label.upgrade(), self.unix.get()) else { return };
+        let (Some(l), Some(t)) = (self.label.upgrade(), self.unix.get()) else {
+            return;
+        };
         let text = rel_time(t, self.kind);
         match (self.kind, &self.svc) {
             (TimeKind::Read, _) => l.set_text(&format!("Read {text}")),
-            (_, Some(svc)) => l.set_markup(&format!("<b>{}</b>\n{}", glib::markup_escape_text(svc), glib::markup_escape_text(&text))),
+            (_, Some(svc)) => l.set_markup(&format!(
+                "<b>{}</b>\n{}",
+                glib::markup_escape_text(svc),
+                glib::markup_escape_text(&text)
+            )),
             _ => l.set_text(&text),
         }
     }
 }
 
 /// Show `unix` in `label` and keep it right as days pass. The returned cell changes the time later.
-fn track_time(u: &Ui, label: &gtk::Label, unix: Option<i64>, kind: TimeKind, svc: Option<String>) -> Rc<Cell<Option<i64>>> {
+fn track_time(
+    u: &Ui,
+    label: &gtk::Label,
+    unix: Option<i64>,
+    kind: TimeKind,
+    svc: Option<String>,
+) -> Rc<Cell<Option<i64>>> {
     let unix = Rc::new(Cell::new(unix));
-    let t = TimeLabel { label: label.downgrade(), unix: unix.clone(), kind, svc };
+    let t = TimeLabel {
+        label: label.downgrade(),
+        unix: unix.clone(),
+        kind,
+        svc,
+    };
     t.apply();
     let mut all = u.time_labels.borrow_mut();
     if all.len() > 3000 {
@@ -8655,7 +10875,8 @@ fn track_time(u: &Ui, label: &gtk::Label, unix: Option<i64>, kind: TimeKind, svc
 
 /// The day changed: write every tracked time again.
 fn refresh_times(u: &Rc<Ui>) {
-    u.time_day.set(glib::DateTime::now_local().map(|n| n.ymd()).ok());
+    u.time_day
+        .set(glib::DateTime::now_local().map(|n| n.ymd()).ok());
     let mut all = u.time_labels.borrow_mut();
     all.retain(|t| t.label.upgrade().is_some());
     for t in all.iter() {
@@ -8666,8 +10887,21 @@ fn refresh_times(u: &Rc<Ui>) {
 /// Run `refresh_times` just after each midnight. (A suspended computer wakes late: see also the window becoming
 /// active again.)
 fn schedule_midnight(u: &Rc<Ui>) {
-    let Ok(now) = glib::DateTime::now_local() else { return };
-    let next = glib::DateTime::new(&glib::TimeZone::local(), now.year(), now.month(), now.day_of_month(), 0, 0, 0.0).and_then(|m| m.add_days(1)).map(|m| m.to_unix()).unwrap_or(0);
+    let Ok(now) = glib::DateTime::now_local() else {
+        return;
+    };
+    let next = glib::DateTime::new(
+        &glib::TimeZone::local(),
+        now.year(),
+        now.month(),
+        now.day_of_month(),
+        0,
+        0,
+        0.0,
+    )
+    .and_then(|m| m.add_days(1))
+    .map(|m| m.to_unix())
+    .unwrap_or(0);
     let secs = (next - now.to_unix() + 3).clamp(5, 90_000) as u32;
     let u = u.clone();
     glib::timeout_add_seconds_local_once(secs, move || {
@@ -8713,21 +10947,39 @@ mod tests {
 
     #[test]
     fn links_become_markup() {
-        assert_eq!(linkify("see https://a.com/x?a=1&b=2, ok <b>"), "see <a href=\"https://a.com/x?a=1&amp;b=2\">https://a.com/x?a=1&amp;b=2</a>, ok &lt;b&gt;");
+        assert_eq!(
+            linkify("see https://a.com/x?a=1&b=2, ok <b>"),
+            "see <a href=\"https://a.com/x?a=1&amp;b=2\">https://a.com/x?a=1&amp;b=2</a>, ok &lt;b&gt;"
+        );
         assert_eq!(linkify("no link & more"), "no link &amp; more");
     }
 
     #[test]
     fn url_removed_from_text() {
-        let l = |u: &str| crate::mac::LinkPreview { url: u.into(), ..Default::default() };
+        let l = |u: &str| crate::mac::LinkPreview {
+            url: u.into(),
+            ..Default::default()
+        };
         assert_eq!(without_url("https://a.com/x", &l("https://a.com/x")), "");
-        assert_eq!(without_url("look https://a.com/ nice", &l("https://a.com/")), "look nice");
+        assert_eq!(
+            without_url("look https://a.com/ nice", &l("https://a.com/")),
+            "look nice"
+        );
         assert_eq!(without_url("https://a.com/", &l("https://a.com")), "");
         assert_eq!(without_url("hello", &l("https://a.com")), "hello");
         // the typed address carried tracking parameters; the text holds the clean one
-        assert_eq!(without_url("https://www.cabidor.com/", &l("https://www.cabidor.com/?srsltid=AYC")), "");
+        assert_eq!(
+            without_url(
+                "https://www.cabidor.com/",
+                &l("https://www.cabidor.com/?srsltid=AYC")
+            ),
+            ""
+        );
         // a link to some other site stays
-        assert_eq!(without_url("see https://b.com/y", &l("https://a.com/x")), "see https://b.com/y");
+        assert_eq!(
+            without_url("see https://b.com/y", &l("https://a.com/x")),
+            "see https://b.com/y"
+        );
     }
 
     #[test]
@@ -8745,45 +10997,108 @@ mod tests {
     #[test]
     fn titles_and_initials() {
         let names = HashMap::from([("+1".to_string(), "Ann Lee".to_string())]);
-        assert_eq!(chat_title(&json!({"display_name": "", "participants": ["+1", "+2"]}), &names), "Ann & +2");
-        let names3 = HashMap::from([("a".to_string(), "Jo Harris".to_string()), ("b".to_string(), "Rob Epp".to_string()), ("c".to_string(), "Drayven".to_string())]);
-        assert_eq!(chat_title(&json!({"display_name": "", "participants": ["a", "b", "c"]}), &names3), "Jo, Rob & Drayven");
-        assert_eq!(chat_title(&json!({"display_name": "Book Club", "participants": ["a", "b"]}), &names3), "Book Club");
+        assert_eq!(
+            chat_title(
+                &json!({"display_name": "", "participants": ["+1", "+2"]}),
+                &names
+            ),
+            "Ann & +2"
+        );
+        let names3 = HashMap::from([
+            ("a".to_string(), "Jo Harris".to_string()),
+            ("b".to_string(), "Rob Epp".to_string()),
+            ("c".to_string(), "Drayven".to_string()),
+        ]);
+        assert_eq!(
+            chat_title(
+                &json!({"display_name": "", "participants": ["a", "b", "c"]}),
+                &names3
+            ),
+            "Jo, Rob & Drayven"
+        );
+        assert_eq!(
+            chat_title(
+                &json!({"display_name": "Book Club", "participants": ["a", "b"]}),
+                &names3
+            ),
+            "Book Club"
+        );
         // numbers go last, in titles and avatars
-        assert_eq!(chat_title(&json!({"display_name": "", "participants": ["+9", "a", "b"]}), &names3), "Jo, Rob & +9");
-        assert_eq!(known_first(&["+9".to_string(), "a".to_string()], &names3), vec!["a".to_string(), "+9".to_string()]);
+        assert_eq!(
+            chat_title(
+                &json!({"display_name": "", "participants": ["+9", "a", "b"]}),
+                &names3
+            ),
+            "Jo, Rob & +9"
+        );
+        assert_eq!(
+            known_first(&["+9".to_string(), "a".to_string()], &names3),
+            vec!["a".to_string(), "+9".to_string()]
+        );
         // ranked: known first, those you wrote to last come first, a number after them all
-        let hs: Vec<String> = ["drayven", "+9", "rob", "jo"].iter().map(|s| s.to_string()).collect();
-        let when = |h: &str| match h { "jo" => Some("2026-11".to_string()), "rob" => Some("2025-01".to_string()), "drayven" => Some("2024-02".to_string()), _ => None };
+        let hs: Vec<String> = ["drayven", "+9", "rob", "jo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let when = |h: &str| match h {
+            "jo" => Some("2026-11".to_string()),
+            "rob" => Some("2025-01".to_string()),
+            "drayven" => Some("2024-02".to_string()),
+            _ => None,
+        };
         let got = rank_members(&hs, |h| h != "+9", when);
         assert_eq!(got, vec!["jo", "rob", "drayven", "+9"]);
         // a big group: first names, the rest counted; no names, just the count
-        let big = json!({"display_name": "", "participants": ["+1", "+2", "a", "b", "c", "+3", "+4"]});
-        assert_eq!(big_group_title(&big, &names3), "Jo, Rob, Drayven & 4 others");
+        let big =
+            json!({"display_name": "", "participants": ["+1", "+2", "a", "b", "c", "+3", "+4"]});
+        assert_eq!(
+            big_group_title(&big, &names3),
+            "Jo, Rob, Drayven & 4 others"
+        );
         let few = json!({"display_name": "", "participants": ["+1", "+2", "a", "+3", "+4"]});
         assert_eq!(big_group_title(&few, &names3), "Jo & 4 others");
         let none = json!({"display_name": "", "participants": ["+1", "+2", "+3", "+4", "+5"]});
         assert_eq!(big_group_title(&none, &names3), "Chat with 5 People");
         let one_left = json!({"display_name": "", "participants": ["a", "b", "c", "+1", "d"]});
-        assert_eq!(big_group_title(&one_left, &names3), "Jo, Rob, Drayven & 2 others");
-        assert_eq!(chat_title(&json!({"display_name": "", "contact_name": "Rob"}), &names), "Rob");
+        assert_eq!(
+            big_group_title(&one_left, &names3),
+            "Jo, Rob, Drayven & 2 others"
+        );
+        assert_eq!(
+            chat_title(&json!({"display_name": "", "contact_name": "Rob"}), &names),
+            "Rob"
+        );
         assert_eq!(initials("Ann Lee"), "AL");
         assert_eq!(initials("+1 555"), "#");
     }
 
     #[test]
     fn summaries() {
-        assert_eq!(summary(&json!({"text": "\u{FFFC}", "attachments": [{"mime_type": "image/heic"}]})), "📷 Photo");
+        assert_eq!(
+            summary(&json!({"text": "\u{FFFC}", "attachments": [{"mime_type": "image/heic"}]})),
+            "📷 Photo"
+        );
         let long = "King Will Silicone Wedding Rings For Men,6.6mm Wide 1.8mm Thick Rubber Wedding Bands,Breathable Design,Comfort Fit Size 7-13";
         let c = clip_middle(long, 70);
-        assert!(c.starts_with("King Will Silicone") && c.ends_with("Fit Size 7-13") && c.contains('…') && c.chars().count() <= 70, "{c}");
+        assert!(
+            c.starts_with("King Will Silicone")
+                && c.ends_with("Fit Size 7-13")
+                && c.contains('…')
+                && c.chars().count() <= 70,
+            "{c}"
+        );
         assert_eq!(clip_middle("short title", 70), "short title");
-        let f = clip_middle("Packing_list_with_no_spaces_at_all_but_a_really_long_name_for_the_trip_2026.docx", 48);
+        let f = clip_middle(
+            "Packing_list_with_no_spaces_at_all_but_a_really_long_name_for_the_trip_2026.docx",
+            48,
+        );
         assert!(f.ends_with(".docx") && f.chars().count() <= 48, "{f}");
-        assert_eq!(summary(&json!({"text": "hi\nthere", "attachments": []})), "hi");
+        assert_eq!(
+            summary(&json!({"text": "hi\nthere", "attachments": []})),
+            "hi"
+        );
     }
 }
-
 
 #[cfg(test)]
 mod pill_tests {
@@ -8795,6 +11110,9 @@ mod pill_tests {
         let w = vec!["hi".to_string(), "aba".to_string()];
         assert_eq!(word_spans(t, &fold(t), &w), vec![(4, 11)]);
         let t = "xx thing, other";
-        assert_eq!(word_spans(t, &fold(t), &["th".to_string()]), vec![(3, 8), (10, 15)]);
+        assert_eq!(
+            word_spans(t, &fold(t), &["th".to_string()]),
+            vec![(3, 8), (10, 15)]
+        );
     }
 }
