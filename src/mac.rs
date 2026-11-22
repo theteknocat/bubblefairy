@@ -872,6 +872,21 @@ fn members_of(id: i64) -> Vec<i64> {
         .unwrap_or_else(|| vec![id])
 }
 
+/// Remember which chats make up each merged conversation. Called from the command loop itself, not a spawned
+/// task, so every later command (a history read right after a merge) sees the new members.
+fn apply_merge(groups: Vec<(i64, Vec<i64>)>) {
+    let mut m = Merged::default();
+    for (canon, ids) in groups {
+        for id in &ids {
+            m.alias.insert(*id, canon);
+        }
+        m.members.insert(canon, ids);
+    }
+    if let Ok(mut g) = MERGED.lock() {
+        *g = Some(m);
+    }
+}
+
 /// The id the app knows a chat by.
 fn canon_of(id: i64) -> i64 {
     MERGED
@@ -2506,18 +2521,7 @@ async fn handle(
             let data = map_for(&session, &query).await;
             let _ = ev.send(Event::Map(query, data));
         }
-        Cmd::Merge(groups) => {
-            let mut m = Merged::default();
-            for (canon, ids) in groups {
-                for id in &ids {
-                    m.alias.insert(*id, canon);
-                }
-                m.members.insert(canon, ids);
-            }
-            if let Ok(mut g) = MERGED.lock() {
-                *g = Some(m);
-            }
-        }
+        Cmd::Merge(groups) => apply_merge(groups),
         Cmd::Configure(_) => {}
     }
 }
@@ -2585,6 +2589,7 @@ pub async fn run(
                     // only a change to how we connect needs a new connection; the other settings just apply
                     Some(Cmd::Configure(c)) if c.connection() != cfg.connection() => { cfg = c; break; }
                     Some(Cmd::Configure(c)) => cfg = c,
+                    Some(Cmd::Merge(groups)) => apply_merge(groups),
                     Some(c) => { tokio::spawn(handle(c, conn.rpc.clone(), conn.session.clone(), ev.clone())); }
                 },
             }
