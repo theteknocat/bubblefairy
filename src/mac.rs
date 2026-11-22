@@ -546,9 +546,13 @@ async fn cli(session: &client::Handle<Handler>, rpc: &Rpc, args: &str) -> Option
 // ponytail: a 0x86 inside a multi-byte character (some emoji) ends the text early
 fn match_sql(lit: &str) -> String {
     let after = "substr(m.attributedBody, instr(m.attributedBody, X'4e53537472696e67')+13)";
+    // also an attached file's name, and a link preview's page address (kept in the payload blob, not in the text)
     format!(
         "(instr(lower(m.text), '{lit}')>0 or (coalesce(m.text,'')='' and \
-         instr(lower(cast(substr({after}, 1, coalesce(nullif(instr({after}, X'86'),0)-1, 100000)) as text)), '{lit}')>0))"
+         instr(lower(cast(substr({after}, 1, coalesce(nullif(instr({after}, X'86'),0)-1, 100000)) as text)), '{lit}')>0) \
+         or exists (select 1 from message_attachment_join ja join attachment a on a.ROWID=ja.attachment_id \
+                    where ja.message_id=m.ROWID and instr(lower(coalesce(a.transfer_name,'')), '{lit}')>0) \
+         or instr(lower(cast(m.payload_data as text)), '{lit}')>0)"
     )
 }
 
@@ -582,6 +586,9 @@ async fn search_hits(session: &client::Handle<Handler>, q: &str, chat: Option<i6
     let only = chat.map(|c| format!("and j.chat_id in ({})", id_list(c))).unwrap_or_default();
     let sql = format!(
         "select m.ROWID||'⁂'||m.guid||'⁂'||j.chat_id||'⁂'||m.is_from_me||'⁂'||\
+         coalesce((select group_concat(replace(replace(a.transfer_name,'⁂',' '),'|',' '),'|') from message_attachment_join ja \
+                   join attachment a on a.ROWID=ja.attachment_id where ja.message_id=m.ROWID),'')||'⁂'||\
+         (m.payload_data is not null and instr(lower(cast(m.payload_data as text)), '{lit}')>0)||'⁂'||\
          case when coalesce(m.text,'')='' then 'B'||hex(m.attributedBody) \
          else 'T'||replace(replace(replace(m.text,char(10),' '),char(13),' '),'⁂',' ') end \
          from message m join chat_message_join j on j.message_id=m.ROWID \
@@ -592,17 +599,31 @@ async fn search_hits(session: &client::Handle<Handler>, q: &str, chat: Option<i6
     let out = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await.unwrap_or_default();
     String::from_utf8_lossy(&out)
         .lines()
-        .filter_map(|l| {
-            let mut f = l.splitn(5, '⁂');
-            let (id, guid, chat, mine, body) = (f.next()?.parse::<i64>().ok()?, f.next()?, f.next()?.parse::<i64>().ok()?, f.next()? == "1", f.next()?);
-            let text = match body.split_at_checked(1)? {
-                ("T", t) => t.to_string(),
-                (_, b) => text_from_blob(&hex(b)?)?.replace(['\n', '\r'], " "),
-            };
-            text.to_lowercase().contains(&needle).then(|| json!({"id": id, "guid": guid, "chat_id": canon_of(chat), "is_from_me": mine, "text": text}))
-        })
+        .filter_map(|l| parse_hit(l, &needle, q))
         .take(keep)
         .collect()
+}
+
+/// One line of `search_hits`' query as a hit: its text if that matches, else the attached file's name, else a note
+/// that a link in it does (the text of a file or link message doesn't hold what matched). None: a false candidate.
+fn parse_hit(line: &str, needle: &str, q: &str) -> Option<Value> {
+    let mut f = line.splitn(7, '⁂');
+    let (id, guid, chat, mine) = (f.next()?.parse::<i64>().ok()?, f.next()?, f.next()?.parse::<i64>().ok()?, f.next()? == "1");
+    let (names, in_link, body) = (f.next()?, f.next()? == "1", f.next()?);
+    let text = match body.split_at_checked(1)? {
+        ("T", t) => t.to_string(),
+        (_, b) => hex(b).and_then(|b| text_from_blob(&b)).unwrap_or_default().replace(['\n', '\r'], " "),
+    };
+    let text = if text.to_lowercase().contains(needle) {
+        text
+    } else if let Some(n) = names.split('|').find(|n| n.to_lowercase().contains(needle)) {
+        format!("📎 {n}")
+    } else if in_link {
+        format!("🔗 Link with “{q}”")
+    } else {
+        return None;
+    };
+    Some(json!({"id": id, "guid": guid, "chat_id": canon_of(chat), "is_from_me": mine, "text": text}))
 }
 
 /// One line of output from a read-only query on the Mac's chat.db.
@@ -1827,6 +1848,16 @@ async fn wait_offline(cmds: &mut mpsc::UnboundedReceiver<Cmd>, ev: &mpsc::Unboun
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_search_hit_can_be_a_file_name_or_a_link() {
+        // id, guid, chat, mine, file names, link matched, body
+        let text = |l: &str| super::parse_hit(l, "report", "report").map(|h| h["text"].as_str().unwrap().to_string());
+        assert_eq!(text("1⁂g⁂5⁂0⁂⁂0⁂TThe Report is here"), Some("The Report is here".into()));
+        assert_eq!(text("1⁂g⁂5⁂0⁂a.png|Q3 Report.pdf⁂0⁂T"), Some("📎 Q3 Report.pdf".into()));
+        assert_eq!(text("1⁂g⁂5⁂0⁂⁂1⁂T"), Some("🔗 Link with “report”".into()));
+        assert_eq!(text("1⁂g⁂5⁂0⁂a.png⁂0⁂TNothing"), None, "a candidate that doesn't really match");
+    }
+
     use super::*;
 
     #[test]

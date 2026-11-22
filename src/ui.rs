@@ -131,8 +131,9 @@ struct State {
     preview: HashMap<i64, Value>,
     preview_asked: HashSet<i64>,
     sel: Option<i64>,
-    /// while the sidebar shows search results: the chat that was open before (None = not searching)
-    search_sel: Option<Option<i64>>,
+    /// the chat opened by clicking a search result (it follows later searches; the chat that was open before a search
+    /// stays as it was until another is clicked)
+    search_pick: Option<i64>,
     /// chats a search put in the list that weren't there (dropped again when the search is cleared)
     search_added: HashSet<i64>,
     /// the open chat was reached from a search and isn't among the loaded chats: kept (row hidden) until scrolling
@@ -1622,7 +1623,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 let st = u.st.borrow();
                 // BF_CHAT=<id>: dev aid to open a given chat first
                 let want = std::env::var("BF_CHAT").ok().and_then(|v| v.parse::<i64>().ok());
-                if st.sel.is_none() && !u.new_mode.get() && st.search_sel.is_none() {
+                if st.sel.is_none() && !u.new_mode.get() {
                     want.or_else(|| st.chats.first().and_then(|c| c["id"].as_i64()))
                 } else {
                     None
@@ -2427,16 +2428,14 @@ fn swap_draft(u: &Rc<Ui>, from: Option<i64>, to: i64) {
 }
 
 fn select(u: &Rc<Ui>, id: i64) {
-    // while searching nothing is open; the composer was put away under 0
-    let from = {
-        let st = u.st.borrow();
-        st.sel.or(st.search_sel.is_some().then_some(0))
-    };
+    let from = u.st.borrow().sel;
     swap_draft(u, from, id);
     fold_side(u);
     end_new(u);
     u.viewer.close_now();
     u.st.borrow_mut().sel = Some(id);
+    let picked = !u.search.text().trim().is_empty();
+    u.st.borrow_mut().search_pick = picked.then_some(id);
     select_in_list(u, id);
     mark_tile(u, id);
     u.stick_bottom.set(true);
@@ -4093,9 +4092,6 @@ fn search_changed_inner(u: &Rc<Ui>) {
     let q = u.search.text().trim().to_string();
     let gen_ = u.msearch_gen.get().wrapping_add(1);
     u.msearch_gen.set(gen_);
-    if !q.is_empty() {
-        enter_search(u);
-    }
     if q.chars().count() < 2 {
         u.search_spin.set_spinning(false);
         u.search_spin.set_visible(false);
@@ -4161,38 +4157,27 @@ fn on_found(u: &Rc<Ui>, seq: u64, hits: Vec<Value>, counts: HashMap<i64, usize>)
         u.send(Cmd::FindChats { ids: missing, seq });
     }
     apply_search(u);
+    // the chat on show was picked from earlier results: if it has hits for these words, open it on the first one
+    // (also after the bar had closed); if not, close the bar. The chat itself stays open either way. One that was
+    // open before the search is left as it is.
+    let showing = {
+        let st = u.st.borrow();
+        st.sel.filter(|c| st.search_pick == Some(*c))
+    };
+    if let Some(chat) = showing {
+        if u.st.borrow().find_hits.contains_key(&chat) {
+            begin_find(u, chat, 0);
+            u.send(Cmd::ChatHits { chat, q: u.search.text().trim().to_string() });
+        } else if u.st.borrow().find_view.is_some() {
+            end_find(u);
+        }
+    }
 }
 
-/// The search box got its first text: the sidebar now shows results, so nothing is open on the right until one is picked.
-fn enter_search(u: &Rc<Ui>) {
-    if u.st.borrow().search_sel.is_some() || u.new_mode.get() {
-        return;
-    }
-    let prev = u.st.borrow().sel;
-    u.st.borrow_mut().search_sel = Some(prev);
-    if prev.is_none() {
-        return;
-    }
-    swap_draft(u, prev, 0); // its draft is kept; the composer empties
-    {
-        let mut st = u.st.borrow_mut();
-        st.sel = None;
-        st.find_view = None;
-    }
-    u.viewer.close_now();
-    close_info(u);
-    u.selecting.set(true);
-    u.chat_list.unselect_all();
-    u.selecting.set(false);
-    mark_tile(u, 0);
-    update_find_bar(u);
-    u.stack.set_visible_child_name("empty");
-}
-
-/// The search box was emptied: a chat picked from the results stays open (and in the list, however old); with none
-/// picked, the chat from before comes back. Chats the search added to the list go.
+/// The search box was emptied: the chat on show stays (picked from the results or not, and in the list however old);
+/// the chats the search added to the list go.
 fn exit_search(u: &Rc<Ui>) {
-    let Some(prev) = u.st.borrow_mut().search_sel.take() else { return };
+    u.st.borrow_mut().search_pick = None;
     let added = std::mem::take(&mut u.st.borrow_mut().search_added);
     let (removed, hide) = {
         let mut st = u.st.borrow_mut();
@@ -4216,13 +4201,7 @@ fn exit_search(u: &Rc<Ui>) {
             row.set_visible(false);
         }
     }
-    let (sel, restore) = (u.st.borrow().sel, prev);
-    if sel.is_none()
-        && let Some(id) = restore
-    {
-        swap_draft(u, Some(0), id);
-        select(u, id);
-    } else if let Some(id) = sel {
+    if let Some(id) = u.st.borrow().sel {
         select_in_list(u, id);
     }
 }
