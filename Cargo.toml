@@ -1,6 +1,6 @@
 [package]
 name = "bubblefairy"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "Your iMessages on your Linux desktop, ferried over from your Mac"
 license = "MIT"
