@@ -49,7 +49,9 @@ copy on this computer, so it **doesn't sync** with your Apple devices:
 
 - **A person's chats are merged, group chats are not.** Messages shows everything with one contact as one conversation,
   and so does BubbleFairy. Two group chats with the same people stay separate, and a person who isn't in your
-  contacts (a number or email with no card) can't be matched, so their chats stay separate.
+  contacts are merged only when the number or email is exactly the same, since without a card there's nothing to tie a
+  phone number to an email. Chats that haven't been loaded yet (older than the first 100) join once you scroll far
+  enough to load them.
 
 ## Files and pictures
 
