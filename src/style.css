@@ -461,7 +461,11 @@ window.viewing .sidebar, window.viewing .conv, window.viewing .info-panel { box-
 }
 .to-bottom image { -gtk-icon-size: 18px; }
 .to-bottom.shown { opacity: 1; }
-.to-bottom:hover { background-color: alpha(var(--ink), 0.18); }
+/* hover: a tint over the solid fill, never instead of it (the messages behind would show through) */
+.to-bottom:hover {
+  background-image: linear-gradient(alpha(var(--ink), 0.14), alpha(var(--ink), 0.14)), linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.02));
+  border-color: alpha(currentColor, 0.32);
+}
 
 /* video player controls in the viewer: a translucent bar along the bottom, shown with the other controls */
 .viewer-bar { background: rgba(20, 20, 24, 0.72); border-radius: 16px; margin: 0 16px 16px 16px; padding: 6px 12px; opacity: 0; transition: opacity 200ms; }
