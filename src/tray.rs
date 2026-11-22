@@ -53,7 +53,8 @@ pub async fn start(tx: UnboundedSender<Event>) -> Result<ksni::Handle<Tray>, ksn
 }
 
 /// Add or remove the login entry (through the Background portal, so it also works in the Flatpak).
-pub async fn set_autostart(on: bool) {
+/// True when the portal confirms the entry now matches `on` (it can answer "no" without an error, e.g. a declined prompt).
+pub async fn set_autostart(on: bool) -> bool {
     let r = ashpd::desktop::background::Background::request()
         .auto_start(on)
         .command(["bubblefairy", "--tray"])
@@ -61,8 +62,12 @@ pub async fn set_autostart(on: bool) {
         .send()
         .await
         .and_then(|r| r.response());
-    if let Err(e) = r {
-        eprintln!("login entry: {e}");
+    match r {
+        Ok(b) => b.auto_start() == on,
+        Err(e) => {
+            eprintln!("login entry: {e}");
+            false
+        }
     }
 }
 

@@ -7077,7 +7077,22 @@ fn settings(u: &Rc<Ui>) {
         if cfg.autostart != old.autostart
             && let Some(rt) = crate::setup::RT.get()
         {
-            rt.spawn(crate::tray::set_autostart(cfg.autostart));
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let want = cfg.autostart;
+            rt.spawn(async move {
+                let _ = tx.send(crate::tray::set_autostart(want).await);
+            });
+            let u3 = u2.clone();
+            glib::spawn_future_local(async move {
+                if rx.await == Ok(false) {
+                    // the desktop didn't make (or remove) the login entry: don't pretend it did
+                    let mut cfg = u3.st.borrow().cfg.clone();
+                    cfg.autostart = !want;
+                    crate::save_config(&u3.store.config_file, &cfg);
+                    u3.st.borrow_mut().cfg = cfg;
+                    show_banner(&u3, if want { "Couldn't set up starting at login" } else { "Couldn't remove the login entry" }, false);
+                }
+            });
         }
         u2.send(Cmd::Configure(cfg)); // the connection is only redone if where we connect to changed
         w2.close();
