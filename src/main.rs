@@ -193,15 +193,13 @@ fn main() -> glib::ExitCode {
         .flags(flags)
         .build();
     app.connect_startup(|_| {
-        if std::env::var_os("BF_DARK").is_some() {
-            // dev aid for screenshots
-            gtk::Settings::default()
-                .unwrap()
-                .set_gtk_interface_color_scheme(gtk::InterfaceColorScheme::Dark);
-        } else if std::env::var_os("BF_LIGHT").is_some() {
-            gtk::Settings::default()
-                .unwrap()
-                .set_gtk_interface_color_scheme(gtk::InterfaceColorScheme::Light);
+        // dev aid for screenshots
+        if let Some(settings) = gtk::Settings::default() {
+            if std::env::var_os("BF_DARK").is_some() {
+                settings.set_gtk_interface_color_scheme(gtk::InterfaceColorScheme::Dark);
+            } else if std::env::var_os("BF_LIGHT").is_some() {
+                settings.set_gtk_interface_color_scheme(gtk::InterfaceColorScheme::Light);
+            }
         }
         // our own icons (the chat bubble); installed under share/icons in the Flatpak, found here when run from source
         gtk::IconTheme::for_display(&gdk::Display::default().expect("display"))

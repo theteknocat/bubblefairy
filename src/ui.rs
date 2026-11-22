@@ -1440,7 +1440,11 @@ pub fn build(
     let a2 = apply.clone();
     gs.connect_gtk_interface_color_scheme_notify(move |s| a2(s));
     let a4 = apply.clone();
-    app.connect_window_added(move |_, _| a4(&gtk::Settings::default().unwrap()));
+    app.connect_window_added(move |_, _| {
+        if let Some(settings) = gtk::Settings::default() {
+            a4(&settings);
+        }
+    });
 
     // a click outside the info panel closes it (the "i" button itself toggles; popovers and the viewer keep it)
     let click = gtk::GestureClick::new();
@@ -1748,7 +1752,9 @@ pub fn build(
             if let (Some(node), Some(r)) = (snap.to_node(), w.renderer()) {
                 let _ = r.render_texture(&node, None).save_to_png(&out);
             }
-            w.application().unwrap().quit();
+            if let Some(app) = w.application() {
+                app.quit();
+            }
         });
     }
     if first_run {
@@ -4224,7 +4230,7 @@ fn scroll_list_to(u: &Rc<Ui>, id: i64) {
                 .position(|c| c["id"].as_i64() == Some(id));
         if let Some(b) = idx
             .and_then(|i| u.chat_list.row_at_index(i as i32))
-            .and_then(|r| r.compute_bounds(&u.tiles.parent().unwrap()))
+            .and_then(|r| r.compute_bounds(&u.tiles.parent()?))
             && b.height() > 1.0
             && b.y() as f64 >= from
             && (b.y() + b.height()) as f64 <= from + adj.page_size()
@@ -4244,7 +4250,7 @@ fn scroll_list_to(u: &Rc<Ui>, id: i64) {
                     .position(|c| c["id"].as_i64() == Some(id));
             if let Some(b) = idx
                 .and_then(|i| u.chat_list.row_at_index(i as i32))
-                .and_then(|r| r.compute_bounds(&u.tiles.parent().unwrap()))
+                .and_then(|r| r.compute_bounds(&u.tiles.parent()?))
                 && b.height() > 1.0
             {
                 to.set(Some(
