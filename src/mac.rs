@@ -94,6 +94,8 @@ pub enum Cmd {
     FileInfo { path: String, contact: bool },
     /// The Mac's contact photos, to use as avatars
     Contacts,
+    /// Look at the address book's files and read the contacts again only if they changed since the last read
+    ContactsCheck,
     /// A small OpenStreetMap picture of this postal address (see `map_for`)
     Map(String),
     /// One page of a chat's photos, files or links, newest first, read from chat.db (for the info panel)
@@ -915,6 +917,17 @@ pub fn addr_key(s: &str) -> Option<String> {
 
 /// Read every Contacts database on the Mac (iCloud and local accounts each have one): the photo of
 /// each contact that has one, plus the numbers and emails that point at it.
+/// What the address book's files looked like when the contacts were last read (see `contacts_stamp`).
+static CONTACTS_STAMP: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// A fingerprint of the address book: times and sizes of its databases (and their write-ahead logs, where changes land
+/// first) and of the full-size photos. The `-shm` files are left out because merely reading a database touches them.
+async fn contacts_stamp(session: &client::Handle<Handler>) -> Option<String> {
+    let cmd = r#"find "$HOME/Library/Application Support/AddressBook" \( -name 'AddressBook-v22.abcddb' -o -name 'AddressBook-v22.abcddb-wal' -o -path '*_EXTERNAL_DATA/*' \) -exec stat -f '%m %z %N' {} + 2>/dev/null | sort | cksum"#;
+    let out = exec(session, cmd.to_string()).await?;
+    Some(String::from_utf8_lossy(&out).trim().to_string())
+}
+
 async fn fetch_contacts(session: &client::Handle<Handler>) -> Option<Contacts> {
     // type 1 photos are stored in the row; type 2 name a file next to the database (often a
     // full-size original), which the script shrinks with sips and sends as a type 1 photo
@@ -1707,7 +1720,18 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
             let _ = ev.send(Event::Sent { text: String::new(), files: Vec::new(), err, token });
         }
         Cmd::Contacts => {
+            // the stamp first: a change made while reading is then caught by the next check
+            let stamp = contacts_stamp(&session).await;
             let _ = ev.send(Event::Contacts(fetch_contacts(&session).await.unwrap_or_default()));
+            *CONTACTS_STAMP.lock().unwrap() = stamp.unwrap_or_default();
+        }
+        Cmd::ContactsCheck => {
+            let stamp = contacts_stamp(&session).await;
+            let changed = stamp.as_ref().is_some_and(|s| *s != *CONTACTS_STAMP.lock().unwrap());
+            if changed {
+                let _ = ev.send(Event::Contacts(fetch_contacts(&session).await.unwrap_or_default()));
+                *CONTACTS_STAMP.lock().unwrap() = stamp.unwrap_or_default();
+            }
         }
         Cmd::Link(rowid) => {
             let _ = ev.send(Event::Link(rowid, link_preview(&session, rowid).await));

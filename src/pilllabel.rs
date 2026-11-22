@@ -136,7 +136,7 @@ fn draw(area: &gtk::Widget, l: &gtk::Label, cr: &gtk::cairo::Context, pills: &(V
                 let (x, y, w, h) = (x0, y0, x1_ - x0, y1_ - y0);
                 let r = h / 2.0;
                 let path = |dy: f64, grow: f64| {
-                    let (x, y, w, h, r) = (x - grow, y + dy - grow, w + 2.0 * grow, h + 2.0 * grow, r + grow);
+                    let (x, y, w, r) = (x - grow, y + dy - grow, w + 2.0 * grow, r + grow);
                     cr.new_sub_path();
                     cr.arc(x + w - r, y + r, r, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
                     cr.arc(x + r, y + r, r, std::f64::consts::FRAC_PI_2, 3.0 * std::f64::consts::FRAC_PI_2);

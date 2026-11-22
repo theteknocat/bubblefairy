@@ -150,6 +150,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
             }
             Cmd::Window { id, .. } => ev.send(Event::Window { id, msgs: history(id), more: false }),
             Cmd::Newer { id, .. } => ev.send(Event::Newer { id, msgs: Vec::new(), more: false }),
+            Cmd::ContactsCheck => Ok(()),
             Cmd::Contacts => ev.send(Event::Contacts(Default::default())),
             Cmd::Link(id) => ev.send(Event::Link(id, None)),
             Cmd::FileInfo { path, .. } => ev.send(Event::FileInfo(path, None)),

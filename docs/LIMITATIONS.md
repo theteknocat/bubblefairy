@@ -83,10 +83,13 @@ copy on this computer, so it **doesn't sync** with your Apple devices:
   than what's loaded has no tile until more are loaded.
 - **The photo viewer only walks through photos and videos already loaded** in the chat (or the info panel's tab).
   It never loads older history by itself.
-- **Name & Photo** pictures that people share through Messages aren't shown.
-- **Group chat photos** set in Messages aren't shown (a group gets a circle of its members instead).
-- **Contact photos are read once per connection.** A photo you change on the Mac shows up after BubbleFairy
-  reconnects (restarting it does that).
+- **Contact photos refresh about once a minute at best.** BubbleFairy looks at the address book's files on the Mac every
+  minute while its window is in front, and when the window comes back to the front, and reads the photos again only when
+  something changed. There is no way for the Mac to tell us about a change the moment it happens.
+- **Not planned: Name & Photo pictures and group chat photos.** Name & Photo pictures that people share through Messages
+  live in an undocumented Apple cache, and group photos in a private chat.db field; both are likely to break quietly
+  when Apple changes something, so they aren't read. A person without a contact photo gets initials, and a group a circle
+  of its members.
 - **Search matches a link's address in its preview only in the preview's own data.** A page title or site name
   that isn't part of the address isn't searched. (Attached file names and addresses in the text are.)
 

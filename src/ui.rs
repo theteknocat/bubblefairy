@@ -1231,6 +1231,18 @@ pub fn build(app: &gtk::Application, store: Store, cfg: Config, cmd: mpsc::Unbou
             refresh_times(&u);
         }
         mark_seen(&u);
+        if u.win.is_active() && u.st.borrow().connected {
+            u.send(Cmd::ContactsCheck); // photos changed on the Mac while the window was away
+        }
+    });
+    // ... and while it is in front
+    let w = Rc::downgrade(&ui);
+    glib::timeout_add_seconds_local(60, move || {
+        let Some(u) = w.upgrade() else { return glib::ControlFlow::Break };
+        if u.win.is_active() && u.st.borrow().connected {
+            u.send(Cmd::ContactsCheck);
+        }
+        glib::ControlFlow::Continue
     });
     schedule_midnight(&ui);
     // receipts (delivered, read) don't come through the live stream either: look again while a chat is open
@@ -1579,8 +1591,10 @@ fn on_event(u: &Rc<Ui>, e: Event) {
         Event::Contacts(c) => {
             {
                 let mut st = u.st.borrow_mut();
+                // a photo added, changed or removed since is picked up, the others stay
+                let old = st.contacts.take();
+                st.avatar_tex.retain(|key, t| t.is_some() && old.as_ref().is_some_and(|o| o.photo(key) == c.photo(key)));
                 st.contacts = Some(c);
-                st.avatar_tex.retain(|_, t| t.is_some()); // a photo added since is picked up, the others stay
                 st.avatar_asked.clear();
                 fill_names(&mut st);
             }
