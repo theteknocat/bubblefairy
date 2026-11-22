@@ -63,7 +63,8 @@ copy on this computer, so it **doesn't sync** with your Apple devices:
 ## Sending
 
 - **A failed message stays.** "Try Again" sends it again as a new message; the failed one stays in the chat, and
-  stays on your Apple devices until you delete it there.
+  stays on your Apple devices until you delete it there. "Try Again" can't switch to sending as a text message or
+  to the person's email address.
 - **SMS and RCS depend on your iPhone.** Text Message Forwarding must be on, and Messages on the Mac decides which
   service is used, as it does there.
 
@@ -83,6 +84,11 @@ copy on this computer, so it **doesn't sync** with your Apple devices:
 - **The photo viewer only walks through photos and videos already loaded** in the chat (or the info panel's tab).
   It never loads older history by itself.
 - **Name & Photo** pictures that people share through Messages aren't shown.
+- **Group chat photos** set in Messages aren't shown (a group gets a circle of its members instead).
+- **Contact photos are read once per connection.** A photo you change on the Mac shows up after BubbleFairy
+  reconnects (restarting it does that).
+- **Search finds file names and web addresses only when they are in the message text.** A file's name or a link
+  that isn't written in the message itself isn't searched.
 
 ## Tray icon
 
