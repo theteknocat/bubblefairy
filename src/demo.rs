@@ -1,4 +1,5 @@
 //! `BF_DEMO=1`: invented chats instead of a Mac, for screenshots and UI work. Nothing real is shown.
+#![allow(clippy::unwrap_used)] // dev-only fixture data: a panic here just ends a demo run
 
 use serde_json::{Value, json};
 use tokio::sync::mpsc;

@@ -13,13 +13,16 @@ glib::wrapper! {
     pub struct Host(ObjectSubclass<imp::Host>) @extends gtk::Widget, @implements gtk::Buildable, gtk::Accessible, gtk::ConstraintTarget;
 }
 
+/// Pill spans as (start, end) byte offsets, and their colour as (r, g, b).
+type Pills = (Vec<(usize, usize)>, (f64, f64, f64));
+
 mod imp {
     use super::*;
 
     #[derive(Default)]
     pub struct Host {
         pub label: RefCell<Option<gtk::Label>>,
-        pub pills: RefCell<(Vec<(usize, usize)>, (f64, f64, f64))>,
+        pub pills: RefCell<Pills>,
     }
 
     #[glib::object_subclass]
@@ -98,12 +101,7 @@ fn wrap(l: &gtk::Label) -> Option<Host> {
     Some(host)
 }
 
-fn draw(
-    area: &gtk::Widget,
-    l: &gtk::Label,
-    cr: &gtk::cairo::Context,
-    pills: &(Vec<(usize, usize)>, (f64, f64, f64)),
-) {
+fn draw(area: &gtk::Widget, l: &gtk::Label, cr: &gtk::cairo::Context, pills: &Pills) {
     if pills.0.is_empty() {
         return;
     }

@@ -2235,8 +2235,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                         st.resent.insert(mid);
                         st.resent.iter().map(|i| format!("{i}\n")).collect()
                     };
-                    let _ = std::fs::create_dir_all(u.store.resent_file.parent().unwrap());
-                    let _ = std::fs::write(&u.store.resent_file, all);
+                    crate::write_state(&u.store.resent_file, all);
                     render_conv(u);
                     // the seed for a picture isn't needed once the new message has come (or never does)
                     let u2 = u.clone();
@@ -4704,9 +4703,12 @@ fn refresh_identities(u: &Rc<Ui>) {
     }
 }
 
+/// A pinned chat's tile: position in the pin list, chat id, title, unread flag, the chat itself.
+type PinnedTile = (usize, i64, String, bool, Value);
+
 /// The pinned tiles are few: redraw just them (names and photos), not the list.
 fn rebuild_tiles(u: &Rc<Ui>) {
-    let (pinned, sel): (Vec<(usize, i64, String, bool, Value)>, Option<i64>) = {
+    let (pinned, sel): (Vec<PinnedTile>, Option<i64>) = {
         let st = u.st.borrow();
         let mut v = Vec::new();
         for c in &st.chats {
@@ -4780,7 +4782,7 @@ fn render_chats_inner(u: &Rc<Ui>) {
         let st = u.st.borrow();
         (st.pins.clone(), st.muted.clone())
     };
-    let mut pinned: Vec<(usize, i64, String, bool, Value)> = Vec::new();
+    let mut pinned: Vec<PinnedTile> = Vec::new();
     for (title, preview, when, unread, id, chat) in rows {
         let keys = keys_of(&chat);
         let pin_at = pin_pos(&pins, &chat);
@@ -5501,10 +5503,9 @@ fn exit_search(u: &Rc<Ui>) {
             .chats
             .iter()
             .position(|c| c["id"].as_i64() == Some(id))
-    }) {
-        if let Some(row) = u.chat_list.row_at_index(i as i32) {
-            row.set_visible(false);
-        }
+    }) && let Some(row) = u.chat_list.row_at_index(i as i32)
+    {
+        row.set_visible(false);
     }
     if let Some(id) = u.st.borrow().sel {
         select_in_list(u, id);
@@ -5530,7 +5531,7 @@ fn begin_find(u: &Rc<Ui>, chat: i64, idx: usize) {
             .find_view
             .as_ref()
             .filter(|f| f.chat == chat)
-            .map_or(false, |f| f.more);
+            .is_some_and(|f| f.more);
     u.st.borrow_mut().find_view = Some(FindView {
         chat,
         idx,
@@ -5796,8 +5797,7 @@ fn toggle_mute(u: &Rc<Ui>, keys: &[String]) {
         } else if let Some(k) = keys.first() {
             st.muted.push(k.clone());
         }
-        let _ = std::fs::create_dir_all(u.store.muted_file.parent().unwrap());
-        let _ = std::fs::write(
+        crate::write_state(
             &u.store.muted_file,
             st.muted
                 .iter()
@@ -5817,8 +5817,7 @@ fn toggle_pin(u: &Rc<Ui>, keys: &[String]) {
         } else if let Some(k) = keys.first() {
             st.pins.push(k.clone());
         }
-        let _ = std::fs::create_dir_all(u.store.pins_file.parent().unwrap());
-        let _ = std::fs::write(
+        crate::write_state(
             &u.store.pins_file,
             st.pins.iter().map(|p| format!("{p}\n")).collect::<String>(),
         );
@@ -5865,7 +5864,7 @@ fn short_title(chat: &Value, title: &str) -> String {
 }
 
 /// The pinned chats as avatar tiles above the list (names hide when the sidebar is avatars-only).
-fn render_tiles(u: &Rc<Ui>, pinned: Vec<(usize, i64, String, bool, Value)>, sel: Option<i64>) {
+fn render_tiles(u: &Rc<Ui>, pinned: Vec<PinnedTile>, sel: Option<i64>) {
     u.tiles.remove_all();
     u.tiles
         .set_visible(!pinned.is_empty() && u.search.text().trim().is_empty());
@@ -6494,8 +6493,7 @@ fn mark_seen(u: &Rc<Ui>) {
     if changed {
         let st = u.st.borrow();
         let text: String = st.seen.iter().map(|(c, m)| format!("{c}={m}\n")).collect();
-        let _ = std::fs::create_dir_all(u.store.seen_file.parent().unwrap());
-        let _ = std::fs::write(&u.store.seen_file, text);
+        crate::write_state(&u.store.seen_file, text);
         drop(st);
         update_row(u, id); // its dot only: a rebuild of the whole list right after drawing the chat was a second stall
     }
@@ -6815,8 +6813,6 @@ fn glyph(icon: &str) -> gtk::Widget {
     g.upcast()
 }
 
-/// A link with no preview from Messages, drawn like a card whose picture is just a small icon: the
-/// host as its title and a link glyph on the right.
 // ---------- our own previews for plain links ----------
 
 fn load_web_links(path: &std::path::Path) -> HashMap<String, Option<crate::mac::LinkPreview>> {
@@ -6856,8 +6852,7 @@ fn save_web_links(
             None => serde_json::json!({"url": url, "failed": true}).to_string(),
         })
         .collect();
-    let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let _ = std::fs::write(path, lines.join("\n") + "\n");
+    crate::write_state(path, lines.join("\n") + "\n");
 }
 
 /// Our own preview for a link Messages made none for, if that is switched on in Settings: the saved one, else
@@ -6959,6 +6954,8 @@ async fn fetch_web_preview(u: &Rc<Ui>, url: &str) -> Option<crate::mac::LinkPrev
     })
 }
 
+/// A link with no preview from Messages, drawn like a card whose picture is just a small icon: the
+/// host as its title and a link glyph on the right.
 fn plain_link_card(u: &Rc<Ui>, url: &str, look: bubble::Look) -> gtk::Widget {
     let b = bubble::Bubble::card(look, LINK_W, 0);
     let host = url
@@ -8098,22 +8095,20 @@ fn info_sequence(u: &Rc<Ui>, videos: bool) -> Vec<crate::viewer::Item> {
             if let Some(w) = fc
                 .downcast_ref::<gtk::FlowBoxChild>()
                 .and_then(|f| f.child())
+                && let Some((date, key)) = w.widget_name().split_once('|')
+                && let Ok(date) = date.parse::<i64>()
             {
-                if let Some((date, key)) = w.widget_name().split_once('|')
-                    && let Ok(date) = date.parse::<i64>()
-                {
-                    // a video's picture is the tile's inner bubble; a YouTube tile is its own widget
-                    let item = if key.starts_with("yt:") {
-                        w.clone()
-                    } else {
-                        w.clone()
-                            .downcast::<gtk::Overlay>()
-                            .ok()
-                            .and_then(|o| o.child())
-                            .unwrap_or(w.clone())
-                    };
-                    v.push((date, (key.to_string(), item)));
-                }
+                // a video's picture is the tile's inner bubble; a YouTube tile is its own widget
+                let item = if key.starts_with("yt:") {
+                    w.clone()
+                } else {
+                    w.clone()
+                        .downcast::<gtk::Overlay>()
+                        .ok()
+                        .and_then(|o| o.child())
+                        .unwrap_or(w.clone())
+                };
+                v.push((date, (key.to_string(), item)));
             }
             c = fc.next_sibling();
         }
@@ -9738,7 +9733,7 @@ fn prefetch_avatars(u: &Rc<Ui>) {
     bg(
         move || {
             todo.into_iter()
-                .map(|(key, bytes)| (key, bytes.and_then(|b| decode_avatar(b))))
+                .map(|(key, bytes)| (key, bytes.and_then(decode_avatar)))
                 .collect::<Vec<_>>()
         },
         move |done| {

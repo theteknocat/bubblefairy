@@ -125,6 +125,9 @@ impl TileGrid {
     }
 }
 
+/// Called with the tiles in their new order after a drag.
+type ReorderFn = Box<dyn Fn(Vec<gtk::Widget>)>;
+
 mod imp {
     use super::*;
 
@@ -158,7 +161,7 @@ mod imp {
         cell: Cell<(f64, f64)>,
         tick: RefCell<Option<gtk::TickCallbackId>>,
         last_frame: Cell<i64>,
-        pub on_reorder: RefCell<Option<Box<dyn Fn(Vec<gtk::Widget>)>>>,
+        pub on_reorder: RefCell<Option<ReorderFn>>,
     }
 
     #[glib::object_subclass]

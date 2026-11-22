@@ -50,9 +50,17 @@ fn load_config(path: &Path) -> mac::Config {
     c
 }
 
+/// Write a small state file, creating its folder first. Errors are ignored: these files only remember
+/// settings, so a failed write must not interrupt the app.
+pub fn write_state(path: &Path, data: impl AsRef<[u8]>) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, data);
+}
+
 pub fn save_config(path: &Path, c: &mac::Config) {
-    let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let _ = std::fs::write(
+    write_state(
         path,
         format!(
             "host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\nskip_intro={}\nautostart={}\n",
