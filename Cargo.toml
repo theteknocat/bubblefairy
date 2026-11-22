@@ -22,3 +22,8 @@ ashpd = { version = "0.14", features = ["background"] }
 [profile.release]
 lto = "thin"
 strip = true
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
