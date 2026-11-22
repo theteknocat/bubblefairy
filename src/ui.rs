@@ -131,6 +131,13 @@ struct State {
     preview: HashMap<i64, Value>,
     preview_asked: HashSet<i64>,
     sel: Option<i64>,
+    /// while the sidebar shows search results: the chat that was open before (None = not searching)
+    search_sel: Option<Option<i64>>,
+    /// chats a search put in the list that weren't there (dropped again when the search is cleared)
+    search_added: HashSet<i64>,
+    /// the open chat was reached from a search and isn't among the loaded chats: kept (row hidden) until scrolling
+    /// loads it into the list, like Messages
+    off_list: HashSet<i64>,
     textures: HashMap<String, gdk::Texture>,
     /// Mac path -> where to put the copy once it has arrived (a download button was pressed)
     save_to: HashMap<String, Vec<(PathBuf, SaveDone)>>,
@@ -1610,11 +1617,12 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 eprintln!("prof: {} chats, render_chats {} ms, previews asked {}, memory {} MB", u.st.borrow().chats.len(), prof.elapsed().as_millis(), u.st.borrow().preview_asked.len(), rss);
             }
             u.side_stack.set_visible_child_name("list");
+            prof_list(u, "Event::Chats rendered");
             let first = {
                 let st = u.st.borrow();
                 // BF_CHAT=<id>: dev aid to open a given chat first
                 let want = std::env::var("BF_CHAT").ok().and_then(|v| v.parse::<i64>().ok());
-                if st.sel.is_none() && !u.new_mode.get() {
+                if st.sel.is_none() && !u.new_mode.get() && st.search_sel.is_none() {
                     want.or_else(|| st.chats.first().and_then(|c| c["id"].as_i64()))
                 } else {
                     None
@@ -1661,7 +1669,9 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 let Some(id) = chat["id"].as_i64() else { continue };
                 let id = u.st.borrow().alias.get(&id).copied().unwrap_or(id); // one of a merged person's chats
                 if !u.st.borrow().chats.iter().any(|c| c["id"].as_i64() == Some(id)) {
-                    insert_chat(&mut u.st.borrow_mut().chats, chat);
+                    let mut st = u.st.borrow_mut();
+                    insert_chat(&mut st.chats, chat);
+                    st.search_added.insert(id);
                     added.push(id);
                 }
             }
@@ -2417,7 +2427,11 @@ fn swap_draft(u: &Rc<Ui>, from: Option<i64>, to: i64) {
 }
 
 fn select(u: &Rc<Ui>, id: i64) {
-    let from = u.st.borrow().sel;
+    // while searching nothing is open; the composer was put away under 0
+    let from = {
+        let st = u.st.borrow();
+        st.sel.or(st.search_sel.is_some().then_some(0))
+    };
     swap_draft(u, from, id);
     fold_side(u);
     end_new(u);
@@ -3220,6 +3234,10 @@ fn rank_group_members(st: &State, raw: &mut [Value]) {
 }
 
 /// Replace the chat list with `raw` (as imsg gave it), merged by person. Returns the merges.
+fn raw_ids_of(raw: &[Value]) -> HashSet<i64> {
+    raw.iter().filter_map(|c| c["id"].as_i64()).collect()
+}
+
 fn set_chats(st: &mut State, raw: Vec<Value>) -> Vec<(i64, Vec<i64>)> {
     let mut raw: Vec<Value> = raw.into_iter().filter(|c| c["hidden"].as_bool() != Some(true)).collect(); // (chats without a message)
     rank_group_members(st, &mut raw);
@@ -3229,12 +3247,21 @@ fn set_chats(st: &mut State, raw: Vec<Value>) -> Vec<(i64, Vec<i64>)> {
         st.sel = Some(*c); // the chat on show is now part of a merged one
     }
     // the chat on show may be older than the list's 100 (found by address): keep it
-    let keep = st.sel.filter(|id| !merged.iter().any(|c| c["id"].as_i64() == Some(*id))).and_then(|id| st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).cloned());
+    // (and the ones a search added, while the results are showing)
+    let keep: Vec<Value> = st
+        .chats
+        .iter()
+        .filter(|c| c["id"].as_i64().is_some_and(|id| (st.sel == Some(id) || st.search_added.contains(&id)) && !merged.iter().any(|m| m["id"].as_i64() == Some(id))))
+        .cloned()
+        .collect();
     st.raw_chats = raw;
     st.chats = merged;
-    if let Some(c) = keep {
+    for c in keep {
         insert_chat(&mut st.chats, c);
     }
+    let (sel, loaded): (Option<i64>, HashSet<i64>) = (st.sel, st.chats.iter().filter_map(|c| c["id"].as_i64()).collect());
+    let listed: HashSet<i64> = raw_ids_of(&st.raw_chats);
+    st.off_list.retain(|id| Some(*id) == sel && loaded.contains(id) && !listed.contains(id));
     st.alias = alias;
     groups
 }
@@ -3638,11 +3665,22 @@ fn update_row(u: &Rc<Ui>, id: i64) {
         let st = u.st.borrow();
         st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).map(|c| (row_info(&st, c), pin_pos(&st.pins, c).is_some()))
     };
+    // a chat that isn't in the list any more (one a search had added): nothing to update, and no rebuild for it
+    if info.is_none() {
+        return;
+    }
     let (Some(parts), Some(((_, text, when, unread), pinned))) = (parts, info) else { return render_chats_soon(u) };
     if pinned {
         return render_chats_soon(u); // its tile shows the unread dot
     }
-    parts.prev.set_text(&text);
+    if u.styled.get() {
+        // a search is on: the row shows its match, not the newest message
+        let words = search_words(u.search.text().trim());
+        let st = u.st.borrow();
+        style_row(&st, &words, true, id, &parts, st.chats.iter().find(|c| c["id"].as_i64() == Some(id)));
+    } else {
+        parts.prev.set_text(&text);
+    }
     parts.time_unix.set(when);
     if let Some(t) = when {
         parts.time.set_text(&rel_time(t, TimeKind::Row)); // only this row's: rewriting every tracked time per preview was O(n) each
@@ -3720,6 +3758,14 @@ struct RowParts {
 }
 
 fn render_chats(u: &Rc<Ui>) {
+    let t0 = std::time::Instant::now();
+    render_chats_inner(u);
+    if std::env::var_os("BF_PROF").is_some() {
+        eprintln!("prof: render_chats {} ms ({} rows)", t0.elapsed().as_millis(), u.row_parts.borrow().len());
+    }
+}
+
+fn render_chats_inner(u: &Rc<Ui>) {
     let rows: Vec<(String, String, Option<i64>, bool, i64, Value)> = {
         let st = u.st.borrow();
         st.chats
@@ -3818,6 +3864,8 @@ fn render_chats(u: &Rc<Ui>) {
             // hidden, not left out: row indexes must keep matching `State.chats`
             row.set_visible(!u.search.text().trim().is_empty());
             pinned.push((i, id, title.clone(), unread, chat.clone()));
+        } else if u.st.borrow().off_list.contains(&id) {
+            row.set_visible(!u.search.text().trim().is_empty()); // open, but not in the loaded list
         }
         u.chat_list.append(&row);
         if Some(id) == sel {
@@ -3866,12 +3914,24 @@ fn row_matches(u: &Ui, row: &gtk::ListBoxRow) -> bool {
 
 /// What is typed in the search box has changed.
 fn apply_search(u: &Rc<Ui>) {
+    let t0 = std::time::Instant::now();
+    apply_search_inner(u);
+    if std::env::var_os("BF_PROF").is_some() {
+        eprintln!("prof: apply_search {} ms", t0.elapsed().as_millis());
+    }
+}
+
+fn apply_search_inner(u: &Rc<Ui>) {
     let searching = !u.search.text().trim().is_empty();
     u.chat_list.invalidate_filter();
+    if !searching {
+        u.chat_list.queue_resize(); // rows the filter had hidden come back: make sure they are laid out and drawn again
+        u.chat_list.queue_draw();
+    }
     // pinned chats are in the list only as hidden rows: while searching they show there, and their tiles give way
     let pinned: Vec<bool> = {
         let st = u.st.borrow();
-        st.chats.iter().map(|c| pin_pos(&st.pins, c).is_some()).collect()
+        st.chats.iter().map(|c| pin_pos(&st.pins, c).is_some() || c["id"].as_i64().is_some_and(|id| st.off_list.contains(&id))).collect()
     };
     for (i, p) in pinned.into_iter().enumerate() {
         if p && let Some(row) = u.chat_list.row_at_index(i as i32) {
@@ -3879,6 +3939,9 @@ fn apply_search(u: &Rc<Ui>) {
         }
     }
     u.tiles.set_visible(!searching && u.tiles.first_child().is_some());
+    if !searching {
+        u.tiles.queue_resize(); // shown again: measure it afresh (GTK keeps the height it was asked for while hidden)
+    }
     let any = (0..u.st.borrow().chats.len()).any(|i| u.chat_list.row_at_index(i as i32).is_some_and(|r| row_matches(u, &r)));
     // a message search can take several seconds: say so instead of "nothing found"
     u.side_none.set_text(if u.search_spin.is_visible() { "Searching messages…" } else { "No conversations found" });
@@ -3953,26 +4016,86 @@ fn style_rows(u: &Rc<Ui>) {
     let words = search_words(&q);
     let parts: Vec<(i64, RowParts)> = u.row_parts.borrow().iter().map(|(k, v)| (*k, v.clone())).collect();
     let st = u.st.borrow();
+    let by_id: HashMap<i64, &Value> = st.chats.iter().filter_map(|c| Some((c["id"].as_i64()?, c))).collect(); // not a scan per row
     for (id, p) in parts {
-        highlight(&p.name, if searching { &words } else { &[] }, false);
-        let hits = if searching { st.find_hits.get(&id) } else { None };
-        let text = match hits.and_then(|h| h.first().map(|m| (m, st.find_counts.get(&id).copied().unwrap_or(h.len())))) {
-            Some((m, n)) => {
-                let s = snippet(m["text"].as_str().unwrap_or(""), &words);
-                if n > 1 { format!("{n} matches · {s}") } else { s }
-            }
-            None => st.chats.iter().find(|c| c["id"].as_i64() == Some(id)).map(|c| row_info(&st, c).1).unwrap_or_default(),
-        };
-        p.prev.set_text(&text);
-        highlight(&p.prev, if hits.is_some() { &words } else { &[] }, false);
+        style_row(&st, &words, searching, id, &p, by_id.get(&id).copied());
     }
 }
 
+/// One row's name and preview while a search is on (or back to plain when it isn't).
+fn style_row(st: &State, words: &[String], searching: bool, id: i64, p: &RowParts, chat: Option<&Value>) {
+    highlight(&p.name, if searching { words } else { &[] }, false);
+    let hits = if searching { st.find_hits.get(&id) } else { None };
+    let text = match hits.and_then(|h| h.first().map(|m| (m, st.find_counts.get(&id).copied().unwrap_or(h.len())))) {
+        Some((m, n)) => {
+            let s = snippet(m["text"].as_str().unwrap_or(""), words);
+            if n > 1 { format!("{n} matches · {s}") } else { s }
+        }
+        None => chat.map(|c| row_info(st, c).1).unwrap_or_default(),
+    };
+    p.prev.set_text(&text);
+    highlight(&p.prev, if hits.is_some() { words } else { &[] }, false);
+}
+
 /// The search box changed: filter the list by name at once, and (after a pause) look through the messages.
+/// Dev aid (BF_PROF): what the sidebar list looks like right now, with the time since the first call.
+fn prof_list(u: &Ui, tag: &str) {
+    if std::env::var_os("BF_PROF").is_none() {
+        return;
+    }
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let t = START.get_or_init(std::time::Instant::now).elapsed().as_secs_f32();
+    let (mut rows, mut shown, mut mapped) = (0, 0, 0);
+    let mut c = u.chat_list.first_child();
+    while let Some(w) = c {
+        rows += 1;
+        shown += i32::from(w.is_child_visible() && w.is_visible());
+        mapped += i32::from(w.is_mapped());
+        c = w.next_sibling();
+    }
+    if let Some(r) = u.chat_list.row_at_index(5) {
+        eprintln!(
+            "prof[{t:.1}s]: {tag}: row 5 is {}x{} px, opacity {:.1}, child_visible {}, visible {}, drawable {}, name label \"{}\"",
+            r.width(),
+            r.height(),
+            r.opacity(),
+            r.is_child_visible(),
+            r.is_visible(),
+            r.is_drawable(),
+            u.row_parts.borrow().values().next().map(|p| p.name.text().to_string()).unwrap_or_default()
+        );
+    }
+    eprintln!(
+        "prof[{t:.1}s]: {tag}: list {}x{} px, rows {rows}, visible {shown}, mapped {mapped}, side stack \"{}\", scroller value {:.0}",
+        u.chat_list.width(),
+        u.chat_list.height(),
+        u.side_stack.visible_child_name().unwrap_or_default(),
+        side_adjustment(u).map_or(0.0, |a| a.value())
+    );
+}
+
 fn search_changed(u: &Rc<Ui>) {
+    let t0 = std::time::Instant::now();
+    search_changed_inner(u);
+    if u.search.text().is_empty() && std::env::var_os("BF_PROF").is_some() {
+        prof_list(u, "search cleared");
+        for secs in [1, 5, 15, 30, 45] {
+            let u2 = u.clone();
+            glib::timeout_add_local_once(Duration::from_secs(secs), move || prof_list(&u2, &format!("{secs}s after clear")));
+        }
+    }
+    if std::env::var_os("BF_PROF").is_some() {
+        eprintln!("prof: search_changed {} ms ({} chats, {} rows)", t0.elapsed().as_millis(), u.st.borrow().chats.len(), u.row_parts.borrow().len());
+    }
+}
+
+fn search_changed_inner(u: &Rc<Ui>) {
     let q = u.search.text().trim().to_string();
     let gen_ = u.msearch_gen.get().wrapping_add(1);
     u.msearch_gen.set(gen_);
+    if !q.is_empty() {
+        enter_search(u);
+    }
     if q.chars().count() < 2 {
         u.search_spin.set_spinning(false);
         u.search_spin.set_visible(false);
@@ -3984,6 +4107,9 @@ fn search_changed(u: &Rc<Ui>) {
         }
         if had {
             u.chat_list.invalidate_filter();
+        }
+        if q.is_empty() {
+            exit_search(u);
         }
     } else {
         u.search_spin.set_visible(true);
@@ -4017,12 +4143,88 @@ fn on_found(u: &Rc<Ui>, seq: u64, hits: Vec<Value>, counts: HashMap<i64, usize>)
             by_chat.entry(c).or_default().push(h);
         }
     }
+    // hits in chats older than the loaded list: fetch those chats so they get rows
+    let missing: Vec<i64> = {
+        let st = u.st.borrow();
+        let known = |id: i64| {
+            let id = st.alias.get(&id).copied().unwrap_or(id);
+            st.chats.iter().any(|c| c["id"].as_i64() == Some(id))
+        };
+        by_chat.keys().chain(counts.keys()).copied().filter(|id| !known(*id)).collect::<HashSet<_>>().into_iter().collect()
+    };
     {
         let mut st = u.st.borrow_mut();
         st.find_hits = by_chat;
         st.find_counts = counts;
     }
+    if !missing.is_empty() {
+        u.send(Cmd::FindChats { ids: missing, seq });
+    }
     apply_search(u);
+}
+
+/// The search box got its first text: the sidebar now shows results, so nothing is open on the right until one is picked.
+fn enter_search(u: &Rc<Ui>) {
+    if u.st.borrow().search_sel.is_some() || u.new_mode.get() {
+        return;
+    }
+    let prev = u.st.borrow().sel;
+    u.st.borrow_mut().search_sel = Some(prev);
+    if prev.is_none() {
+        return;
+    }
+    swap_draft(u, prev, 0); // its draft is kept; the composer empties
+    {
+        let mut st = u.st.borrow_mut();
+        st.sel = None;
+        st.find_view = None;
+    }
+    u.viewer.close_now();
+    close_info(u);
+    u.selecting.set(true);
+    u.chat_list.unselect_all();
+    u.selecting.set(false);
+    mark_tile(u, 0);
+    update_find_bar(u);
+    u.stack.set_visible_child_name("empty");
+}
+
+/// The search box was emptied: a chat picked from the results stays open (and in the list, however old); with none
+/// picked, the chat from before comes back. Chats the search added to the list go.
+fn exit_search(u: &Rc<Ui>) {
+    let Some(prev) = u.st.borrow_mut().search_sel.take() else { return };
+    let added = std::mem::take(&mut u.st.borrow_mut().search_added);
+    let (removed, hide) = {
+        let mut st = u.st.borrow_mut();
+        let (sel, before) = (st.sel, st.chats.len());
+        st.chats.retain(|c| c["id"].as_i64().is_none_or(|id| !added.contains(&id) || Some(id) == sel));
+        let hide = sel.filter(|id| added.contains(id));
+        if let Some(id) = hide {
+            st.off_list.insert(id); // like Messages: you stay in it, and it shows in the list once scrolling loads it
+        }
+        (st.chats.len() != before, hide)
+    };
+    // rebuilding every row is the slow part: only when the search had put chats in the list
+    if removed {
+        let t = std::time::Instant::now();
+        render_chats(u);
+        if std::env::var_os("BF_PROF").is_some() {
+            eprintln!("prof: exit_search rebuilt the list in {} ms", t.elapsed().as_millis());
+        }
+    } else if let Some(i) = hide.and_then(|id| u.st.borrow().chats.iter().position(|c| c["id"].as_i64() == Some(id))) {
+        if let Some(row) = u.chat_list.row_at_index(i as i32) {
+            row.set_visible(false);
+        }
+    }
+    let (sel, restore) = (u.st.borrow().sel, prev);
+    if sel.is_none()
+        && let Some(id) = restore
+    {
+        swap_draft(u, Some(0), id);
+        select(u, id);
+    } else if let Some(id) = sel {
+        select_in_list(u, id);
+    }
 }
 
 /// Open the chat on its `idx`-th hit (0 = newest): a window of messages around it, scrolled to it.
@@ -4196,8 +4398,10 @@ fn is_muted(muted: &[String], c: &Value) -> bool {
 fn pin_menu(u: &Rc<Ui>, w: &gtk::Widget, keys: &[String], pinned: bool, muted: bool) {
     let g = gtk::GestureClick::new();
     g.set_button(3);
-    let (u, w2, key) = (u.clone(), w.clone(), keys.to_vec());
+    // weak: a strong reference to the widget from its own gesture kept every rebuilt row alive for good
+    let (u, w2, key) = (u.clone(), w.downgrade(), keys.to_vec());
     g.connect_pressed(move |g, _, x, y| {
+        let Some(w2) = w2.upgrade() else { return };
         g.set_state(gtk::EventSequenceState::Claimed);
         let b = gtk::Button::with_label(if pinned { "Unpin" } else { "Pin to top" });
         b.add_css_class("flat");

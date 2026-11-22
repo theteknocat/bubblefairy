@@ -58,6 +58,8 @@ pub enum Cmd {
     /// Chats found by name, even ones older than the chats list: a group whose name contains `q`, and any chat with
     /// one of `addrs` (the numbers and emails of the contacts whose name matches). Answer: `Event::FoundNamed`.
     FindNamed { q: String, addrs: Vec<String>, seq: u64 },
+    /// chats by id, answered like `FindNamed` (message hits in chats outside the loaded list)
+    FindChats { ids: Vec<i64>, seq: u64 },
     /// the chat's newest `limit` messages
     History(i64, usize),
     /// Just the newest message, for the chat list's preview line.
@@ -762,15 +764,29 @@ async fn find_named(session: &client::Handle<Handler>, q: &str, addrs: &[String]
             }
         }
     }
-    let sql = format!(
-        "select c.ROWID, hex(c.chat_identifier), hex(coalesce(c.display_name,'')), c.style, coalesce(c.service_name,'iMessage'), \
-         strftime('%Y-%m-%dT%H:%M:%SZ', coalesce((select max(m.date) from message m join chat_message_join j on j.message_id=m.ROWID where j.chat_id=c.ROWID and m.item_type=0),0)/1000000000+978307200, 'unixepoch'), \
-         coalesce((select group_concat(hex(h2.id),',') from chat_handle_join hj2 join handle h2 on h2.ROWID=hj2.handle_id where hj2.chat_id=c.ROWID),'') \
-         from chat c where c.style in (43,45) and (lower(c.display_name) like '%{like}%' or c.ROWID in \
+    let cond = format!(
+        "c.style in (43,45) and (lower(c.display_name) like '%{like}%' or c.ROWID in \
          (select hj.chat_id from chat_handle_join hj join handle h on h.ROWID=hj.handle_id where {})) \
          and exists (select 1 from chat_message_join j join message m on m.ROWID=j.message_id where j.chat_id=c.ROWID and m.item_type=0) \
          order by 6 desc limit 15",
         by_member.join(" or ")
+    );
+    query_chats(session, &cond).await
+}
+
+/// Chats by id (the ones a message search found that aren't in the loaded list).
+async fn chats_by_id(session: &client::Handle<Handler>, ids: &[i64]) -> Vec<Value> {
+    let list = ids.iter().take(40).map(i64::to_string).collect::<Vec<_>>().join(",");
+    query_chats(session, &format!("c.style in (43,45) and c.ROWID in ({list}) order by 6 desc")).await
+}
+
+/// Chats from chat.db in imsg's list shape; `cond` is what follows `where`.
+async fn query_chats(session: &client::Handle<Handler>, cond: &str) -> Vec<Value> {
+    let sql = format!(
+        "select c.ROWID, hex(c.chat_identifier), hex(coalesce(c.display_name,'')), c.style, coalesce(c.service_name,'iMessage'), \
+         strftime('%Y-%m-%dT%H:%M:%SZ', coalesce((select max(m.date) from message m join chat_message_join j on j.message_id=m.ROWID where j.chat_id=c.ROWID and m.item_type=0),0)/1000000000+978307200, 'unixepoch'), \
+         coalesce((select group_concat(hex(h2.id),',') from chat_handle_join hj2 join handle h2 on h2.ROWID=hj2.handle_id where hj2.chat_id=c.ROWID),'') \
+         from chat c where {cond}"
     );
     let Some(out) = exec(session, format!("sqlite3 -readonly ~/Library/Messages/chat.db {}", sh_quote(&sql))).await else { return Vec::new() };
     String::from_utf8_lossy(&out)
@@ -1537,6 +1553,10 @@ async fn handle(cmd: Cmd, rpc: Rpc, session: Arc<client::Handle<Handler>>, ev: m
         },
         Cmd::FindNamed { q, addrs, seq } => {
             let chats = find_named(&session, &q, &addrs).await;
+            let _ = ev.send(Event::FoundNamed { seq, chats });
+        }
+        Cmd::FindChats { ids, seq } => {
+            let chats = chats_by_id(&session, &ids).await;
             let _ = ev.send(Event::FoundNamed { seq, chats });
         }
         Cmd::FindChat(addr) => {

@@ -134,6 +134,9 @@ mod imp {
         drag: RefCell<Option<Drag>>,
         /// columns, cell width and height as last laid out
         cols: Cell<usize>,
+        /// the width it was last laid out at: a hidden widget reports 0, and asked for a height then it counted one column
+        /// (a grid several tiles too tall once it was shown again)
+        last_w: Cell<i32>,
         cell: Cell<(f64, f64)>,
         tick: RefCell<Option<gtk::TickCallbackId>>,
         last_frame: Cell<i64>,
@@ -309,7 +312,8 @@ mod imp {
             }
             drop(items);
             // asked without a width (the scroller does): the width it has now, else a single column's worth
-            let width = if for_size >= 0 { for_size } else { self.obj().width().max(self.cols_for(0) as i32 * self.items.borrow().iter().map(|i| i.w.measure(gtk::Orientation::Horizontal, -1).0).max().unwrap_or(1)) };
+            let known = self.obj().width().max(self.last_w.get());
+            let width = if for_size >= 0 { for_size } else { known.max(self.cols_for(0) as i32 * self.items.borrow().iter().map(|i| i.w.measure(gtk::Orientation::Horizontal, -1).0).max().unwrap_or(1)) };
             let cols = self.cols_for(width);
             let cw = width / cols as i32;
             let items = self.items.borrow();
@@ -319,6 +323,7 @@ mod imp {
         }
 
         fn size_allocate(&self, width: i32, _height: i32, _baseline: i32) {
+            self.last_w.set(width);
             let cols = self.cols_for(width);
             let cw = width as f64 / cols as f64;
             let ch = self.items.borrow().iter().map(|i| i.w.measure(gtk::Orientation::Vertical, cw as i32).1).max().unwrap_or(0) as f64;
