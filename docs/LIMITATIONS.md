@@ -87,8 +87,8 @@ copy on this computer, so it **doesn't sync** with your Apple devices:
 - **Group chat photos** set in Messages aren't shown (a group gets a circle of its members instead).
 - **Contact photos are read once per connection.** A photo you change on the Mac shows up after BubbleFairy
   reconnects (restarting it does that).
-- **Search finds file names and web addresses only when they are in the message text.** A file's name or a link
-  that isn't written in the message itself isn't searched.
+- **Search matches a link's address in its preview only in the preview's own data.** A page title or site name
+  that isn't part of the address isn't searched. (Attached file names and addresses in the text are.)
 
 ## Tray icon
 
