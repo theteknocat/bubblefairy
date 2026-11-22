@@ -3924,28 +3924,36 @@ fn render_suggest(u: &Ui) {
 
 /// Send the first message of a new conversation (or to an existing one, if the To field names it).
 /// Put `chat` into the list where its last message belongs (newest first).
+/// What makes two 1:1 chats one conversation: the same address-book entry, or (for someone who isn't a contact, or
+/// before the contacts are read) the same number or email.
+fn merge_key(handle: &str, contacts: Option<&crate::mac::Contacts>) -> Option<String> {
+    match contacts.and_then(|k| k.person_id(handle)) {
+        Some(p) => Some(format!("person:{p}")),
+        None => crate::mac::addr_key(handle).map(|a| format!("addr:{a}")),
+    }
+}
+
 /// One person's chats (a phone number and an email, iMessage and SMS ones) are one conversation, as in Messages:
 /// the list shows a single entry standing for all of them. It is the newest chat's entry with the id of the oldest
 /// (an id that doesn't change), the unread counts added up, and `merged` naming every chat. Group chats stay as they
-/// are. Needs the contacts (to know which numbers and emails are one person). Returns the list and the merges as
+/// are. The contacts tell which numbers and emails are one person; without them the same address still merges. Returns the list and the merges as
 /// (id, all ids newest first).
 fn merged_chats(
     raw: &[Value],
     contacts: Option<&crate::mac::Contacts>,
 ) -> (Vec<Value>, Vec<(i64, Vec<i64>)>) {
-    let Some(k) = contacts else {
-        return (raw.to_vec(), Vec::new());
-    };
-    let mut slot_of: HashMap<usize, usize> = HashMap::new(); // person -> position in `out`
+    let mut slot_of: HashMap<String, usize> = HashMap::new(); // person (or bare address) -> position in `out`
     let mut out: Vec<Value> = Vec::new();
     let mut members: Vec<Vec<usize>> = Vec::new(); // raw positions behind each entry of `out`
     for (i, c) in raw.iter().enumerate() {
         let person = if c["is_group"].as_bool() == Some(true) {
             None
         } else {
-            c["participants"][0].as_str().and_then(|h| k.person_id(h))
+            c["participants"][0]
+                .as_str()
+                .and_then(|h| merge_key(h, contacts))
         };
-        match person.and_then(|p| slot_of.get(&p).copied()) {
+        match person.as_ref().and_then(|p| slot_of.get(p).copied()) {
             Some(slot) => members[slot].push(i),
             None => {
                 if let Some(p) = person {
@@ -11117,5 +11125,32 @@ mod pill_tests {
             word_spans(t, &fold(t), &["th".to_string()]),
             vec![(3, 8), (10, 15)]
         );
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::merged_chats;
+    use serde_json::json;
+
+    #[test]
+    fn same_number_merges_without_a_contact_and_keeps_order() {
+        let chat = |id: i64, who: &str, group: bool, unread: i64| json!({"id": id, "identifier": who, "participants": [who], "is_group": group, "unread_count": unread});
+        // newest first, as imsg lists them: the newest chat is id 9, the oldest id 2
+        let raw = vec![
+            chat(9, "+1 (555) 010-2000", false, 1),
+            chat(5, "+15550109999", false, 0),
+            chat(2, "5550102000", false, 2),
+            chat(7, "+15550102000", true, 0),
+        ];
+        let (list, groups) = merged_chats(&raw, None);
+        let ids: Vec<i64> = list.iter().map(|c| c["id"].as_i64().unwrap()).collect();
+        assert_eq!(
+            ids,
+            vec![2, 5, 7],
+            "entry stands at the newest chat's place, with the oldest id"
+        );
+        assert_eq!(groups, vec![(2, vec![9, 2])]);
+        assert_eq!(list[0]["unread_count"], 3);
     }
 }
