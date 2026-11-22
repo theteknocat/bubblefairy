@@ -8,7 +8,7 @@ A Linux desktop iMessage app: Rust + GTK4 with its own CSS look, shipped as a Fl
 - Mac under test: macOS 26, imsg 0.21.0 from Homebrew at `/opt/homebrew/bin/imsg`. The app itself never uses `~/.ssh`.
 - **`docs/LIMITATIONS.md` lists every known limitation (missing features, workarounds, state that doesn't sync).** Keep it current whenever one appears, changes or goes away; it feeds the README and the future help dialog.
 - Never put iMessage, Apple or other trademarks in the app name or branding.
-- **Privacy features are opt-in only** (off by default, in Settings > Privacy), and where one is off the UI should say how to enable it.
+- **Privacy features are opt-in only** (off by default, in Settings > Privacy), and where one is off the UI should say how to enable it. This covers only what sends data off this computer to a third party (map and link previews). Local storage such as caches isn't a privacy matter here (the user's own account, their own Mac): those are on by default, with an opt-out setting and a Clear button.
 
 ## Build
 
