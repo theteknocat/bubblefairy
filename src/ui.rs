@@ -6693,16 +6693,21 @@ fn pending_bubble(p: &Pending, sms: bool, last: bool) -> gtk::Widget {
         sms,
         tail: last,
     };
-    let w: gtk::Widget = match &p.item {
-        PendingItem::File(f)
-            if is_image("", &f.to_string_lossy()) && gdk::Texture::from_filename(f).is_ok() =>
-        {
-            let t = gdk::Texture::from_filename(f).expect("checked");
+    // shortcut: decoded here on the GTK thread, once per redraw; move it to `bg` with a texture kept in the pending item (docs/ponytail-audit-2026-11-22-3.md, finding 1)
+    // decoded once, and only when it's a picture we can read (anything else shows as a paperclip line)
+    let photo = match &p.item {
+        PendingItem::File(f) if is_image("", &f.to_string_lossy()) => {
+            gdk::Texture::from_filename(f).ok()
+        }
+        _ => None,
+    };
+    let w: gtk::Widget = match (&p.item, photo) {
+        (_, Some(t)) => {
             let b = bubble::Bubble::photo(look, 160, 120);
             show_texture(&b, &t);
             b.upcast()
         }
-        item => {
+        (item, None) => {
             let b = bubble::Bubble::new(look);
             let text = match item {
                 PendingItem::Seed(_, n) => format!("📎 {n}"),

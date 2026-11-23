@@ -74,7 +74,17 @@ pub fn public_url(url: &str) -> bool {
 }
 
 /// Width and height of a PNG, JPEG, GIF or WebP from its header (the GNOME runtime has no gdk-pixbuf loaders to ask).
+/// None for a size no real page picture has (each side 1 to 8000, 40 million pixels at most): a small file can claim
+/// 20000 x 20000, and decoding that takes about 1.6 GB.
 pub fn image_size(b: &[u8]) -> Option<(i32, i32)> {
+    header_size(b).filter(|&(w, h)| {
+        (1..=8000).contains(&w)
+            && (1..=8000).contains(&h)
+            && i64::from(w) * i64::from(h) <= 40_000_000
+    })
+}
+
+fn header_size(b: &[u8]) -> Option<(i32, i32)> {
     let be16 = |i: usize| {
         b.get(i..i + 2)
             .map(|x| i32::from(u16::from_be_bytes([x[0], x[1]])))
@@ -393,6 +403,13 @@ mod tests {
         ];
         assert_eq!(image_size(&jpg), Some((1200, 630)));
         assert_eq!(image_size(b"not an image at all"), None);
+        // sizes no page picture has: too big (20000 x 20000), over the pixel limit, zero, negative
+        for (w, h) in [(20000u32, 20000u32), (8000, 6000), (0, 5), (u32::MAX, 5)] {
+            let mut big = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+            big.extend_from_slice(&w.to_be_bytes());
+            big.extend_from_slice(&h.to_be_bytes());
+            assert_eq!(image_size(&big), None, "{w} x {h}");
+        }
     }
 
     #[test]
