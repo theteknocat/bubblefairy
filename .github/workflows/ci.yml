@@ -35,6 +35,9 @@ jobs:
           sudo apt-get install -y flatpak
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y flathub org.gnome.Sdk//51 org.gnome.Platform//51 org.freedesktop.Sdk.Extension.rust-stable//26.08
+          # the runner's own rustup shims in ~/.cargo/bin would win over the SDK's cargo-clippy (cargo looks in
+          # $CARGO_HOME/bin first, and dev.sh points that at ~/.cargo)
+          rm -rf ~/.cargo/bin
           mkdir -p ~/.cargo
       - name: Clippy (all targets, warnings are errors)
         run: scripts/dev.sh clippy --all-targets -- -D warnings
