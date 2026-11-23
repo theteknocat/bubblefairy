@@ -8,6 +8,8 @@ pub struct Page {
     pub site: String,
     /// absolute address of the picture
     pub image: Option<String>,
+    /// absolute address of the page's own icon (a PNG, JPEG, GIF or WebP we can draw)
+    pub icon: Option<String>,
 }
 
 /// Only addresses on the public internet are fetched: a link to a router or a local service stays a plain card.
@@ -168,7 +170,52 @@ pub fn parse(html: &str, page_url: &str) -> Page {
             .join(" "),
         site: site.unwrap_or_else(|| host(page_url)),
         image: image.map(|i| resolve(page_url, i.trim())),
+        icon: pick_icon(head, lower, page_url),
     }
+}
+
+/// The best `<link rel="...icon">` in the head that we can draw (no SVG or ICO: the runtime can't size or decode
+/// them): an Apple touch icon first (usually 180 px), else the largest declared size, else the first one listed.
+fn pick_icon(head: &str, lower: &str, page_url: &str) -> Option<String> {
+    let mut best: Option<(i32, String)> = None;
+    let mut at = 0;
+    while let Some(i) = lower[at..].find("<link") {
+        let start = at + i;
+        let end = lower[start..].find('>').map_or(lower.len(), |e| start + e);
+        let tag = &head[start..end];
+        at = end;
+        let rel = attr(tag, "rel").map(|r| r.to_ascii_lowercase());
+        let is_icon = rel.as_deref().is_some_and(|r| {
+            r.split_whitespace()
+                .any(|t| t == "icon" || t.starts_with("apple-touch-icon"))
+        });
+        let href = attr(tag, "href")
+            .map(|h| decode(&h))
+            .filter(|h| !h.trim().is_empty());
+        let (true, Some(href)) = (is_icon, href) else {
+            continue;
+        };
+        let file = href
+            .split(['?', '#'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if file.ends_with(".svg") || file.ends_with(".ico") {
+            continue;
+        }
+        let declared = attr(tag, "sizes")
+            .and_then(|s| s.split(['x', 'X']).next()?.trim().parse::<i32>().ok())
+            .unwrap_or(0);
+        let touch = if rel.is_some_and(|r| r.contains("apple-touch-icon")) {
+            1000
+        } else {
+            0
+        };
+        if best.as_ref().is_none_or(|(b, _)| declared + touch > *b) {
+            best = Some((declared + touch, href));
+        }
+    }
+    best.map(|(_, h)| resolve(page_url, h.trim()))
 }
 
 /// The value of an attribute (`name="..."`, `name='...'` or `name=bare`) in one tag.
@@ -287,6 +334,36 @@ mod tests {
         assert_eq!(
             (q.title.as_str(), q.site.as_str(), q.image),
             ("Just a title", "site.org", None)
+        );
+    }
+
+    #[test]
+    fn picks_a_drawable_icon() {
+        let page = "https://www.example.com/a/b";
+        let icon = |head: &str| parse(head, page).icon;
+        // an Apple touch icon beats the plain ones; SVG and ICO are skipped
+        let html = r#"<head><link rel="icon" href="/favicon.ico">
+            <link rel="shortcut icon" type="image/svg+xml" href="/i.svg?v=2">
+            <link rel="icon" sizes="32x32" href="/f32.png">
+            <link rel='apple-touch-icon' sizes='180x180' href='/touch.png'></head>"#;
+        assert_eq!(
+            icon(html).as_deref(),
+            Some("https://www.example.com/touch.png")
+        );
+        // else the largest declared size
+        let html = r#"<head><link rel="icon" sizes="16x16" href="s.png"><link rel="icon" sizes="96x96" href="big.png"></head>"#;
+        assert_eq!(
+            icon(html).as_deref(),
+            Some("https://www.example.com/a/big.png")
+        );
+        // nothing drawable, or no icon at all
+        assert_eq!(
+            icon(r#"<head><link rel="icon" href="/favicon.ico"></head>"#),
+            None
+        );
+        assert_eq!(
+            icon(r#"<head><link rel="stylesheet" href="/a.css"></head>"#),
+            None
         );
     }
 

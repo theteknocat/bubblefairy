@@ -6965,8 +6965,8 @@ fn load_web_links(path: &std::path::Path) -> HashMap<String, Option<crate::mac::
             site: s("site"),
             image: v["image"].as_str().map(String::from),
             image_size: size("size"),
-            icon: None,
-            icon_size: None,
+            icon: v["icon"].as_str().map(String::from),
+            icon_size: size("icon_size"),
         });
         out.insert(url.to_string(), lp);
     }
@@ -6980,7 +6980,7 @@ fn save_web_links(
     let lines: Vec<String> = links
         .iter()
         .map(|(url, lp)| match lp {
-            Some(l) => serde_json::json!({"url": url, "title": l.title, "site": l.site, "image": l.image, "size": l.image_size.map(|(w, h)| [w, h])}).to_string(),
+            Some(l) => serde_json::json!({"url": url, "title": l.title, "site": l.site, "image": l.image, "size": l.image_size.map(|(w, h)| [w, h]), "icon": l.icon, "icon_size": l.icon_size.map(|(w, h)| [w, h])}).to_string(),
             None => serde_json::json!({"url": url, "failed": true}).to_string(),
         })
         .collect();
@@ -7062,28 +7062,36 @@ async fn fetch_web_preview(u: &Rc<Ui>, url: &str) -> Option<crate::mac::LinkPrev
     if page.title.is_empty() && page.image.is_none() {
         return None;
     }
-    let (mut image, mut size) = (None, None);
-    if let Some(img) = page.image.filter(|i| crate::webpreview::public_url(i))
-        && let Some(bytes) = web_get(&u.web, &img, 8_000_000, false).await
-    {
-        let key = format!("web:{img}");
-        let path = cache_path(u, &key, false);
-        let _ = std::fs::create_dir_all(&u.store.image_cache);
-        size = crate::webpreview::image_size(&bytes);
-        if size.is_some() && std::fs::write(&path, bytes).is_ok() {
-            image = Some(key);
-        }
-    }
+    let image = fetch_web_picture(u, page.image, 8_000_000).await;
+    let icon = fetch_web_picture(u, page.icon, 1_000_000).await;
+    let (image, image_size) = image.unzip();
+    let (icon, icon_size) = icon.unzip();
     Some(crate::mac::LinkPreview {
         url: url.to_string(),
         alt_url: None,
         title: page.title,
         site: page.site,
         image,
-        image_size: size,
-        icon: None,
-        icon_size: None,
+        image_size,
+        icon,
+        icon_size,
     })
+}
+
+/// Fetch a page's picture or icon into the image cache: its cache key and size, or None when it isn't a public
+/// address, can't be read, or isn't a format we can size (and so draw).
+async fn fetch_web_picture(
+    u: &Rc<Ui>,
+    url: Option<String>,
+    max: usize,
+) -> Option<(String, (i32, i32))> {
+    let url = url.filter(|i| crate::webpreview::public_url(i))?;
+    let bytes = web_get(&u.web, &url, max, false).await?;
+    let size = crate::webpreview::image_size(&bytes)?;
+    let key = format!("web:{url}");
+    let _ = std::fs::create_dir_all(&u.store.image_cache);
+    std::fs::write(cache_path(u, &key, false), bytes).ok()?;
+    Some((key, size))
 }
 
 /// A link with no preview from Messages, drawn like a card whose picture is just a small icon: the
