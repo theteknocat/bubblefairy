@@ -63,6 +63,8 @@ Tip from the other session: rustfmt skips a block it can't fit in `max_width` wi
 `rustfmt --edition 2024 --check --config max_width=100,error_on_line_overflow=true <file>` found six spots (nothing in `ui.rs`).
 - Fixed (hand formatted, no behaviour change, 30 tests pass): the chat-row parsing in `mac.rs` (a 110 character line and a
   `json!` on one long line) and two long `select!` arms in `mac::run` (`select!` bodies are never formatted).
-- Left: `chatscroll.rs` lines 50 and 52 (`#[property(...)]` attributes at 101 characters) and `pilllabel.rs` line 13
-  (the `glib::wrapper!` line). rustfmt can't wrap attribute or macro syntax, and splitting them would change nothing real.
-- Not done, Peter's call: adding the stricter check to CI and to the "before committing" line in `CLAUDE.md`.
+- Also fixed, at Peter's request (a clean lint matters for contributions): `chatscroll.rs` lines 50 and 52 (`#[property(...)]`
+  attributes at 101 characters) and `pilllabel.rs` line 13 (the `glib::wrapper!` line), split across lines by hand. rustfmt can't
+  wrap attribute or macro syntax itself, but Rust ignores the line breaks and rustfmt leaves the split alone.
+- The stricter check is now `cargo fmt -- --check --config error_on_line_overflow=true`: it prints nothing for every file, is a
+  second step in the CI `fmt` job, and is on the "before committing" line in `CLAUDE.md`.

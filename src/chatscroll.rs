@@ -47,9 +47,19 @@ mod imp {
     #[derive(glib::Properties)]
     #[properties(wrapper_type = super::ChatScroll)]
     pub struct ChatScroll {
-        #[property(override_interface = gtk::Scrollable, get, set = Self::set_hadjustment, nullable)]
+        #[property(
+            override_interface = gtk::Scrollable,
+            get,
+            set = Self::set_hadjustment,
+            nullable
+        )]
         pub hadjustment: RefCell<Option<gtk::Adjustment>>,
-        #[property(override_interface = gtk::Scrollable, get, set = Self::set_vadjustment, nullable)]
+        #[property(
+            override_interface = gtk::Scrollable,
+            get,
+            set = Self::set_vadjustment,
+            nullable
+        )]
         pub vadjustment: RefCell<Option<gtk::Adjustment>>,
         #[property(override_interface = gtk::Scrollable, get, set)]
         pub hscroll_policy: Cell<gtk::ScrollablePolicy>,

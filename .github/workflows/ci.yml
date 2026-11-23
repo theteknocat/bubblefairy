@@ -14,6 +14,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup component add rustfmt
       - run: cargo fmt --check
+      # plain --check passes over a block rustfmt can't fit in max_width without saying so; this one reports it
+      - run: cargo fmt -- --check --config error_on_line_overflow=true
 
   # The app needs GTK 4, WebKit and GStreamer development files, so Clippy and the tests run in the same GNOME SDK
   # that scripts/dev.sh uses on a developer's machine.

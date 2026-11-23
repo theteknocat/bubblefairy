@@ -10,7 +10,9 @@ use gtk::{glib, graphene};
 
 glib::wrapper! {
     /// Holds one label and paints pills under it; its layout is a plain pass-through of the label's.
-    pub struct Host(ObjectSubclass<imp::Host>) @extends gtk::Widget, @implements gtk::Buildable, gtk::Accessible, gtk::ConstraintTarget;
+    pub struct Host(ObjectSubclass<imp::Host>)
+        @extends gtk::Widget,
+        @implements gtk::Buildable, gtk::Accessible, gtk::ConstraintTarget;
 }
 
 /// Pill spans as (start, end) byte offsets, and their colour as (r, g, b).
