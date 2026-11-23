@@ -13,7 +13,7 @@ If BubbleFairy is useful to you, you can [buy me a coffee](https://buymeacoffee.
 > **I built BubbleFairy with AI, and every line of the code was written by [Claude Code](https://claude.com/claude-code)**
 > (Anthropic's AI coding tool). It wasn't one big prompt, though. I decide what the app does and how it should look and
 > feel, check each piece as it's built, test it on my own Mac and my own conversations, and decide what stays.
-> It adheres to rustfmt coding standards, with any exceptions noted with reasons. It gets regular AI code audits using
+> It adheres to rustfmt and Clippy coding standards, with any exceptions noted with reasons. It gets regular AI code audits using
 > Ponytail, and the risky parts have unit tests. What it hasn't had is a review by a human Rust developer, and I'm not
 > one myself, so some of the code will probably look like what you might expect from AI-generated code.
 > Reviews, bug reports and pull requests are very welcome. More on [how I work with AI](https://github.com/theteknocat/theteknocat/blob/main/AI.md).
