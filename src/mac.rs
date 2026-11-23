@@ -1935,6 +1935,10 @@ fn hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+fn is_web(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
 pub fn parse_link(bytes: &[u8], files: &[String]) -> Option<LinkPreview> {
     use plist::Value;
     let v = Value::from_reader(std::io::Cursor::new(bytes)).ok()?;
@@ -1967,6 +1971,8 @@ pub fn parse_link(bytes: &[u8], files: &[String]) -> Option<LinkPreview> {
         files.get(i as usize).cloned()
     };
     let (typed, resolved) = (text("originalURL"), text("URL"));
+    // only web addresses become a card, so the link a click opens is always one the user can read as a site
+    let (typed, resolved) = (typed.filter(|u| is_web(u)), resolved.filter(|u| is_web(u)));
     let url = typed.clone().or_else(|| resolved.clone())?;
     let alt_url = resolved
         .filter(|r| *r != url)
@@ -2683,6 +2689,9 @@ mod link_tests {
         assert_eq!(p.site, "example.com");
         assert_eq!(p.image.as_deref(), Some("big.jpg"));
         assert_eq!(p.icon, None);
+        // a payload naming another kind of address makes no card
+        let other = xml.replace("https://www.example.com/a", "smb://nas.local/share");
+        assert!(super::parse_link(other.as_bytes(), &files).is_none());
         assert_eq!(super::hex("0aff"), Some(vec![10, 255]));
         assert_eq!(
             super::urls_in("see https://a.com/x, and (http://b.org/y). ok"),

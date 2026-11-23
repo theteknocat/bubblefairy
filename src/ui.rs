@@ -2677,7 +2677,7 @@ fn on_message(u: &Rc<Ui>, m: Value) {
                 None => {}
             }
         }
-        if !mutation && m["item_type"].as_i64().unwrap_or(0) == 0 {
+        if !mutation && !is_group_event(&m) {
             st.preview.insert(cid, m.clone());
         }
         (
@@ -2712,9 +2712,15 @@ fn on_message(u: &Rc<Ui>, m: Value) {
         return;
     }
     render_chats(u);
-    if m["is_from_me"].as_bool() != Some(true) {
+    // someone joining, leaving or renaming a group arrives as a message with no text: no chime, no notification
+    if m["is_from_me"].as_bool() != Some(true) && !is_group_event(&m) {
         notify(u, cid, &m);
     }
+}
+
+/// A group event row (`item_type` other than 0), not a message someone wrote.
+fn is_group_event(m: &Value) -> bool {
+    m["item_type"].as_i64().unwrap_or(0) != 0
 }
 
 /// A message with a link arrives before Messages has made its preview (and, for one we sent, before it
@@ -3217,7 +3223,7 @@ impl Save {
     fn new(path: &str, name: &str, size: i64, pics: bool) -> Save {
         Save {
             path: path.into(),
-            name: name.into(),
+            name: safe_name(name, "file"),
             size,
             pics,
         }
@@ -8879,13 +8885,22 @@ fn file_dest(u: &Ui, path: &str, name: &str) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut h);
+    files_dir(u)
+        .join(format!("{:016x}", h.finish()))
+        .join(safe_name(name, "file"))
+}
+
+/// A file name from a sender, made safe to use under a folder we choose: no `/` or control characters, and never
+/// empty, `.` or `..` (those would point at the folder itself or above it); `fallback` stands in for those.
+fn safe_name(name: &str, fallback: &str) -> String {
     let name: String = name
         .chars()
         .map(|c| if c == '/' || c.is_control() { '_' } else { c })
         .collect();
-    files_dir(u)
-        .join(format!("{:016x}", h.finish()))
-        .join(if name.is_empty() { "file" } else { &name })
+    match name.trim() {
+        "" | "." | ".." => fallback.to_string(),
+        _ => name,
+    }
 }
 
 /// The viewer wants a video: use our copy, or copy it from the Mac (progress comes back as events).
@@ -11126,6 +11141,24 @@ fn schedule_midnight(u: &Rc<Ui>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_events_are_not_messages() {
+        assert!(is_group_event(&json!({"item_type": 3, "text": ""})));
+        assert!(!is_group_event(&json!({"item_type": 0, "text": "hi"})));
+        assert!(!is_group_event(&json!({"text": "hi"})));
+    }
+
+    #[test]
+    fn sender_file_names_stay_inside_the_folder() {
+        assert_eq!(safe_name("photo.jpg", "file"), "photo.jpg");
+        assert_eq!(safe_name("../../.bashrc", "file"), ".._.._.bashrc");
+        assert_eq!(safe_name("/etc/passwd", "file"), "_etc_passwd");
+        assert_eq!(safe_name("a\nb", "file"), "a_b");
+        for odd in ["", ".", "..", "  "] {
+            assert_eq!(safe_name(odd, "file"), "file");
+        }
+    }
 
     #[test]
     fn matching_ignores_case_for_accents_and_keeps_offsets() {

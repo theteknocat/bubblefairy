@@ -88,6 +88,7 @@ pub fn save_config(path: &Path, c: &mac::Config) {
 /// Image cache size cap. Everything in it can be fetched again from the Mac.
 const CACHE_MAX: u64 = 500 * 1024 * 1024;
 const FILES_DAYS: u64 = 30; // how long a copied attachment is kept
+const FILES_MAX: u64 = 2 * 1024 * 1024 * 1024; // and how much of them, whichever limit comes first
 
 /// Delete the oldest cached images until the folder is under `max` bytes.
 // ponytail: oldest by write time, not last use; fine while re-fetching is cheap
@@ -114,18 +115,42 @@ fn prune_cache(dir: &Path, max: u64) {
     }
 }
 
-/// Opened attachments are kept one folder each under `files/`: remove the folders older than `days` (by the time the
-/// copy was made; opening it again after that just copies it from the Mac again).
-fn prune_old_dirs(dir: &Path, days: u64) {
+/// Opened attachments are kept one folder each under `files/`. Remove the folders older than `days` (by the time the
+/// copy was made), then the oldest of the rest until the total is under `max` bytes. Opening one again after that
+/// just copies it from the Mac again.
+fn prune_old_dirs(dir: &Path, days: u64, max: u64) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
     let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+    let mut kept = Vec::new();
     for e in rd.flatten() {
-        if e.metadata()
-            .is_ok_and(|m| m.is_dir() && m.modified().is_ok_and(|t| t < cutoff))
-        {
+        let Ok(m) = e.metadata() else { continue };
+        if !m.is_dir() {
+            continue;
+        }
+        let made = m.modified().ok();
+        if made.is_some_and(|t| t < cutoff) {
             let _ = std::fs::remove_dir_all(e.path());
+        } else {
+            let size: u64 = std::fs::read_dir(e.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|f| f.metadata().ok())
+                .map(|f| f.len())
+                .sum();
+            kept.push((made, size, e.path()));
+        }
+    }
+    let mut total: u64 = kept.iter().map(|k| k.1).sum();
+    kept.sort_by_key(|k| k.0);
+    for (_, size, path) in kept {
+        if total <= max {
+            break;
+        }
+        if std::fs::remove_dir_all(&path).is_ok() {
+            total -= size;
         }
     }
 }
@@ -173,7 +198,7 @@ fn main() -> glib::ExitCode {
     let cache = store.image_cache.clone();
     std::thread::spawn(move || {
         prune_cache(&cache, CACHE_MAX);
-        prune_old_dirs(&cache.with_file_name("files"), FILES_DAYS);
+        prune_old_dirs(&cache.with_file_name("files"), FILES_DAYS, FILES_MAX);
     });
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -285,8 +310,15 @@ mod tests {
                 .set_modified(t)
                 .unwrap();
         }
-        super::prune_old_dirs(&d, 30);
+        super::prune_old_dirs(&d, 30, u64::MAX);
         assert!(!d.join("old").exists() && d.join("new").exists());
+
+        // under the age limit but over the size limit: the older of two goes
+        std::fs::create_dir_all(d.join("newer")).unwrap();
+        std::fs::write(d.join("newer").join("f.pdf"), [0u8; 10]).unwrap();
+        std::fs::write(d.join("new").join("f.pdf"), [0u8; 10]).unwrap();
+        super::prune_old_dirs(&d, 30, 15);
+        assert!(!d.join("new").exists() && d.join("newer").exists());
         std::fs::remove_dir_all(&d).unwrap();
     }
 }
