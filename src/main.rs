@@ -5,6 +5,7 @@ mod mac;
 mod pilllabel;
 mod player;
 mod setup;
+mod snapshot;
 mod sound;
 mod tilegrid;
 mod tray;
@@ -26,6 +27,7 @@ fn load_config(path: &Path) -> mac::Config {
         imsg: DEFAULT_IMSG.into(),
         notify: true,
         notify_sound: true,
+        local_cache: true,
         sound: sound::DEFAULT.into(),
         ..Default::default()
     };
@@ -44,6 +46,7 @@ fn load_config(path: &Path) -> mac::Config {
             Some(("dir_files", v)) => c.dir_files = v.trim().into(),
             Some(("skip_intro", v)) => c.skip_intro = v.trim() == "1",
             Some(("autostart", v)) => c.autostart = v.trim() == "1",
+            Some(("local_cache", v)) => c.local_cache = v.trim() == "1",
             _ => {}
         }
     }
@@ -63,7 +66,7 @@ pub fn save_config(path: &Path, c: &mac::Config) {
     write_state(
         path,
         format!(
-            "host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\nskip_intro={}\nautostart={}\n",
+            "host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\nskip_intro={}\nautostart={}\nlocal_cache={}\n",
             c.host,
             c.user,
             c.imsg,
@@ -76,7 +79,8 @@ pub fn save_config(path: &Path, c: &mac::Config) {
             c.dir_images,
             c.dir_files,
             u8::from(c.skip_intro),
-            u8::from(c.autostart)
+            u8::from(c.autostart),
+            u8::from(c.local_cache)
         ),
     );
 }
@@ -156,6 +160,8 @@ fn main() -> glib::ExitCode {
         config_file,
         known_host: paths.known_host.clone(),
         image_cache: glib::user_cache_dir().join("bubblefairy/images"),
+        chats_cache: glib::user_cache_dir().join("bubblefairy/chats.json"),
+        contacts_cache: glib::user_cache_dir().join("bubblefairy/contacts.json"),
         seen_file: data.join("seen"),
         resent_file: data.join("resent"),
         pins_file: data.join("pins"),

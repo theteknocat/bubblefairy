@@ -44,6 +44,7 @@ copy on this computer, so it **doesn't sync** with your Apple devices:
 - **Muted chats.** Mute a chat in BubbleFairy (right-click it) to stop its notifications and sound. Chats muted in
   Messages are not muted here (Messages stores that list in a form BubbleFairy can't match to chats), and the other
   way round.
+- **The first moments of a start show a saved copy.** The chat list, previews and contacts come from a local copy (Settings > Faster start) until the Mac answers, so a deleted chat or a changed unread dot can show for a moment. The open chat's messages aren't saved, so that pane is empty until the Mac connects.
 
 ## Chats
 

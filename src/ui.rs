@@ -33,6 +33,9 @@ pub struct Store {
     pub config_file: PathBuf,
     pub known_host: PathBuf,
     pub image_cache: PathBuf,
+    /// the local copy of the chat list and contacts (see snapshot.rs)
+    pub chats_cache: PathBuf,
+    pub contacts_cache: PathBuf,
     /// newest message seen in BubbleFairy per chat (`chat_id=message_id` lines)
     pub seen_file: PathBuf,
     /// failed messages that were sent again, one message id per line
@@ -188,6 +191,8 @@ struct State {
     older_loading: bool,
     /// the Mac's contact photos (asked for once per connection) and the decoded pictures
     contacts: Option<crate::mac::Contacts>,
+    /// `contacts` came from the local copy and the Mac hasn't sent its own yet
+    contacts_cached: bool,
     avatar_tex: HashMap<String, Option<gdk::Texture>>,
     /// avatar keys already sent to the background decoder
     avatar_asked: HashSet<String>,
@@ -290,6 +295,8 @@ pub struct Ui {
     selecting: Cell<bool>,
     /// a `render_chats_soon` is waiting
     list_queued: Cell<bool>,
+    /// a save of the local copy is waiting for its timer
+    snap_queued: Cell<bool>,
     /// every time shown in a label, to be rewritten when the day changes (`track_time`)
     time_labels: RefCell<Vec<TimeLabel>>,
     /// the day the tracked times were last written for
@@ -999,6 +1006,7 @@ pub fn build(
         stick_bottom: stick.clone(),
         selecting: Cell::new(false),
         list_queued: Cell::new(false),
+        snap_queued: Cell::new(false),
         time_labels: RefCell::default(),
         time_day: Cell::new(glib::DateTime::now_local().map(|n| n.ymd()).ok()),
         conv_ctx: RefCell::default(),
@@ -1547,6 +1555,9 @@ pub fn build(
         || std::env::var_os("BF_SETUP_TEST").is_some();
     let login = std::env::args().any(|a| a == "--tray");
     start_tray(&ui, login); // a login start stays hidden if a tray turns up
+    if !first_run {
+        load_snapshot(&ui);
+    }
     if !first_run && !login {
         win.present();
     }
@@ -1784,6 +1795,7 @@ fn start_setup(u: &Rc<Ui>, over_main: bool) {
             }
             crate::save_config(&u2.store.config_file, &cfg);
             u2.st.borrow_mut().cfg = cfg.clone();
+            clear_snapshot(&u2); // it may belong to another Mac
             set_status(&u2, "connecting", "Connecting", None); // (the banner is only ever shown for a failure, never cleared here)
             u2.send(Cmd::Configure(cfg));
         },
@@ -1821,9 +1833,19 @@ fn start_setup(u: &Rc<Ui>, over_main: bool) {
 fn on_event(u: &Rc<Ui>, e: Event) {
     match e {
         Event::Connecting => set_status(u, "connecting", "Connecting", None),
-        Event::Contacts(c) => {
+        Event::Contacts(mut c) => {
+            // the Mac's own list (not the local copy being shown): keep it for the next start
+            let raw = std::mem::take(&mut c.raw);
+            if !raw.is_empty() && keeps_copy(u) {
+                let (path, who) = (u.store.contacts_cache.clone(), account(u));
+                bg(
+                    move || crate::snapshot::save_contacts(&path, &who, &raw),
+                    |_| {},
+                );
+            }
             {
                 let mut st = u.st.borrow_mut();
+                st.contacts_cached = false;
                 // a photo added, changed or removed since is picked up, the others stay
                 let old = st.contacts.take();
                 st.avatar_tex.retain(|key, t| {
@@ -1851,8 +1873,11 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             }
         }
         Event::Connected => {
-            if u.st.borrow().contacts.is_none() {
-                u.send(Cmd::Contacts);
+            {
+                let st = u.st.borrow();
+                if st.contacts.is_none() || st.contacts_cached {
+                    u.send(Cmd::Contacts);
+                }
             }
             u.st.borrow_mut().connected = true;
             u.ever_connected.set(true);
@@ -1961,6 +1986,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 );
             }
             u.side_stack.set_visible_child_name("list");
+            snapshot_soon(u);
             prof_list(u, "Event::Chats rendered");
             let first = {
                 let st = u.st.borrow();
@@ -4613,10 +4639,102 @@ fn update_title(u: &Ui) {
     }
 }
 
+/// The account the local copy belongs to.
+fn account(u: &Ui) -> String {
+    let st = u.st.borrow();
+    format!("{}@{}", st.cfg.user, st.cfg.host)
+}
+
+/// Whether the local copy (see snapshot.rs) is in use: switched on in Settings, and not the demo.
+fn keeps_copy(u: &Ui) -> bool {
+    let st = u.st.borrow();
+    st.cfg.local_cache && !st.cfg.host.is_empty() && st.cfg.host != "demo"
+}
+
+fn clear_snapshot(u: &Ui) {
+    crate::snapshot::clear(&[&u.store.chats_cache, &u.store.contacts_cache]);
+}
+
+/// Save the chat list and the previews of its rows a few seconds after the last change (one timer at a time).
+fn snapshot_soon(u: &Rc<Ui>) {
+    if !keeps_copy(u) || u.snap_queued.replace(true) {
+        return;
+    }
+    let u = u.clone();
+    glib::timeout_add_local_once(Duration::from_secs(3), move || {
+        u.snap_queued.set(false);
+        if !keeps_copy(&u) {
+            return;
+        }
+        let (chats, previews, keep) = {
+            let st = u.st.borrow();
+            if !st.chats_loaded {
+                return;
+            }
+            let chats: Vec<Value> = st.raw_chats.iter().take(CHATS_PAGE).cloned().collect();
+            // previews are filed under a merged chat's id as well as the chats' own
+            let keep: HashSet<i64> = chats
+                .iter()
+                .chain(&st.chats)
+                .filter_map(|c| c["id"].as_i64())
+                .collect();
+            let previews: HashMap<i64, Value> = st
+                .preview
+                .iter()
+                .filter(|(id, _)| keep.contains(id))
+                .map(|(id, m)| (*id, m.clone()))
+                .collect();
+            (chats, previews, keep)
+        };
+        let (path, who) = (u.store.chats_cache.clone(), account(&u));
+        bg(
+            move || crate::snapshot::save_chats(&path, &who, &chats, &previews, &keep),
+            |_| {},
+        );
+    });
+}
+
+/// Show the saved chat list and contacts right away, by handing them to the same code the Mac's answers go through.
+/// Whatever the Mac sends later replaces them; if its answer got here first, the saved part is skipped.
+fn load_snapshot(u: &Rc<Ui>) {
+    if !keeps_copy(u) {
+        return;
+    }
+    let (chats_path, contacts_path, who) = (
+        u.store.chats_cache.clone(),
+        u.store.contacts_cache.clone(),
+        account(u),
+    );
+    let u = u.clone();
+    bg(
+        move || crate::snapshot::load(&chats_path, &contacts_path, &who),
+        move |(chats, contacts)| {
+            if let Some(c) = contacts
+                && u.st.borrow().contacts.is_none()
+            {
+                on_event(&u, Event::Contacts(c));
+                u.st.borrow_mut().contacts_cached = true;
+            }
+            if let Some(s) = chats
+                && !u.st.borrow().chats_loaded
+            {
+                {
+                    let mut st = u.st.borrow_mut();
+                    for (id, m) in s.previews {
+                        st.preview.entry(id).or_insert(m);
+                    }
+                }
+                on_event(&u, Event::Chats(s.chats));
+            }
+        },
+    );
+}
+
 /// A chat's last message arrived: change its row's texts in place. Rebuilding the whole list for each of the
 /// ~60 previews that arrive at start-up cost 25+ ms apiece. Anything the row doesn't hold yet (a new chat, a
 /// pinned chat's tile) goes through a rebuild instead.
 fn update_row(u: &Rc<Ui>, id: i64) {
+    snapshot_soon(u);
     let parts = u.row_parts.borrow().get(&id).cloned();
     let info = {
         let st = u.st.borrow();
@@ -9367,6 +9485,37 @@ fn settings(u: &Rc<Ui>) {
     bg_frame.set_child(Some(&bg));
     grid.attach(&bg_frame, 0, 3, 2, 1);
 
+    // a local copy of the chat list and contacts, so the next start shows them while the Mac is being reached
+    let cache_on = gtk::CheckButton::with_label(
+        "Keep a local copy of my chats and contacts for a faster start",
+    );
+    cache_on.set_active(cfg.local_cache);
+    let cache_help = gtk::Label::new(Some(
+        "The chat list, the last message of each chat and your contacts (names, numbers and photos) are saved on this computer. The next start shows them straight away and swaps in what the Mac sends as soon as it answers. Turning this off deletes the copy.",
+    ));
+    cache_help.set_wrap(true);
+    cache_help.set_max_width_chars(58);
+    cache_help.set_xalign(0.0);
+    cache_help.add_css_class("dim");
+    let cache_clear = gtk::Button::with_label("Clear saved copy");
+    cache_clear.set_halign(gtk::Align::Start);
+    let u2 = u.clone();
+    cache_clear.connect_clicked(move |_| clear_snapshot(&u2));
+    let cache_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    for wd in [
+        cache_on.upcast_ref::<gtk::Widget>(),
+        cache_help.upcast_ref(),
+        cache_clear.upcast_ref(),
+    ] {
+        cache_box.append(wd);
+    }
+    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
+        cache_box.set_property(m, 10);
+    }
+    let cache_frame = gtk::Frame::new(Some("Faster start"));
+    cache_frame.set_child(Some(&cache_box));
+    grid.attach(&cache_frame, 0, 4, 2, 1);
+
     let save = gtk::Button::with_label("Save");
     save.add_css_class("suggested-action");
     let cancel = gtk::Button::with_label("Cancel");
@@ -9427,8 +9576,12 @@ fn settings(u: &Rc<Ui>) {
             sound: chosen.borrow().clone(),
             notify_text: text_pick.selected() as u8,
             autostart: auto_on.is_active(),
+            local_cache: cache_on.is_active(),
             ..u2.st.borrow().cfg.clone()
         };
+        if !cfg.local_cache {
+            clear_snapshot(&u2);
+        }
         crate::save_config(&u2.store.config_file, &cfg);
         let old = std::mem::replace(&mut u2.st.borrow_mut().cfg, cfg.clone());
         if cfg.autostart != old.autostart

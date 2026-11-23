@@ -46,6 +46,8 @@ pub struct Config {
     pub skip_intro: bool,
     /// start hidden in the tray when you log in (only with `tray`)
     pub autostart: bool,
+    /// keep a local copy of the chat list and contacts so the next start shows them at once (`snapshot.rs`)
+    pub local_cache: bool,
 }
 
 pub enum Cmd {
@@ -1167,6 +1169,8 @@ pub struct Contacts {
     by_addr: HashMap<String, usize>,
     /// numbers and emails Messages has an iMessage conversation history with (`addr_key`s)
     imessage: std::collections::HashSet<String>,
+    /// the Mac's text this was read from, for the local copy (`snapshot.rs`); empty when read from that copy
+    pub raw: String,
 }
 
 /// One address-book entry: a display name and every phone number / email it has.
@@ -1184,6 +1188,11 @@ pub struct Person {
 }
 
 impl Contacts {
+    /// How many address-book entries were read.
+    pub fn person_count(&self) -> usize {
+        self.people.len()
+    }
+
     /// The photo (JPEG/PNG bytes) for a phone number or email address, if the contact has one.
     pub fn photo(&self, handle: &str) -> Option<&[u8]> {
         self.index
@@ -1295,7 +1304,9 @@ async fn fetch_contacts(session: &client::Handle<Handler>) -> Option<Contacts> {
         text.push('\n');
         text.push_str(&String::from_utf8_lossy(&m));
     }
-    Some(parse_contacts(&text))
+    let mut contacts = parse_contacts(&text);
+    contacts.raw = text;
+    Some(contacts)
 }
 
 /// `P|<db>:<contact>|<hex photo>` and `K|<db>:<contact>|<number or email>` lines -> lookup table.
