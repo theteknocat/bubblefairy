@@ -2,7 +2,7 @@
 
 BubbleFairy is an open-source (MIT) Linux desktop app for iMessage. The Mac does all of the iMessage work. BubbleFairy is the window on Linux that ferries messages to and from it over the local network.
 
-Status: Phases 1, 1.1, 1.2, the contacts integration, the setup wizard, the app icon, the tray icon and the release workflow are built and tested against the test Mac. What's left is a few small gaps (see the end of each section's "Not done" notes) and the Flathub submission. Features built beyond the original plan (details in `CLAUDE.md`'s Layout notes):
+This file is the design reference: the decisions, what was built and why, and the imsg facts. It stopped being updated at 1.0. Open work and bugs are tracked as [GitHub issues](https://github.com/theteknocat/bubblefairy/issues), and known limits are in `docs/LIMITATIONS.md`. Features built beyond the original plan (details in `CLAUDE.md`'s Layout notes):
 
 - Viewer: video files play in it (copied from the Mac with progress, GStreamer player), YouTube links play in an embedded WebKitGTK view, full screen, prev/next across photos, videos and YouTube (a slide transition for pictures), autoplay only for the item you clicked.
 - Info panel: Photos, Videos (video files plus YouTube links), Files and Links tabs, constant width (4 photo columns), contact cards and maps.
@@ -26,7 +26,7 @@ Status: Phases 1, 1.1, 1.2, the contacts integration, the setup wizard, the app 
 | Mac side | The imsg CLI (MIT, <https://github.com/openclaw/imsg>), pinned to a tested release. BubbleFairy installs its own copy and always uses it, never Homebrew or an existing install. | Every user runs the version we tested. Upgrading, or moving to a fork, means changing the pin in a BubbleFairy release. |
 | Transport | One SSH channel running `imsg rpc` (JSON-RPC 2.0, one JSON object per line). `watch.subscribe` delivers live messages on the same pipe. | One process instead of one per command plus a separate watch stream. Reconnecting is simpler. |
 | Minimum macOS | 14 (Sonoma), because imsg requires it. Tested on 26 (Tahoe). | |
-| Repo | `theteknocat/bubblefairy`, private until the first early release, MIT license. | |
+| Repo | `theteknocat/bubblefairy`, MIT license. | |
 
 ## Architecture
 

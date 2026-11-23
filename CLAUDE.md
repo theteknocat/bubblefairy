@@ -3,7 +3,7 @@
 A Linux desktop iMessage app: Rust + GTK4 with its own CSS look, shipped as a Flatpak (`io.github.theteknocat.BubbleFairy`). It drives the Mac's `imsg rpc` over SSH (the `russh` library, with the app's own key). Repo: `theteknocat/bubblefairy`, branch `main`, MIT license (Peter Epp). The local folder is still named `imsg-linux`.
 
 - **Read `PLAN.md` first.** It holds the decisions, the phases, the design direction, imsg facts, proof-of-concept gotchas and the open questions.
-- Status (2026-11-21): all app features and the setup wizard are built and tested against the test Mac. The app icon is done (`data/icons/.../io.github.theteknocat.BubbleFairy*.svg`, installed by the Flatpak). Left: a few small gaps and the Flatpak/Flathub packaging; see the top of `PLAN.md`. Clicking a notification opens its chat (checked in the installed Flatpak).
+- Status: feature-complete for 1.0; the app icon is done (`data/icons/.../io.github.theteknocat.BubbleFairy*.svg`, installed by the Flatpak). `PLAN.md` is the frozen design reference; open work is tracked as GitHub issues (labels `priority: low`, `future improvement`, `enhancement`, `bug`).
 - Not committed and kept locally for reference until the first build: `poc/imsg-tui` (the working Python/curses proof of concept) and `HANDOFF.md` (its notes, already folded into PLAN.md). Both are excluded through `.git/info/exclude`.
 - Mac under test: macOS 26, imsg 0.21.0 from Homebrew at `/opt/homebrew/bin/imsg`. The app itself never uses `~/.ssh`.
 - **`docs/LIMITATIONS.md` lists every known limitation (missing features, workarounds, state that doesn't sync).** Keep it current whenever one appears, changes or goes away; it feeds the README and the future help dialog.

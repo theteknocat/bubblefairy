@@ -7,7 +7,7 @@ It's a front end for Messages on your Mac, which still does the actual messaging
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-teknocat-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/teknocat)
 If BubbleFairy is useful to you, you can [buy me a coffee](https://buymeacoffee.com/teknocat).
 
-> **Status: early release.** Get the latest `.flatpak` from the [Releases](../../releases) page.
+Get the latest `.flatpak` from the [Releases](../../releases) page.
 
 > ### 🤖 AI Disclosure
 > **I built BubbleFairy with AI, and every line of the code was written by [Claude Code](https://claude.com/claude-code)**
