@@ -40,21 +40,36 @@ pub fn public_url(url: &str) -> bool {
     {
         return false;
     }
+    // an IPv4 address inside an IPv6 one (`::ffff:192.168.1.1`) is judged as the IPv4 address
+    let private_v4 = |a: std::net::Ipv4Addr| {
+        a.is_private()
+            || a.is_loopback()
+            || a.is_link_local()
+            || a.is_unspecified()
+            || a.is_broadcast()
+            || a.octets()[0] == 0
+            || (a.octets()[0] == 100 && a.octets()[1] & 0xc0 == 64) // carrier-grade NAT, also Tailscale
+    };
     match name.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(a)) => {
-            !(a.is_private()
-                || a.is_loopback()
-                || a.is_link_local()
-                || a.is_unspecified()
-                || a.is_broadcast())
+        Ok(std::net::IpAddr::V4(a)) => !private_v4(a),
+        Ok(std::net::IpAddr::V6(a)) => match a.to_ipv4_mapped() {
+            Some(v4) => !private_v4(v4),
+            None => {
+                !(a.is_loopback()
+                    || a.is_unspecified()
+                    || (a.segments()[0] & 0xfe00) == 0xfc00
+                    || (a.segments()[0] & 0xffc0) == 0xfe80)
+            }
+        },
+        // Not an address in the usual form: only a real name passes. Its last part (the top-level domain) is letters
+        // only, or punycode. That rejects a bare name ("printer") and the short or hex forms the system's resolver
+        // still turns into an address ("127.1", "0x7f.0.0.1").
+        Err(_) => {
+            let tld = name.trim_end_matches('.').rsplit('.').next().unwrap_or("");
+            name.contains('.')
+                && (tld.starts_with("xn--")
+                    || (!tld.is_empty() && tld.chars().all(|c| c.is_ascii_lowercase())))
         }
-        Ok(std::net::IpAddr::V6(a)) => {
-            !(a.is_loopback()
-                || a.is_unspecified()
-                || (a.segments()[0] & 0xfe00) == 0xfc00
-                || (a.segments()[0] & 0xffc0) == 0xfe80)
-        }
-        Err(_) => name.contains('.'), // a bare name ("printer") is on the local network
     }
 }
 
@@ -245,7 +260,7 @@ fn attr(tag: &str, name: &str) -> Option<String> {
 }
 
 /// Make `rel` (as written in the page) an absolute address.
-fn resolve(base: &str, rel: &str) -> String {
+pub fn resolve(base: &str, rel: &str) -> String {
     if rel.starts_with("http://") || rel.starts_with("https://") {
         return rel.to_string();
     }
@@ -399,6 +414,8 @@ mod tests {
             "https://example.com/a",
             "http://93.184.216.34/x",
             "https://user@example.org:8443/p",
+            "https://example.com./a",
+            "http://[::ffff:93.184.216.34]/",
         ] {
             assert!(public_url(ok), "{ok}");
         }
@@ -412,6 +429,13 @@ mod tests {
             "http://nas.local/",
             "ftp://example.com",
             "http://169.254.1.1",
+            "http://127.1/",
+            "http://192.168.1/",
+            "http://0x7f.0x0.0x0.0x1/",
+            "http://[::ffff:192.168.1.1]/",
+            "http://[::ffff:127.0.0.1]:8080/",
+            "http://100.64.0.1/",
+            "http://0.1.2.3/",
         ] {
             assert!(!public_url(no), "{no}");
         }

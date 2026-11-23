@@ -7036,29 +7036,70 @@ fn request_web_preview(u: &Rc<Ui>, url: &str) {
     });
 }
 
+/// GET a public web address: the body and the address it came from after any redirects. Redirects are followed here,
+/// not by libsoup, so that every address on the way gets the public-address check (a public page could otherwise send
+/// us to a local one).
 async fn web_get(
     session: &webkit6::soup::Session,
     url: &str,
     max: usize,
     html: bool,
-) -> Option<Vec<u8>> {
-    use webkit6::soup::prelude::*;
-    let msg = webkit6::soup::Message::new("GET", url).ok()?;
-    let bytes = session
-        .send_and_read_future(&msg, glib::Priority::DEFAULT)
-        .await
-        .ok()?;
-    let is_html = msg
-        .response_headers()
-        .and_then(|h| h.content_type())
-        .is_some_and(|(t, _)| t.contains("html"));
-    (msg.status() == webkit6::soup::Status::Ok && bytes.len() <= max && is_html == html)
-        .then(|| bytes.to_vec())
+) -> Option<(Vec<u8>, String)> {
+    use webkit6::soup::{MessageFlags, Status, prelude::*};
+    let mut url = url.to_string();
+    for _ in 0..5 {
+        if !crate::webpreview::public_url(&url) {
+            return None;
+        }
+        let msg = webkit6::soup::Message::new("GET", &url).ok()?;
+        msg.add_flags(MessageFlags::NO_REDIRECT);
+        // the headers arrive first; the body is read below in pieces, so a huge one never lands in memory
+        let stream = session
+            .send_future(&msg, glib::Priority::DEFAULT)
+            .await
+            .ok()?;
+        if matches!(
+            msg.status(),
+            Status::MovedPermanently
+                | Status::Found
+                | Status::SeeOther
+                | Status::TemporaryRedirect
+                | Status::PermanentRedirect
+        ) {
+            let to = msg.response_headers()?.one("Location")?;
+            url = crate::webpreview::resolve(&url, to.trim());
+            continue;
+        }
+        let headers = msg.response_headers()?;
+        let is_html = headers
+            .content_type()
+            .is_some_and(|(t, _)| t.contains("html"));
+        if msg.status() != Status::Ok || is_html != html || headers.content_length() > max as i64 {
+            return None;
+        }
+        // a server that never stops sending is cut off at `max` (the idle timeout alone would never fire)
+        let mut body = Vec::new();
+        loop {
+            let chunk = stream
+                .read_bytes_future(64 * 1024, glib::Priority::DEFAULT)
+                .await
+                .ok()?;
+            if chunk.is_empty() {
+                return Some((body, url));
+            }
+            body.extend_from_slice(&chunk);
+            if body.len() > max {
+                return None;
+            }
+        }
+    }
+    None
 }
 
 async fn fetch_web_preview(u: &Rc<Ui>, url: &str) -> Option<crate::mac::LinkPreview> {
-    let body = web_get(&u.web, url, 3_000_000, true).await?;
-    let page = crate::webpreview::parse(&String::from_utf8_lossy(&body), url);
+    // relative picture and icon addresses are relative to the page we ended on, not the link as sent
+    let (body, reached) = web_get(&u.web, url, 3_000_000, true).await?;
+    let page = crate::webpreview::parse(&String::from_utf8_lossy(&body), &reached);
     if page.title.is_empty() && page.image.is_none() {
         return None;
     }
@@ -7086,7 +7127,7 @@ async fn fetch_web_picture(
     max: usize,
 ) -> Option<(String, (i32, i32))> {
     let url = url.filter(|i| crate::webpreview::public_url(i))?;
-    let bytes = web_get(&u.web, &url, max, false).await?;
+    let (bytes, _) = web_get(&u.web, &url, max, false).await?;
     let size = crate::webpreview::image_size(&bytes)?;
     let key = format!("web:{url}");
     let _ = std::fs::create_dir_all(&u.store.image_cache);

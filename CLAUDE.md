@@ -19,6 +19,13 @@ A Linux desktop iMessage app: Rust + GTK4 with its own CSS look, shipped as a Fl
 - `scripts/flatpak.sh` builds and installs the real Flatpak for the user (manifest `flatpak/io.github.theteknocat.BubbleFairy.yml`, local-only: cargo downloads crates; desktop file and metainfo in `data/`); run it with `flatpak run io.github.theteknocat.BubbleFairy`. It shares its data folders with `scripts/dev.sh`.
 - GTK CSS `@media (prefers-color-scheme)` did not fire for an app provider (GTK 4.24), so dark mode is a `window.dark` class set from `gtk-interface-color-scheme` in `ui.rs`.
 
+## Code standard and lint exceptions
+
+- Config: `rustfmt.toml` (edition 2024, `max_width = 100`, `use_field_init_shorthand`) and `[lints.clippy]` in `Cargo.toml` (`dbg_macro`, `todo`, `unwrap_used` on top of the default set). Before committing: `cargo fmt`, `scripts/dev.sh clippy` and `scripts/dev.sh test`, all clean. First `cargo fmt` of an old file goes in its own commit.
+- Exceptions are `#[allow(...)]` as narrow as possible with a one-line reason beside them, so `grep -rn "allow(" src` lists them all. Today: `unwrap_used` for `Mutex::lock().unwrap()` (module level in `mac.rs` and `setup.rs`, one statement in `ui.rs`: a poisoned lock means another thread panicked, so crashing shows the bug), `demo.rs` (dev-only fixtures), and `deprecated` on one `Texture::for_pixbuf` call. Other `unwrap`s were replaced with `if let` / `?`.
+- Doc comments are `///` with a one-line summary first; no `@author`-style tags. Repeated code is made DRY (one helper, a test if the logic is risky) unless there is a major trade-off.
+- Audits: `docs/ponytail-audit-YYYY-MM-DD.md` (a second run the same day gets `-2`), each finding logged with its fix or skip reason, one commit per round; the log ends with a "Not read" list that sets the next scope. Round 1 (2026-11-22) covered `mac.rs`, `setup.rs`, `webpreview.rs`, `snapshot.rs`.
+
 ## Layout
 
 - `src/main.rs`: paths, config file (`key=value` lines), tokio runtime, GTK app startup, CSS loading.

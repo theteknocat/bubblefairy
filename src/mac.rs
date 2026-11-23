@@ -389,6 +389,14 @@ pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// A path on the Mac as one shell word: `~/x y` becomes `"$HOME"/'x y'` (the shell won't expand `~` inside quotes),
+/// anything else is just quoted.
+fn remote_path(path: &str) -> String {
+    path.strip_prefix("~/")
+        .map(|p| format!("\"$HOME\"/{}", sh_quote(p)))
+        .unwrap_or_else(|| sh_quote(path))
+}
+
 /// Load the app's own ed25519 key, creating it on first run. Returns the public key line.
 pub fn ensure_key(path: &PathBuf) -> std::io::Result<String> {
     use russh::keys::ssh_key::{LineEnding, private::Ed25519Keypair};
@@ -658,10 +666,7 @@ async fn fetch_image(session: &client::Handle<Handler>, path: &str, max: u32) ->
     // ponytail: animated GIFs arrive as a still frame; keep them as-is when animation matters
     // link-preview payloads are plain PNG/JPEG/ICO, and Quick Look hangs on their unknown extension
     let ql = !path.ends_with(".pluginPayloadAttachment");
-    let path = path
-        .strip_prefix("~/")
-        .map(|p| format!("\"$HOME\"/{}", sh_quote(p)))
-        .unwrap_or_else(|| sh_quote(path));
+    let path = remote_path(path);
     let ql = if ql {
         // Quick Look applies the photo's rotation (HEIC `irot`), which sips ignores; sips is the fallback.
         // The watchdog stops a stuck qlmanage from holding this channel forever. Its output goes to /dev/null: the
@@ -746,15 +751,7 @@ async fn search_counts(session: &client::Handle<Handler>, q: &str) -> HashMap<i6
         "select j.chat_id||'⁂'||count(*) from message m join chat_message_join j on j.message_id=m.ROWID where m.associated_message_type=0 and {} group by j.chat_id",
         match_sql(&lit)
     );
-    let out = exec(
-        session,
-        format!(
-            "sqlite3 -readonly ~/Library/Messages/chat.db {}",
-            sh_quote(&sql)
-        ),
-    )
-    .await
-    .unwrap_or_default();
+    let out = chat_db_out(session, &sql).await.unwrap_or_default();
     String::from_utf8_lossy(&out)
         .lines()
         .filter_map(|l| {
@@ -795,15 +792,7 @@ async fn search_hits(
          order by m.date desc limit {candidates}",
         match_sql(&lit)
     );
-    let out = exec(
-        session,
-        format!(
-            "sqlite3 -readonly ~/Library/Messages/chat.db {}",
-            sh_quote(&sql)
-        ),
-    )
-    .await
-    .unwrap_or_default();
+    let out = chat_db_out(session, &sql).await.unwrap_or_default();
     String::from_utf8_lossy(&out)
         .lines()
         .filter_map(|l| parse_hit(l, &needle, q))
@@ -843,16 +832,21 @@ fn parse_hit(line: &str, needle: &str, q: &str) -> Option<Value> {
     )
 }
 
-/// One line of output from a read-only query on the Mac's chat.db.
-async fn chat_db(session: &client::Handle<Handler>, sql: &str) -> Option<String> {
-    let out = exec(
+/// Run a read-only SQL query on the Mac's chat.db and return what `sqlite3` printed (None: nothing came back).
+async fn chat_db_out(session: &client::Handle<Handler>, sql: &str) -> Option<Vec<u8>> {
+    exec(
         session,
         format!(
             "sqlite3 -readonly ~/Library/Messages/chat.db {}",
             sh_quote(sql)
         ),
     )
-    .await?;
+    .await
+}
+
+/// One line of output from a read-only query on the Mac's chat.db.
+async fn chat_db(session: &client::Handle<Handler>, sql: &str) -> Option<String> {
+    let out = chat_db_out(session, sql).await?;
     Some(String::from_utf8_lossy(&out).trim().to_string()).filter(|s| !s.is_empty())
 }
 
@@ -995,15 +989,7 @@ async fn add_services(session: &client::Handle<Handler>, msgs: &mut [Value]) {
          ||'|'||coalesce((select id from handle where ROWID=m.other_handle),'')||'|'||hex(coalesce(m.group_title,'')) from message m where m.ROWID in ({})",
         ids.join(",")
     );
-    let Some(out) = exec(
-        session,
-        format!(
-            "sqlite3 -readonly ~/Library/Messages/chat.db {}",
-            sh_quote(&sql)
-        ),
-    )
-    .await
-    else {
+    let Some(out) = chat_db_out(session, &sql).await else {
         return;
     };
     let text = String::from_utf8_lossy(&out);
@@ -1059,14 +1045,7 @@ async fn find_chat(session: &client::Handle<Handler>, addrs: &[String]) -> Optio
          strftime('%Y-%m-%dT%H:%M:%SZ', coalesce((select max(m.date) from message m join chat_message_join j on j.message_id=m.ROWID where j.chat_id=c.ROWID),0)/1000000000+978307200, 'unixepoch') \
          from chat c where c.style=45 and {cond} order by 4 desc limit 1"
     );
-    let out = exec(
-        session,
-        format!(
-            "sqlite3 -readonly ~/Library/Messages/chat.db {}",
-            sh_quote(&sql)
-        ),
-    )
-    .await?;
+    let out = chat_db_out(session, &sql).await?;
     let text = String::from_utf8_lossy(&out).into_owned();
     let r: Vec<&str> = text.lines().next()?.split('|').collect();
     let ident = hex_text(r.get(1)?);
@@ -1127,15 +1106,7 @@ async fn query_chats(session: &client::Handle<Handler>, cond: &str) -> Vec<Value
          coalesce((select group_concat(hex(h2.id),',') from chat_handle_join hj2 join handle h2 on h2.ROWID=hj2.handle_id where hj2.chat_id=c.ROWID),'') \
          from chat c where {cond}"
     );
-    let Some(out) = exec(
-        session,
-        format!(
-            "sqlite3 -readonly ~/Library/Messages/chat.db {}",
-            sh_quote(&sql)
-        ),
-    )
-    .await
-    else {
+    let Some(out) = chat_db_out(session, &sql).await else {
         return Vec::new();
     };
     String::from_utf8_lossy(&out)
@@ -1292,15 +1263,7 @@ async fn fetch_contacts(session: &client::Handle<Handler>) -> Option<Contacts> {
     let mut text = String::from_utf8_lossy(&out).into_owned();
     // which numbers and emails Messages has iMessage conversations with
     let q = "select 'M|'||id from handle where service='iMessage'";
-    if let Some(m) = exec(
-        session,
-        format!(
-            "sqlite3 -readonly ~/Library/Messages/chat.db {}",
-            sh_quote(q)
-        ),
-    )
-    .await
-    {
+    if let Some(m) = chat_db_out(session, q).await {
         text.push('\n');
         text.push_str(&String::from_utf8_lossy(&m));
     }
@@ -1449,10 +1412,7 @@ async fn file_info(
     path: &str,
     contact: bool,
 ) -> Option<FileInfo> {
-    let p = path
-        .strip_prefix("~/")
-        .map(|p| format!("\"$HOME\"/{}", sh_quote(p)))
-        .unwrap_or_else(|| sh_quote(path));
+    let p = remote_path(path);
     let script = if contact {
         format!(
             r#"f={p}; for k in FN ORG TEL; do v=$(tr -d '\r' < "$f" | sed -n "s/^$k[^:]*://p" | head -n 1 | tr ';' ' '); printf '%s\n' "$v"; done"#
@@ -1498,10 +1458,7 @@ async fn download(
 ) -> Result<(), String> {
     use std::io::Write;
     let _permit = CHANNELS.acquire().await.map_err(|_| "busy".to_string())?;
-    let remote = path
-        .strip_prefix("~/")
-        .map(|p| format!("\"$HOME\"/{}", sh_quote(p)))
-        .unwrap_or_else(|| sh_quote(path));
+    let remote = remote_path(path);
     if let Some(dir) = dest.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -1691,14 +1648,7 @@ async fn chat_media(
             )
         }
     };
-    let out = exec(
-        session,
-        format!(
-            "sqlite3 -readonly ~/Library/Messages/chat.db {}",
-            sh_quote(&sql)
-        ),
-    )
-    .await;
+    let out = chat_db_out(session, &sql).await;
     let text = out
         .map(|o| String::from_utf8_lossy(&o).into_owned())
         .unwrap_or_default();
@@ -1960,14 +1910,7 @@ async fn link_preview(session: &client::Handle<Handler>, rowid: i64) -> Option<L
          select a.filename from attachment a join message_attachment_join j on j.attachment_id=a.ROWID \
          where j.message_id={rowid} order by j.ROWID;"
     );
-    let out = exec(
-        session,
-        format!(
-            "sqlite3 -readonly ~/Library/Messages/chat.db {}",
-            sh_quote(&sql)
-        ),
-    )
-    .await?;
+    let out = chat_db_out(session, &sql).await?;
     let text = String::from_utf8_lossy(&out);
     let mut lines = text.lines();
     let bytes = hex(lines.next()?)?;
@@ -1975,10 +1918,7 @@ async fn link_preview(session: &client::Handle<Handler>, rowid: i64) -> Option<L
     let mut p = parse_link(&bytes, &files)?;
     let measure = |f: Option<String>| async move {
         let img = f?;
-        let path = img
-            .strip_prefix("~/")
-            .map(|r| format!("\"$HOME\"/{}", sh_quote(r)))
-            .unwrap_or_else(|| sh_quote(&img));
+        let path = remote_path(&img);
         let out = exec(session, format!("sips -g pixelWidth -g pixelHeight {path}")).await;
         out.and_then(|o| parse_size(&String::from_utf8_lossy(&o)))
     };
@@ -2080,11 +2020,9 @@ async fn upload(session: &client::Handle<Handler>, file: &Path) -> Result<String
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "attachment".into());
-    let owned = file.to_path_buf();
-    let bytes = tokio::task::spawn_blocking(move || std::fs::read(owned))
+    // opened now (so a missing or unreadable file fails early) and sent in pieces, never all held in memory
+    let source = tokio::fs::File::open(file)
         .await
-        .map_err(|e| e.to_string())
-        .and_then(|r| r.map_err(|e| e.to_string()))
         .map_err(|e| format!("can't read {name}: {e}"))?;
     let fail = || format!("couldn't copy {name} to the Mac");
     let cmd = format!(
@@ -2096,7 +2034,7 @@ async fn upload(session: &client::Handle<Handler>, file: &Path) -> Result<String
     let _permit = CHANNELS.acquire().await.map_err(|_| fail())?;
     let mut ch = session.channel_open_session().await.map_err(|_| fail())?;
     ch.exec(true, cmd).await.map_err(|_| fail())?;
-    ch.data(&bytes[..]).await.map_err(|_| fail())?;
+    ch.data(source).await.map_err(|_| fail())?;
     ch.eof().await.map_err(|_| fail())?;
     let mut out = Vec::new();
     while let Some(msg) = ch.wait().await {
@@ -2135,15 +2073,7 @@ async fn fix_unread(session: &client::Handle<Handler>, chats: &mut [Value]) {
          from chat c where c.ROWID in ({})",
         ids.join(",")
     );
-    let Some(out) = exec(
-        session,
-        format!(
-            "sqlite3 -readonly ~/Library/Messages/chat.db {}",
-            sh_quote(&sql)
-        ),
-    )
-    .await
-    else {
+    let Some(out) = chat_db_out(session, &sql).await else {
         return;
     };
     for (id, n) in String::from_utf8_lossy(&out)
@@ -2176,15 +2106,7 @@ async fn fix_last_message(session: &client::Handle<Handler>, chats: &mut [Value]
          join message m on m.ROWID=j.message_id where j.chat_id in ({}) and m.item_type=0 group by j.chat_id",
         ids.join(",")
     );
-    let Some(out) = exec(
-        session,
-        format!(
-            "sqlite3 -readonly ~/Library/Messages/chat.db {}",
-            sh_quote(&sql)
-        ),
-    )
-    .await
-    else {
+    let Some(out) = chat_db_out(session, &sql).await else {
         return;
     };
     let mut real = std::collections::HashSet::new();
@@ -2335,14 +2257,7 @@ async fn handle(
                  where j.chat_id in ({}) and m.is_from_me=1 order by m.date desc limit 1",
                 id_list(id)
             );
-            let out = exec(
-                &session,
-                format!(
-                    "sqlite3 -readonly ~/Library/Messages/chat.db {}",
-                    sh_quote(&sql)
-                ),
-            )
-            .await;
+            let out = chat_db_out(&session, &sql).await;
             let receipt = out.and_then(|o| parse_receipt(&String::from_utf8_lossy(&o)));
             let _ = ev.send(Event::Receipt(id, receipt));
         }
@@ -2665,6 +2580,20 @@ mod tests {
             None,
             "a candidate that doesn't really match"
         );
+    }
+
+    #[test]
+    fn a_path_on_the_mac_is_one_safe_shell_word() {
+        use super::remote_path;
+        // `~/` is turned into $HOME outside the quotes, so the shell expands it and nothing else
+        assert_eq!(
+            remote_path("~/Library/a b.png"),
+            r#""$HOME"/'Library/a b.png'"#
+        );
+        assert_eq!(remote_path("/tmp/x.jpg"), "'/tmp/x.jpg'");
+        // a quote can't end the quoting early
+        assert_eq!(remote_path("/tmp/it's"), r#"'/tmp/it'\''s'"#);
+        assert_eq!(remote_path("~/$(rm -rf x)"), r#""$HOME"/'$(rm -rf x)'"#);
     }
 
     use super::*;
