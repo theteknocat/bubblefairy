@@ -1,0 +1,42 @@
+# Formatting, Clippy and the tests on every push to main and every pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add rustfmt
+      - run: cargo fmt --check
+
+  # The app needs GTK 4, WebKit and GStreamer development files, so Clippy and the tests run in the same GNOME SDK
+  # that scripts/dev.sh uses on a developer's machine.
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/sdk
+          key: ci-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ci-
+      - name: Install the GNOME SDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.gnome.Sdk//51 org.gnome.Platform//51 org.freedesktop.Sdk.Extension.rust-stable//26.08
+          mkdir -p ~/.cargo
+      - name: Clippy (all targets, warnings are errors)
+        run: scripts/dev.sh clippy --all-targets -- -D warnings
+      - name: Tests
+        run: scripts/dev.sh test
