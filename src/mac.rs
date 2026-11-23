@@ -2116,7 +2116,9 @@ async fn upload(session: &client::Handle<Handler>, file: &Path) -> Result<String
 
 /// imsg counts unread from each message's `is_read` flag, which can stay unset after the chat was
 /// read on another device. Messages itself also honours the chat's `last_read_message_timestamp`,
-/// so count only messages that are unread by both.
+/// so count only messages that are unread by both. Only real messages count: group events (someone joined, left or
+/// renamed the chat, `item_type` != 0) and tapbacks (`associated_message_type` != 0) stay unread forever in the
+/// database, and Messages doesn't badge them.
 async fn fix_unread(session: &client::Handle<Handler>, chats: &mut [Value]) {
     let ids: Vec<String> = chats
         .iter()
@@ -2128,7 +2130,8 @@ async fn fix_unread(session: &client::Handle<Handler>, chats: &mut [Value]) {
     }
     let sql = format!(
         "select c.ROWID||'|'||(select count(*) from chat_message_join j join message m on m.ROWID=j.message_id \
-         where j.chat_id=c.ROWID and m.is_from_me=0 and m.is_read=0 and m.date > c.last_read_message_timestamp) \
+         where j.chat_id=c.ROWID and m.is_from_me=0 and m.is_read=0 and m.item_type=0 and m.associated_message_type=0 \
+         and m.date > c.last_read_message_timestamp) \
          from chat c where c.ROWID in ({})",
         ids.join(",")
     );
