@@ -359,11 +359,8 @@ impl Ui {
     }
 }
 
-/// The header's name: the bubble-and-wand mark, then "Bubble" in blue and "Fairy" in pink.
-fn brand() -> gtk::Box {
-    let b = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let icon = gtk::Image::from_icon_name("bf-mark");
-    icon.set_pixel_size(32);
+/// "Bubble" in blue and "Fairy" in pink.
+fn wordmark() -> gtk::Box {
     let name = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     for (text, class) in [("Bubble", "brand-b"), ("Fairy", "brand-f")] {
         let l = gtk::Label::new(Some(text));
@@ -371,8 +368,16 @@ fn brand() -> gtk::Box {
         l.add_css_class(class);
         name.append(&l);
     }
+    name
+}
+
+/// The header's name: the bubble-and-wand mark, then the wordmark.
+fn brand() -> gtk::Box {
+    let b = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let icon = gtk::Image::from_icon_name("bf-mark");
+    icon.set_pixel_size(32);
     b.append(&icon);
-    b.append(&name);
+    b.append(&wordmark());
     b
 }
 
@@ -1700,7 +1705,7 @@ pub fn build(
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
     {
-        // dev aid: open Settings after <ms>; BF_SETTINGS_TAB=mac shows the second tab, BF_SETTINGS_SHOT=<png> saves the dialog 1.5 s later
+        // dev aid: open Settings after <ms>; BF_SETTINGS_TAB=mac|about shows that tab, BF_SETTINGS_SHOT=<png> saves the dialog 1.5 s later
         let u = ui.clone();
         glib::timeout_add_local_once(Duration::from_millis(ms), move || settings(&u));
     }
@@ -9135,7 +9140,23 @@ fn tab_switcher(stack: &gtk::Stack, items: &[(&'static str, &str)]) -> gtk::Box 
     let mut group: Option<gtk::ToggleButton> = None;
     let mut tabs = Vec::new();
     for (i, (name, label)) in items.iter().enumerate() {
-        let t = gtk::ToggleButton::with_label(label);
+        // the label, with an invisible bold copy in the same spot: the button is always as wide as its bold form, so
+        // the active tab (bold) never changes the widths
+        let t = gtk::ToggleButton::new();
+        let both = gtk::Grid::new();
+        let shown = gtk::Label::new(Some(label));
+        shown.set_hexpand(true);
+        let twin = gtk::Label::builder()
+            .accessible_role(gtk::AccessibleRole::Presentation)
+            .opacity(0.0)
+            .can_target(false)
+            .hexpand(true)
+            .build();
+        twin.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(label)));
+        both.attach(&shown, 0, 0, 1, 1);
+        both.attach(&twin, 0, 0, 1, 1);
+        t.set_child(Some(&both));
+        t.update_property(&[gtk::accessible::Property::Label(label)]);
         t.add_css_class("info-tab");
         t.set_hexpand(true);
         t.set_group(group.as_ref());
@@ -9160,6 +9181,63 @@ fn tab_switcher(stack: &gtk::Stack, items: &[(&'static str, &str)]) -> gtk::Box 
     switcher
 }
 
+/// Settings > About: name, version, licence and where to find the project.
+fn about_tab() -> gtk::Box {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    page.set_valign(gtk::Align::Start);
+    page.set_halign(gtk::Align::Center);
+    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
+        page.set_property(m, 18);
+    }
+    let icon = gtk::Image::from_icon_name("bf-mark");
+    icon.set_pixel_size(96);
+    page.append(&icon);
+    let name = wordmark();
+    name.set_halign(gtk::Align::Center);
+    page.append(&name);
+    let line = |text: &str, dim: bool| {
+        let l = gtk::Label::new(Some(text));
+        l.set_wrap(true);
+        l.set_justify(gtk::Justification::Center);
+        l.set_max_width_chars(48);
+        if dim {
+            l.add_css_class("dim");
+        }
+        l
+    };
+    page.append(&line(
+        &format!("Version {}", env!("CARGO_PKG_VERSION")),
+        false,
+    ));
+    page.append(&line(
+        "A Linux front end for Messages on your Mac. The Mac does the actual messaging.",
+        true,
+    ));
+    page.append(&line(
+        &format!(
+            "© 2026 Peter Epp. Released under the {} licence.",
+            env!("CARGO_PKG_LICENSE")
+        ),
+        true,
+    ));
+    let links = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    links.set_halign(gtk::Align::Center);
+    links.set_margin_top(8);
+    let repo = env!("CARGO_PKG_REPOSITORY");
+    for (label, url) in [
+        ("Project page", repo.to_string()),
+        ("Report a problem", format!("{repo}/issues")),
+        (
+            "Known limitations",
+            format!("{repo}/blob/main/docs/LIMITATIONS.md"),
+        ),
+    ] {
+        links.append(&gtk::LinkButton::with_label(&url, label));
+    }
+    page.append(&links);
+    page
+}
+
 /// Settings' second tab: where BubbleFairy connects, read only. Changing any of it is what the setup wizard is for.
 fn mac_tab(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Box {
     let cfg = u.st.borrow().cfg.clone();
@@ -9167,6 +9245,7 @@ fn mac_tab(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Box {
     for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
         page.set_property(m, 18);
     }
+    let mut in_card = None;
     if cfg.host.is_empty() {
         let l = gtk::Label::new(Some("Not set up yet."));
         l.set_xalign(0.0);
@@ -9228,17 +9307,19 @@ fn mac_tab(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Box {
         let frame = gtk::Frame::new(None);
         frame.set_child(Some(&card));
         page.append(&frame);
+        in_card = Some(card);
     }
     let redo = gtk::Button::with_label("Set up again…");
     redo.add_css_class("wiz-next");
-    redo.set_halign(gtk::Align::Start);
-    redo.set_margin_top(6);
+    redo.set_halign(gtk::Align::Center);
+    redo.set_margin_top(14);
     let (u2, w2) = (u.clone(), win.clone());
     redo.connect_clicked(move |_| {
         w2.close();
         start_setup(&u2, true);
     });
-    page.append(&redo);
+    // inside the box with the connection details when there are some, else just below the message
+    in_card.as_ref().unwrap_or(&page).append(&redo);
     page
 }
 
@@ -9613,7 +9694,15 @@ fn settings(u: &Rc<Ui>) {
             .build(),
         Some("mac"),
     );
-    let tabs = tab_switcher(&pages, &[("app", "Settings"), ("mac", "Mac connection")]);
+    pages.add_named(&about_tab(), Some("about"));
+    let tabs = tab_switcher(
+        &pages,
+        &[
+            ("app", "Settings"),
+            ("mac", "Mac connection"),
+            ("about", "About"),
+        ],
+    );
     tabs.set_halign(gtk::Align::Center);
     tabs.set_hexpand(false);
     tabs.set_margin_bottom(10);
@@ -9685,8 +9774,8 @@ fn settings(u: &Rc<Ui>) {
         w2.close();
     });
     w.present();
-    if std::env::var("BF_SETTINGS_TAB").as_deref() == Ok("mac") {
-        pages.set_visible_child_name("mac");
+    if let Ok(tab @ ("mac" | "about")) = std::env::var("BF_SETTINGS_TAB").as_deref() {
+        pages.set_visible_child_name(tab);
     }
     if let Some(out) = std::env::var_os("BF_SETTINGS_SHOT") {
         let w = w.clone();

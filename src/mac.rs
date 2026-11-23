@@ -1114,11 +1114,23 @@ async fn query_chats(session: &client::Handle<Handler>, cond: &str) -> Vec<Value
         .filter_map(|l| {
             let f: Vec<&str> = l.split('|').collect();
             let group = f.get(3)? == &"43";
-            let members: Vec<String> = f.get(6)?.split(',').filter(|h| !h.is_empty()).map(hex_text).collect();
+            let members: Vec<String> = f
+                .get(6)?
+                .split(',')
+                .filter(|h| !h.is_empty())
+                .map(hex_text)
+                .collect();
             let ident = hex_text(f.get(1)?);
-            Some(json!({"id": f.first()?.parse::<i64>().ok()?, "display_name": hex_text(f.get(2)?), "identifier": ident,
-                "participants": if members.is_empty() { vec![ident.clone()] } else { members }, "service": f.get(4)?,
-                "is_group": group, "unread_count": 0, "last_message_at": f.get(5)?}))
+            Some(json!({
+                "id": f.first()?.parse::<i64>().ok()?,
+                "display_name": hex_text(f.get(2)?),
+                "identifier": ident,
+                "participants": if members.is_empty() { vec![ident.clone()] } else { members },
+                "service": f.get(4)?,
+                "is_group": group,
+                "unread_count": 0,
+                "last_message_at": f.get(5)?,
+            }))
         })
         .collect()
 }
@@ -2522,10 +2534,16 @@ pub async fn run(
                 c = cmds.recv() => match c {
                     None => return,
                     // only a change to how we connect needs a new connection; the other settings just apply
-                    Some(Cmd::Configure(c)) if c.connection() != cfg.connection() => { cfg = c; break; }
+                    Some(Cmd::Configure(c)) if c.connection() != cfg.connection() => {
+                        cfg = c;
+                        break;
+                    }
                     Some(Cmd::Configure(c)) => cfg = c,
                     Some(Cmd::Merge(groups)) => apply_merge(groups),
-                    Some(c) => { tokio::spawn(handle(c, conn.rpc.clone(), conn.session.clone(), ev.clone())); }
+                    Some(c) => {
+                        let (rpc, session) = (conn.rpc.clone(), conn.session.clone());
+                        tokio::spawn(handle(c, rpc, session, ev.clone()));
+                    }
                 },
             }
         }

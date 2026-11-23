@@ -56,3 +56,13 @@ widgets, the sidebar list and pins, search widgets, the info panel's tiles, the 
 `src/viewer.rs` beyond YouTube and the size checks, `src/bubble.rs` and `src/chatscroll.rs` drawing, `src/pilllabel.rs`,
 `src/demo.rs` (dev only), and the wizard's page code in `src/setup.rs`. These are mostly layout and drawing with no outside
 input, so the expected yield is low.
+
+## After round 3: formatting that `cargo fmt --check` doesn't see
+
+Tip from the other session: rustfmt skips a block it can't fit in `max_width` without saying so. Checking each file with
+`rustfmt --edition 2024 --check --config max_width=100,error_on_line_overflow=true <file>` found six spots (nothing in `ui.rs`).
+- Fixed (hand formatted, no behaviour change, 30 tests pass): the chat-row parsing in `mac.rs` (a 110 character line and a
+  `json!` on one long line) and two long `select!` arms in `mac::run` (`select!` bodies are never formatted).
+- Left: `chatscroll.rs` lines 50 and 52 (`#[property(...)]` attributes at 101 characters) and `pilllabel.rs` line 13
+  (the `glib::wrapper!` line). rustfmt can't wrap attribute or macro syntax, and splitting them would change nothing real.
+- Not done, Peter's call: adding the stricter check to CI and to the "before committing" line in `CLAUDE.md`.
