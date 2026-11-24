@@ -9144,6 +9144,7 @@ fn tab_switcher(stack: &gtk::Stack, items: &[(&'static str, &str)]) -> gtk::Box 
         // the active tab (bold) never changes the widths
         let t = gtk::ToggleButton::new();
         let both = gtk::Grid::new();
+        both.set_valign(gtk::Align::Center);
         let shown = gtk::Label::new(Some(label));
         shown.set_hexpand(true);
         let twin = gtk::Label::builder()
