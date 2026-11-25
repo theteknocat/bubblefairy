@@ -3146,8 +3146,12 @@ fn popshot_soon(u: &Rc<Ui>) {
     let Some(path) = std::env::var_os("BF_POPSHOT") else {
         return;
     };
+    let ms = std::env::var("BF_POPSHOT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600);
     let u = u.clone();
-    glib::timeout_add_local_once(Duration::from_millis(600), move || {
+    glib::timeout_add_local_once(Duration::from_millis(ms), move || {
         // the status popover hangs off the pill, the others off the window
         let mut pop = u.status_pop.borrow().clone();
         let mut child = u.win.first_child();
@@ -10809,10 +10813,32 @@ fn show_people(u: &Rc<Ui>, w: &gtk::Widget, members: &[String]) {
 
     let stack = gtk::Stack::new();
     stack.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
-    stack.set_transition_duration(160);
+    stack.set_transition_duration(220);
     stack.set_vhomogeneous(false);
     stack.set_interpolate_size(true);
-
+    // A popover doesn't follow its content's size on its own once it is open, so it is asked to, on every frame of
+    // the slide (the stack interpolates its height between the two pages) and once more when that ends.
+    // (weak references throughout: a strong one in a handler of something inside the popover keeps it all alive)
+    {
+        let pop = pop.downgrade();
+        stack.connect_transition_running_notify(move |st| {
+            let pop = pop.clone();
+            if st.is_transition_running() {
+                st.add_tick_callback(move |st, _| {
+                    if let Some(p) = pop.upgrade() {
+                        p.present();
+                    }
+                    if st.is_transition_running() {
+                        glib::ControlFlow::Continue
+                    } else {
+                        glib::ControlFlow::Break
+                    }
+                });
+            } else if let Some(p) = pop.upgrade() {
+                p.present();
+            }
+        });
+    }
     let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
     list.add_css_class("people-list");
     list.set_size_request(340, -1);
@@ -10821,7 +10847,7 @@ fn show_people(u: &Rc<Ui>, w: &gtk::Widget, members: &[String]) {
     head.set_xalign(0.0);
     list.append(&head);
     let people = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let mut first_row: Option<gtk::Button> = None;
+    let mut rows: Vec<gtk::Button> = Vec::new();
     for h in members {
         let name = names.get(h).cloned().unwrap_or_else(|| pretty_handle(h));
         let row = gtk::Button::new();
@@ -10844,24 +10870,37 @@ fn show_people(u: &Rc<Ui>, w: &gtk::Widget, members: &[String]) {
         }
         line.append(&col);
         row.set_child(Some(&line));
-        let (u2, pop2, stack2, h2, name2, count) = (
+        let (u2, pop2, stack2, list2, h2, name2, count) = (
             u.clone(),
-            pop.clone(),
-            stack.clone(),
+            pop.downgrade(),
+            stack.downgrade(),
+            list.downgrade(),
             h.clone(),
             name.clone(),
             members.len(),
         );
         row.connect_clicked(move |_| {
+            let (Some(pop2), Some(stack2), Some(list2)) =
+                (pop2.upgrade(), stack2.upgrade(), list2.upgrade())
+            else {
+                return;
+            };
             if let Some(old) = stack2.child_by_name("card") {
                 stack2.remove(&old);
             }
             let page = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            // never shorter than the list it slides over from; taller when the card needs it (up to the room there is)
+            page.set_size_request(-1, list2.measure(gtk::Orientation::Vertical, -1).1);
             let back = gtk::Button::with_label(&format!("\u{2039} {count} People"));
             back.add_css_class("flat");
             back.set_halign(gtk::Align::Start);
-            let stack3 = stack2.clone();
-            back.connect_clicked(move |_| stack3.set_visible_child_name("list"));
+            back.set_margin_top(4); // about as far from the top as its text is from the left
+            let stack3 = stack2.downgrade();
+            back.connect_clicked(move |_| {
+                if let Some(st) = stack3.upgrade() {
+                    st.set_visible_child_name("list");
+                }
+            });
             page.append(&back);
             let scroll = gtk::ScrolledWindow::builder()
                 .hscrollbar_policy(gtk::PolicyType::Never)
@@ -10875,7 +10914,7 @@ fn show_people(u: &Rc<Ui>, w: &gtk::Widget, members: &[String]) {
             stack2.set_visible_child_name("card");
             back.grab_focus(); // keep the focus inside the popover: the list's button, which had it, is hidden now
         });
-        first_row.get_or_insert_with(|| row.clone());
+        rows.push(row.clone());
         people.append(&row);
     }
     let scroll = gtk::ScrolledWindow::builder()
@@ -10897,7 +10936,12 @@ fn show_people(u: &Rc<Ui>, w: &gtk::Widget, members: &[String]) {
                 stack2.visible_child_name(),
                 stack2.width()
             );
-            if let Some(b) = first_row {
+            // BF_PEOPLE_ROW=<n>: which person to open (default the first)
+            let n = std::env::var("BF_PEOPLE_ROW")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            if let Some(b) = rows.get(n) {
                 b.emit_clicked();
             }
             let (stack3, pop3) = (stack2.clone(), pop2.clone());

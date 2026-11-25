@@ -26,15 +26,53 @@ fn ago(min: i64) -> String {
         .to_string()
 }
 
+/// A few address-book entries in the Mac's text format, so the contact cards have something to show: Maya,
+/// Priya (first in Hiking Crew's people list) and Omar are long cards (company, numbers, emails, two addresses,
+/// a birthday), which makes the popover grow when one opens.
+fn contacts() -> String {
+    let mut out = String::new();
+    for (owner, name, number, mail, birthday) in [
+        (
+            1,
+            "Maya Thompson",
+            "+15555550101",
+            "maya@example.com",
+            "03-02|1991",
+        ),
+        (
+            2,
+            "Priya Shah",
+            "+15555550105",
+            "priya@example.com",
+            "11-15|",
+        ),
+        (
+            3,
+            "Omar Haddad",
+            "+15555550104",
+            "omar@example.com",
+            "07-30|1984",
+        ),
+    ] {
+        out += &format!(
+            "N|{owner}|{name}|Orchard & Vine Co.\nK|{owner}|{number}|_$!<Mobile>!$_\n\
+             K|{owner}|+1 555 020 {owner}00|work\nK|{owner}|{mail}|home\nK|{owner}|work.{mail}|work\n\
+             A|{owner}|home|12 Orchard Lane|Springfield|IL|62704|USA\n\
+             A|{owner}|work|400 Commerce Street, Suite 12|Springfield|IL|62701|USA\nB|{owner}|{birthday}\n"
+        );
+    }
+    out
+}
+
 fn chats() -> Vec<Value> {
     vec![
-        json!({"id": 1, "contact_name": "Maya Thompson", "participants": ["+15550101"], "service": "iMessage", "is_group": false, "unread_count": 2, "last_message_at": ago(3)}),
-        json!({"id": 2, "display_name": "Book Club 📚", "participants": ["+15550102", "+15550103", "+15550104"], "service": "iMessage", "is_group": true, "unread_count": 0, "last_message_at": ago(40)}),
-        json!({"id": 3, "participants": ["+15550199"], "service": "SMS", "is_group": false, "unread_count": 0, "last_message_at": ago(200)}),
+        json!({"id": 1, "contact_name": "Maya Thompson", "participants": ["+15555550101"], "service": "iMessage", "is_group": false, "unread_count": 2, "last_message_at": ago(3)}),
+        json!({"id": 2, "display_name": "Book Club 📚", "participants": ["+15555550102", "+15555550103", "+15555550104"], "service": "iMessage", "is_group": true, "unread_count": 0, "last_message_at": ago(40)}),
+        json!({"id": 3, "participants": ["+15555550199"], "service": "SMS", "is_group": false, "unread_count": 0, "last_message_at": ago(200)}),
         json!({"id": 4, "contact_name": "Dad", "participants": ["dad@example.com"], "service": "iMessage", "is_group": false, "unread_count": 0, "last_message_at": ago(1500)}),
-        json!({"id": 5, "contact_name": "Priya Shah", "participants": ["+15550105"], "service": "iMessage", "is_group": false, "unread_count": 0, "last_message_at": ago(4000)}),
-        json!({"id": 6, "display_name": "Hiking Crew", "participants": ["+15550102", "+15550103", "+15550104", "+15550105", "+15550106", "+15550107", "+15550108"], "service": "iMessage", "is_group": true, "unread_count": 0, "last_message_at": ago(2500)}),
-        json!({"id": 7, "display_name": "Dinner Four", "participants": ["+15550102", "+15550103", "+15550104", "+15550105"], "service": "iMessage", "is_group": true, "unread_count": 0, "last_message_at": ago(3000)}),
+        json!({"id": 5, "contact_name": "Priya Shah", "participants": ["+15555550105"], "service": "iMessage", "is_group": false, "unread_count": 0, "last_message_at": ago(4000)}),
+        json!({"id": 6, "display_name": "Hiking Crew", "participants": ["+15555550102", "+15555550103", "+15555550104", "+15555550105", "+15555550106", "+15555550107", "+15555550108"], "service": "iMessage", "is_group": true, "unread_count": 0, "last_message_at": ago(2500)}),
+        json!({"id": 7, "display_name": "Dinner Four", "participants": ["+15555550102", "+15555550103", "+15555550104", "+15555550105"], "service": "iMessage", "is_group": true, "unread_count": 0, "last_message_at": ago(3000)}),
     ]
 }
 
@@ -44,7 +82,7 @@ fn msg(chat: i64, n: i64, me: bool, sender: &str, name: &str, min: i64, text: &s
 }
 
 fn history(id: i64) -> Vec<Value> {
-    let m = |n, me, min, t| msg(id, n, me, "+15550101", "Maya Thompson", min, t);
+    let m = |n, me, min, t| msg(id, n, me, "+15555550101", "Maya Thompson", min, t);
     let mut v = match id {
         1 => vec![
             m(1, false, 190, "Are we still on for Saturday? 🌲"),
@@ -65,7 +103,7 @@ fn history(id: i64) -> Vec<Value> {
                 2,
                 1,
                 false,
-                "+15550102",
+                "+15555550102",
                 "Sam Rivera",
                 90,
                 "Finished chapter 12 last night. Wow.",
@@ -74,7 +112,7 @@ fn history(id: i64) -> Vec<Value> {
                 2,
                 2,
                 false,
-                "+15550103",
+                "+15555550103",
                 "Lena Park",
                 85,
                 "No spoilers!! I'm two chapters behind 😅",
@@ -84,7 +122,7 @@ fn history(id: i64) -> Vec<Value> {
                 2,
                 4,
                 false,
-                "+15550104",
+                "+15555550104",
                 "Omar Haddad",
                 40,
                 "Next meetup at my place? I'll make pie 🥧",
@@ -95,7 +133,7 @@ fn history(id: i64) -> Vec<Value> {
                 3,
                 1,
                 false,
-                "+15550199",
+                "+15555550199",
                 "",
                 200,
                 "Your table for 4 is ready. Please come to the host stand.",
@@ -116,7 +154,7 @@ fn history(id: i64) -> Vec<Value> {
                     mime: &str,
                     bytes: i64,
                     missing: bool| {
-            let mut m = msg(1, n, me, "+15550101", "Maya Thompson", min, "\u{FFFC}");
+            let mut m = msg(1, n, me, "+15555550101", "Maya Thompson", min, "\u{FFFC}");
             m["attachments"] = json!([{"filename": format!("~/Library/Messages/Attachments/xx/{name}"), "original_path": format!("~/Library/Messages/Attachments/xx/{name}"),
                 "transfer_name": name, "mime_type": mime, "total_bytes": bytes, "missing": missing, "uti": "", "is_sticker": false}]);
             m
@@ -197,7 +235,7 @@ fn history(id: i64) -> Vec<Value> {
             1,
             90,
             false,
-            "+15550101",
+            "+15555550101",
             "Maya Thompson",
             1,
             &format!("have you seen this {url}"),
@@ -290,7 +328,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
                 3,
                 90,
                 false,
-                "+15550199",
+                "+15555550199",
                 "",
                 0,
                 "Hello from the demo",
@@ -404,7 +442,7 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
                 more: false,
             }),
             Cmd::ContactsCheck => Ok(()),
-            Cmd::Contacts => ev.send(Event::Contacts(Default::default())),
+            Cmd::Contacts => ev.send(Event::Contacts(crate::mac::parse_contacts(&contacts()))),
             Cmd::Link(id) => ev.send(Event::Link(id, None)),
             Cmd::FileInfo { path, .. } => ev.send(Event::FileInfo(path, None)),
             Cmd::Image { path, full } => {

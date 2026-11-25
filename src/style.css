@@ -517,6 +517,7 @@ button.save-btn.done:disabled { opacity: 1; }
 
 /* the people of a big group, in the popover under the header avatar */
 .people-list { padding: 4px 2px; }
+.people-list .card-name { margin: 8px 0 8px 8px; } /* its text lines up with the back button's on the card page (14 px in) */
 .person-row { padding: 4px 6px; border-radius: 12px; }
 popover.issues button.person-row { padding: 4px 6px; } /* the shared popover rule for flat buttons would make them roomier */
 .side-title { transition: opacity 160ms ease; }
