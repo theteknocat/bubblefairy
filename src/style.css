@@ -84,7 +84,9 @@ windowcontrols button { color: var(--ink-soft); }
 /* connection pill */
 button.status {
   border-radius: 99px;
-  padding: 3px 12px;
+  padding: 0;
+  min-width: 26px;
+  min-height: 26px;
   background-color: var(--panel);
   background-image: none;
   border: none;
@@ -93,6 +95,9 @@ button.status {
   font-size: 0.88em;
   box-shadow: inset 0 1px var(--panel-edge), 0 1px 4px var(--shadow);
 }
+button.status { transition: background-image 140ms ease; }
+button.status:hover { background-image: linear-gradient(alpha(currentColor, 0.10), alpha(currentColor, 0.10)); }
+button.status:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: 1px; }
 button.status .dot {
   min-width: 8px;
   min-height: 8px;
@@ -100,7 +105,7 @@ button.status .dot {
   background-color: #ffb340;
 }
 button.status.online .dot { background-color: #2fd27a; box-shadow: 0 0 6px rgba(47, 210, 122, 0.8); }
-button.status.connecting .dot { background-color: #ffb340; box-shadow: 0 0 6px rgba(255, 179, 64, 0.8); }
+button.status.connecting .dot, button.status.issue .dot { background-color: #ffb340; box-shadow: 0 0 6px rgba(255, 179, 64, 0.8); }
 button.status.offline .dot { background-color: #ff5a73; box-shadow: 0 0 6px rgba(255, 90, 115, 0.8); }
 
 /* panels */
@@ -406,13 +411,13 @@ button.send-btn:hover { filter: brightness(1.08); }
 button.send-btn:active { filter: brightness(0.94); }
 button.send-btn:disabled { filter: saturate(0.25) opacity(0.45); box-shadow: none; }
 
-/* warnings banner */
-.banner {
+/* a short message over the top of the window */
+.toast {
   background-image: linear-gradient(90deg, var(--banner-a), var(--banner-b));
   color: var(--banner-ink);
   border-radius: 16px;
-  margin: 0 14px 10px;
-  padding: 8px 8px 8px 16px;
+  margin: 8px 14px;
+  padding: 8px 16px;
   box-shadow: 0 3px 12px var(--shadow), inset 0 1px rgba(255, 255, 255, 0.4);
   font-weight: 600;
 }
@@ -577,8 +582,8 @@ label:focus, label:focus-visible { outline: none; }
 .wiz-dot.on { background-color: #7b5cff; min-width: 20px; }
 .wizard .setup-fp { background-color: var(--field); }
 
-/* the Mac picker's list: it drops down from the field, as wide as the field */
-popover.wiz-drop > contents {
+/* the Mac picker's list (and the status pill's list of problems): it drops down from the field, as wide as the field */
+popover.wiz-drop > contents, popover.issues > contents {
   background-color: var(--panel-solid);
   color: var(--ink);
   border-radius: 16px;
@@ -586,8 +591,8 @@ popover.wiz-drop > contents {
   padding: 6px;
   box-shadow: 0 10px 26px var(--shadow-strong);
 }
-popover.wiz-drop button.flat { border-radius: 12px; padding: 6px 10px; color: var(--ink); }
-popover.wiz-drop button.flat:hover { background-color: var(--sel-a); }
+popover.wiz-drop button.flat, popover.issues button.flat { border-radius: 12px; padding: 6px 10px; color: var(--ink); }
+popover.wiz-drop button.flat:hover, popover.issues button.flat:hover { background-color: var(--sel-a); }
 
 /* the Mac field's verdict, inside its left end */
 .wizard entry.with-status { padding-left: 40px; }
@@ -595,12 +600,12 @@ popover.wiz-drop button.flat:hover { background-color: var(--sel-a); }
 .wiz-badge.good { background-color: #1e7d3a; } /* the colours of a finished download's check */
 .wiz-badge.bad { background-color: #b3262e; }
 .wiz-err { color: #ff6b6b; }
-popover.wiz-drop button.flat { background: transparent; box-shadow: none; outline: none; }
-popover.wiz-drop > contents button.flat:hover { background-color: alpha(#7b5cff, 0.32); background-image: none; }
-popover.wiz-drop > contents button.flat:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
-popover.wiz-drop > contents button.flat { background-color: transparent; background-image: none; box-shadow: none; border: none; transition: background-color 160ms ease; } /* fades out as well as in */
-popover.wiz-drop > contents button.flat:hover { background-color: alpha(#7b5cff, 0.32); background-image: none; }
-popover.wiz-drop > contents button.flat:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
+popover.wiz-drop button.flat, popover.issues button.flat { background: transparent; box-shadow: none; outline: none; }
+popover.wiz-drop > contents button.flat:hover, popover.issues > contents button.flat:hover { background-color: alpha(#7b5cff, 0.32); background-image: none; }
+popover.wiz-drop > contents button.flat:focus-visible, popover.issues > contents button.flat:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
+popover.wiz-drop > contents button.flat, popover.issues > contents button.flat { background-color: transparent; background-image: none; box-shadow: none; border: none; transition: background-color 160ms ease; } /* fades out as well as in */
+popover.wiz-drop > contents button.flat:hover, popover.issues > contents button.flat:hover { background-color: alpha(#7b5cff, 0.32); background-image: none; }
+popover.wiz-drop > contents button.flat:focus-visible, popover.issues > contents button.flat:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
 
 /* the button at the right end of the Mac field */
 .wiz-drop-btn { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; background: transparent; box-shadow: none; border: none; color: var(--ink-soft); }
@@ -651,3 +656,18 @@ row:focus-visible { outline: 2px solid #b9a6ff; outline-offset: -2px; }
 .count-badge { padding: 0 6px; min-width: 20px; min-height: 19px; margin: 0; border: 2px solid var(--panel-solid); transform: translate(3px, -8px); opacity: 0; }
 .sidebar.collapsed .count-badge { opacity: 1; }
 .sidebar.collapsed .loading-text { font-size: 0.78em; }
+
+/* the status pill's popover */
+.pop-dot { min-width: 9px; min-height: 9px; border-radius: 99px; }
+.pop-dot.ok { background-color: #2fd27a; box-shadow: 0 0 6px rgba(47, 210, 122, 0.8); }
+.pop-dot.warn { background-color: #ffb340; box-shadow: 0 0 6px rgba(255, 179, 64, 0.8); }
+.pop-dot.bad { background-color: #ff5a73; box-shadow: 0 0 6px rgba(255, 90, 115, 0.8); }
+.pop-title { font-weight: 700; }
+.pop-refresh { min-width: 24px; min-height: 24px; padding: 0; -gtk-icon-size: 13px; } /* the rest is .head-btn */
+.pop-refresh:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; }
+popover.issues > contents { padding: 2px 4px; }
+popover.issues > arrow {
+  background-color: var(--panel-solid);
+  border: 1px solid var(--panel-edge);
+  box-shadow: none;
+}

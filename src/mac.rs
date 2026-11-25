@@ -240,8 +240,11 @@ pub enum Event {
     Connecting,
     Connected,
     Offline(String),
-    /// Connected, but something on the Mac needs fixing (e.g. Full Disk Access).
-    Warn(String),
+    /// Something about the connection is wrong (`Some`) or isn't any more (`None`), by kind. Sent on every connect,
+    /// whether it holds or not, so one that has cleared goes away.
+    Issue(&'static str, Option<String>),
+    /// The chat list couldn't be read; shown until one can be.
+    ChatsFailed,
     HostKey(String),
     Chats(Vec<Value>),
     /// the receipt for the chat's newest sent message (None: nothing sent, or nothing to show)
@@ -265,7 +268,8 @@ pub enum Event {
         err: Option<String>,
         token: u64,
     },
-    SendSlow,
+    /// the send with this token is taking long
+    SendSlow(u64),
     Image {
         path: String,
         full: bool,
@@ -579,7 +583,10 @@ async fn connect(
                         tail
                     };
                     eprintln!("imsg rpc exited {exit_status}: {stderr}");
-                    let _ = ev2.send(Event::Warn(format!("imsg stopped: {why}")));
+                    let _ = ev2.send(Event::Issue(
+                        "stopped",
+                        Some(format!("imsg stopped: {why}")),
+                    ));
                 }
                 ChannelMsg::Eof | ChannelMsg::Close => break,
                 _ => {}
@@ -2012,6 +2019,7 @@ pub fn parse_link(bytes: &[u8], files: &[String]) -> Option<LinkPreview> {
 async fn send_one(
     rpc: &Rpc,
     ev: &mpsc::UnboundedSender<Event>,
+    token: u64,
     target: &Value,
     key: &str,
     value: &str,
@@ -2024,7 +2032,7 @@ async fn send_one(
     tokio::select! {
         r = &mut call => r,
         _ = tokio::time::sleep(Duration::from_secs(6)) => {
-            let _ = ev.send(Event::SendSlow);
+            let _ = ev.send(Event::SendSlow(token));
             call.await
         }
     }
@@ -2172,9 +2180,7 @@ async fn handle(
                 let _ = ev.send(Event::Chats(chats));
             }
             None => {
-                let _ = ev.send(Event::Warn(
-                    "couldn't read the chat list from the Mac".into(),
-                ));
+                let _ = ev.send(Event::ChatsFailed);
             }
         },
         Cmd::FindNamed { q, addrs, seq } => {
@@ -2313,7 +2319,7 @@ async fn handle(
             let mut err = None;
             for f in &files {
                 let r = match upload(&session, f).await {
-                    Ok(path) => send_one(&rpc, &ev, &target, "file", &path).await,
+                    Ok(path) => send_one(&rpc, &ev, token, &target, "file", &path).await,
                     Err(e) => Err(e),
                 };
                 match r {
@@ -2326,7 +2332,7 @@ async fn handle(
             }
             let mut text_left = text;
             if err.is_none() && !text_left.is_empty() {
-                match send_one(&rpc, &ev, &target, "text", &text_left).await {
+                match send_one(&rpc, &ev, token, &target, "text", &text_left).await {
                     Ok(()) => text_left.clear(),
                     Err(e) => err = Some(e),
                 }
@@ -2370,13 +2376,15 @@ async fn handle(
                     Some(rest) if !home.is_empty() => format!("{home}/{rest}"),
                     _ => f.clone(),
                 };
-                if let Err(e) = send_one(&rpc, &ev, &target, "file", &path).await {
+                if let Err(e) = send_one(&rpc, &ev, token, &target, "file", &path).await {
                     err = Some(e);
                     break;
                 }
             }
             if err.is_none() && !text.is_empty() {
-                err = send_one(&rpc, &ev, &target, "text", &text).await.err();
+                err = send_one(&rpc, &ev, token, &target, "text", &text)
+                    .await
+                    .err();
             }
             let _ = ev.send(Event::Sent {
                 text: String::new(),
@@ -2506,13 +2514,18 @@ pub async fn run(
         let status = conn.rpc.call("status", json!({}), READ).await;
         match status {
             Ok(s) if s.pointer("/database/ready").and_then(Value::as_bool) == Some(false) => {
-                let _ = ev.send(Event::Warn(
-                    "your Mac won't let BubbleFairy read Messages. On the Mac, open System Settings → General → Sharing, \
-                     click ⓘ next to Remote Login and turn on \"Allow full disk access for remote users\"."
-                        .into(),
+                let _ = ev.send(Event::Issue(
+                    "access",
+                    Some(
+                        "your Mac won't let BubbleFairy read Messages. On the Mac, open System Settings → General → Sharing, \
+                         click ⓘ next to Remote Login and turn on \"Allow full disk access for remote users\"."
+                            .into(),
+                    ),
                 ));
             }
-            Ok(_) => {}
+            Ok(_) => {
+                let _ = ev.send(Event::Issue("access", None));
+            }
             Err(e) => {
                 let _ = ev.send(Event::Offline(format!("imsg didn't start: {e}")));
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -2523,9 +2536,11 @@ pub async fn run(
             .rpc
             .call("watch.subscribe", json!({"attachments": true}), READ)
             .await;
-        if let Err(e) = sub {
-            let _ = ev.send(Event::Warn(format!("live updates unavailable: {e}")));
-        }
+        let _ = ev.send(Event::Issue(
+            "live",
+            sub.err().map(|e| format!("live updates unavailable: {e}")),
+        ));
+        let _ = ev.send(Event::Issue("stopped", None)); // a fresh imsg is running
         let _ = ev.send(Event::Connected);
 
         loop {

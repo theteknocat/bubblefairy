@@ -174,6 +174,8 @@ struct State {
     resent: HashSet<i64>,
     /// resend token -> the failed message being sent again
     resend_of: HashMap<u64, i64>,
+    /// sends (by token) that have taken long enough to say so under their bubbles
+    slow: HashSet<u64>,
     /// failed messages being sent again right now (drawn as a ghost with a spinner, in place)
     resending: HashSet<i64>,
     /// the delivery / read receipt of each chat's newest sent message
@@ -286,9 +288,21 @@ pub struct Ui {
     suggest: gtk::ListBox,
     suggest_scroll: gtk::ScrolledWindow,
     status: gtk::Button,
-    status_text: gtk::Label,
-    banner: gtk::Revealer,
-    banner_text: gtk::Label,
+    /// what the pill says (it shows only a light): the tooltip and the popover title
+    status_title: RefCell<String>,
+    /// a short-lived message over the top of the window (`show_toast`)
+    toast: gtk::Revealer,
+    toast_text: gtk::Label,
+    toast_gen: Cell<u32>,
+    /// what's wrong with the connection right now, by kind (`set_issue`); listed when the status pill is clicked
+    issues: RefCell<Vec<(&'static str, String)>>,
+    /// unix seconds: when the Mac connection came up (None while it's down), and when we last heard from it
+    since: Cell<Option<i64>>,
+    heard: Cell<Option<i64>>,
+    /// the status popover while it's open, redrawn when the status changes (`fill_status_pop`)
+    status_pop: RefCell<Option<gtk::Popover>>,
+    /// the reason that goes with the status (why it's offline, say); the pill itself shows only a light
+    status_tip: RefCell<String>,
     // flags poked from signal handlers, so kept out of the RefCell
     stick_bottom: Rc<Cell<bool>>,
     /// when not pinned to the bottom, keep this distance from the bottom while content changes above
@@ -305,7 +319,6 @@ pub struct Ui {
     conv_ctx: RefCell<Option<Rc<ConvCtx>>>,
     msg_widgets: RefCell<Vec<Vec<gtk::Widget>>>,
     sel_gen: Cell<u32>,
-    banner_offline: Cell<bool>,
     /// has this run connected to the Mac at least once (tells a lost connection from one that never came up)
     ever_connected: Cell<bool>,
     /// failed connection attempts in a row
@@ -416,17 +429,18 @@ pub fn build(
     title_box.append(&title);
     title_box.append(&title_badge);
     head.set_title_widget(Some(&title_box));
-    let status_text = gtk::Label::new(Some("Starting"));
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     dot.add_css_class("dot");
     dot.set_valign(gtk::Align::Center);
     let pill = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+    pill.set_halign(gtk::Align::Center);
     pill.append(&dot);
-    pill.append(&status_text);
     let status = gtk::Button::builder()
         .child(&pill)
         .css_classes(["status", "connecting"])
         .build();
+    status.set_tooltip_text(Some("Starting"));
+    status.set_valign(gtk::Align::Center);
     head.pack_start(&status);
     let settings_btn = gtk::Button::from_icon_name("emblem-system-symbolic");
     settings_btn.set_tooltip_text(Some("Settings"));
@@ -851,21 +865,18 @@ pub fn build(
     stack.set_vexpand(true);
     let _ = &stack;
 
-    // warnings banner above everything
-    let banner_text = gtk::Label::new(None);
-    banner_text.set_wrap(true);
-    banner_text.set_xalign(0.0);
-    banner_text.set_hexpand(true);
-    let banner_close = gtk::Button::from_icon_name("window-close-symbolic");
-    banner_close.add_css_class("flat");
-    banner_close.set_valign(gtk::Align::Center);
-    let banner_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    banner_box.add_css_class("banner");
-    banner_box.append(&banner_text);
-    banner_box.append(&banner_close);
-    let banner = gtk::Revealer::builder()
-        .child(&banner_box)
+    // a short message over the top of the window, for what went wrong with something just done
+    let toast_text = gtk::Label::new(None);
+    toast_text.set_wrap(true);
+    toast_text.set_max_width_chars(60);
+    let toast_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    toast_box.add_css_class("toast");
+    toast_box.append(&toast_text);
+    let toast = gtk::Revealer::builder()
+        .child(&toast_box)
         .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Start)
         .build();
 
     let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
@@ -889,7 +900,6 @@ pub fn build(
     paned.set_shrink_end_child(true);
     paned.set_vexpand(true);
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    root.append(&banner);
     // the photo viewer is a panel of its own over the sidebar and the chat, edge to edge with them (the panels'
     // outer margins), so a photo opened from the info panel isn't hidden under anything
     let stage = gtk::Overlay::new();
@@ -900,6 +910,7 @@ pub fn build(
     viewer.root.set_margin_start(14);
     viewer.root.set_margin_end(14);
     stage.add_overlay(&viewer.root);
+    stage.add_overlay(&toast);
     let w = win.clone();
     viewer.root.connect_visible_notify(move |r| {
         // the panels under it lose their shadows and bevels, so they don't add to the viewer's
@@ -1005,9 +1016,9 @@ pub fn build(
         suggest,
         suggest_scroll,
         status,
-        status_text,
-        banner,
-        banner_text,
+        status_title: RefCell::new("Starting".into()),
+        toast,
+        toast_text,
         stick_bottom: stick.clone(),
         selecting: Cell::new(false),
         list_queued: Cell::new(false),
@@ -1017,7 +1028,12 @@ pub fn build(
         conv_ctx: RefCell::default(),
         msg_widgets: RefCell::default(),
         sel_gen: Cell::new(0),
-        banner_offline: Cell::new(false),
+        toast_gen: Cell::new(0),
+        issues: RefCell::new(Vec::new()),
+        since: Cell::new(None),
+        heard: Cell::new(None),
+        status_pop: RefCell::new(None),
+        status_tip: RefCell::new(String::new()),
         ever_connected: Cell::new(false),
         fails: Cell::new(0),
         chats_queued: Cell::new(false),
@@ -1050,11 +1066,9 @@ pub fn build(
 
     // wiring
     let u = ui.clone();
-    banner_close.connect_clicked(move |_| u.banner.set_reveal_child(false));
-    let u = ui.clone();
     settings_btn.connect_clicked(move |_| settings(&u));
     let u = ui.clone();
-    ui.status.connect_clicked(move |_| settings(&u));
+    ui.status.connect_clicked(move |_| status_clicked(&u));
     let u = ui.clone();
     ui.send_btn.connect_clicked(move |_| send_now(&u));
     let keys = gtk::EventControllerKey::new();
@@ -1678,6 +1692,31 @@ pub fn build(
             u.to_entry.set_text(&t);
         });
     }
+    // dev aid: BF_ISSUE=<ms> flags a connection problem then and opens the pill's popover; BF_TOAST=<ms> shows a toast
+    for (var, toast) in [("BF_ISSUE", false), ("BF_TOAST", true)] {
+        if let Some(ms) = std::env::var(var).ok().and_then(|v| v.parse::<u64>().ok()) {
+            let u = ui.clone();
+            glib::timeout_add_local_once(Duration::from_millis(ms), move || {
+                if toast {
+                    show_toast(&u, "Message not sent: the Mac didn't answer");
+                } else {
+                    set_issue(&u, "live", Some("Live updates unavailable: demo".into()));
+                    status_clicked(&u);
+                    // BF_POPSHOT=<png>: draw the open popover to a file (a screenshot of the window leaves out popups)
+                    if let Some(path) = std::env::var_os("BF_POPSHOT") {
+                        let u2 = u.clone();
+                        glib::timeout_add_local_once(Duration::from_millis(600), move || {
+                            let pop = u2.status_pop.borrow().clone();
+                            if let Some(pop) = pop {
+                                save_widget_png(&pop, std::path::Path::new(&path));
+                            }
+                            u2.win.close();
+                        });
+                    }
+                }
+            });
+        }
+    }
     if let Some(ms) = std::env::var("BF_INFO")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -1801,7 +1840,7 @@ fn start_setup(u: &Rc<Ui>, over_main: bool) {
             crate::save_config(&u2.store.config_file, &cfg);
             u2.st.borrow_mut().cfg = cfg.clone();
             clear_snapshot(&u2); // it may belong to another Mac
-            set_status(&u2, "connecting", "Connecting", None); // (the banner is only ever shown for a failure, never cleared here)
+            set_status(&u2, "connecting", "Connecting", None);
             u2.send(Cmd::Configure(cfg));
         },
     );
@@ -1836,6 +1875,12 @@ fn start_setup(u: &Rc<Ui>, over_main: bool) {
 // ---------- events from the Mac ----------
 
 fn on_event(u: &Rc<Ui>, e: Event) {
+    if !matches!(
+        e,
+        Event::Connecting | Event::Offline(_) | Event::Issue(..) | Event::ChatsFailed
+    ) {
+        u.heard.set(Some(now_unix()));
+    }
     match e {
         Event::Connecting => set_status(u, "connecting", "Connecting", None),
         Event::Contacts(mut c) => {
@@ -1885,12 +1930,11 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 }
             }
             u.st.borrow_mut().connected = true;
+            u.since.set(Some(now_unix()));
             u.ever_connected.set(true);
             u.fails.set(0);
+            set_issue(u, "offline", None);
             set_status(u, "online", "Connected", None);
-            if u.banner_offline.get() {
-                u.banner.set_reveal_child(false);
-            }
             u.send(Cmd::Chats(u.st.borrow().chat_limit));
             let sel = u.st.borrow().sel;
             if let Some(id) = sel {
@@ -1899,6 +1943,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
         }
         Event::Offline(why) => {
             u.st.borrow_mut().connected = false;
+            u.since.set(None); // before the early returns, so the popover stops saying "connected"
             // not set up yet: nothing has failed, so no alarm (the setup wizard is on its way, or Settings)
             if u.st.borrow().cfg.host.is_empty() {
                 set_status(
@@ -1934,11 +1979,17 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             } else {
                 format!("Couldn't connect to your Mac yet ({why}). BubbleFairy will keep trying.")
             };
-            show_banner(u, &text, true);
+            set_issue(u, "offline", Some(text));
         }
-        Event::Warn(w) => show_banner(u, &cap(&w), false),
+        Event::Issue(kind, why) => set_issue(u, kind, why.map(|w| cap(&w))),
+        Event::ChatsFailed => set_issue(
+            u,
+            "chats",
+            Some("Couldn't read the chat list from the Mac.".into()),
+        ),
         Event::HostKey(k) => u.st.borrow_mut().host_key = k,
         Event::Chats(chats) => {
+            set_issue(u, "chats", None);
             let groups;
             let ask: Vec<i64> = {
                 let mut st = u.st.borrow_mut();
@@ -2242,11 +2293,10 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 request_history(u, id);
             }
         }
-        Event::SendSlow => show_banner(
-            u,
-            "Still sending… If this is your first message from BubbleFairy, check your Mac: it may be asking whether to allow control of Messages.",
-            false,
-        ),
+        Event::SendSlow(token) => {
+            u.st.borrow_mut().slow.insert(token);
+            redraw_pending(u);
+        }
         Event::Sent {
             text,
             files,
@@ -2254,6 +2304,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             token,
         } if u.st.borrow().resend_of.contains_key(&token) => {
             let mid = u.st.borrow_mut().resend_of.remove(&token);
+            u.st.borrow_mut().slow.remove(&token); // both outcomes below redraw the chat
             let _ = (text, files);
             if let Some(mid) = mid {
                 u.st.borrow_mut().resending.remove(&mid);
@@ -2262,7 +2313,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 (Some(err), _) => {
                     drop_pending(u, token);
                     render_conv(u); // the message is a failed one again
-                    show_banner(u, &format!("Message not sent: {err}"), false);
+                    show_toast(u, &format!("Message not sent: {err}"));
                 }
                 (None, Some(mid)) => {
                     // sent again: the failed one stays (it is still in the Mac's database, with its error), its
@@ -2292,15 +2343,15 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             if let Some(err) = err {
                 u.st.borrow_mut().new_pending = None;
                 drop_pending(u, token);
-                show_banner(u, &format!("Message not sent: {err}"), false);
+                show_toast(u, &format!("Message not sent: {err}"));
                 let buf = u.compose.buffer();
                 if buf.char_count() == 0 {
                     buf.set_text(&text); // nothing typed is lost
                 }
                 add_files(u, files); // nor any file that didn't go
             } else {
-                if !u.banner_offline.get() {
-                    u.banner.set_reveal_child(false);
+                if u.st.borrow_mut().slow.remove(&token) {
+                    redraw_pending(u); // the "still sending" note is done with
                 }
                 // normally the real messages replace these within a second; if they never show, don't leave spinners
                 let u2 = u.clone();
@@ -2368,11 +2419,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
             if let Some(targets) = targets {
                 match err {
                     Some(e) => {
-                        show_banner(
-                            u,
-                            &format!("Couldn't copy the file from the Mac: {e}"),
-                            false,
-                        );
+                        show_toast(u, &format!("Couldn't copy the file from the Mac: {e}"));
                         for (_, done) in targets {
                             done(false);
                         }
@@ -2390,11 +2437,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 }
             } else {
                 match err {
-                    Some(e) => show_banner(
-                        u,
-                        &format!("Couldn't copy the file from the Mac: {e}"),
-                        false,
-                    ),
+                    Some(e) => show_toast(u, &format!("Couldn't copy the file from the Mac: {e}")),
                     None => open_file(u, &dest),
                 }
             }
@@ -2571,18 +2614,24 @@ fn receipt_text(r: &crate::mac::Receipt) -> Option<(String, Option<&'static str>
 
 /// Forget a send's waiting bubbles (it failed, or never showed up).
 fn drop_pending(u: &Rc<Ui>, token: u64) {
-    let (had, sel) = {
+    let had = {
         let mut st = u.st.borrow_mut();
         let before = st.pending.len();
         st.pending.retain(|p| p.token != token);
-        (before != st.pending.len(), st.sel)
+        st.slow.remove(&token);
+        before != st.pending.len()
     };
-    if had && sel.is_some() {
+    if had {
+        redraw_pending(u);
+    }
+}
+
+/// Draws the waiting bubbles (and their "still sending" notes) again.
+fn redraw_pending(u: &Rc<Ui>) {
+    if u.st.borrow().sel.is_some() {
         render_conv(u);
     }
-    if had {
-        show_new_ghosts(u);
-    }
+    show_new_ghosts(u);
 }
 
 /// My own message came back through the live stream: its waiting bubble is replaced by the real one.
@@ -2959,23 +3008,248 @@ fn show_notification(u: &Ui, cid: i64, m: &Value, picture: Option<PathBuf>) {
     );
 }
 
-// ---------- status and banner ----------
+// ---------- status and toast ----------
 
-fn set_status(u: &Ui, kind: &str, text: &str, tip: Option<&str>) {
-    for k in ["online", "connecting", "offline"] {
+fn set_status(u: &Rc<Ui>, kind: &str, text: &str, tip: Option<&str>) {
+    // connected, but something needs a look: the pill says so and lists it when clicked
+    let (kind, text, tip) = if kind == "online" && !u.issues.borrow().is_empty() {
+        ("issue", "Needs attention", None)
+    } else {
+        (kind, text, tip)
+    };
+    for k in ["online", "connecting", "offline", "issue"] {
         u.status.remove_css_class(k);
     }
     u.status.add_css_class(kind);
-    u.status_text.set_text(text);
-    u.status.set_tooltip_text(Some(
-        tip.unwrap_or("Connection to your Mac. Click for settings."),
-    ));
+    *u.status_title.borrow_mut() = text.to_string();
+    // the pill is only a light: its words are the tooltip, the accessible name and the popover's title
+    let said = tip.map_or_else(|| text.to_string(), |t| format!("{text}: {t}"));
+    u.status.set_tooltip_text(Some(&said));
+    u.status
+        .update_property(&[gtk::accessible::Property::Label(&said)]);
+    *u.status_tip.borrow_mut() = tip.unwrap_or_default().to_string();
+    refresh_status_pop(u);
 }
 
-fn show_banner(u: &Ui, text: &str, offline: bool) {
-    u.banner_text.set_text(text);
-    u.banner_offline.set(offline);
-    u.banner.set_reveal_child(true);
+/// Sets (`Some`) or clears (`None`) one thing that's wrong with the connection. Setting what's already set
+/// changes nothing on screen, so a warning repeated on every reconnect doesn't flash.
+fn set_issue(u: &Rc<Ui>, kind: &'static str, why: Option<String>) {
+    let changed = {
+        let mut v = u.issues.borrow_mut();
+        let was = v.iter().position(|(k, _)| *k == kind);
+        match (was, why) {
+            (Some(i), Some(w)) if v[i].1 != w => {
+                v[i].1 = w;
+                true
+            }
+            (None, Some(w)) => {
+                v.push((kind, w));
+                true
+            }
+            (Some(i), None) => {
+                v.remove(i);
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed && (u.status.has_css_class("online") || u.status.has_css_class("issue")) {
+        set_status(u, "online", "Connected", None);
+    }
+    if changed {
+        refresh_status_pop(u);
+    }
+}
+
+fn now_unix() -> i64 {
+    glib::real_time() / 1_000_000
+}
+
+/// `just now`, `3 min ago`, `2 h ago`, `4 d ago`.
+fn ago(secs: i64) -> String {
+    match secs {
+        ..10 => "just now".into(),
+        10..60 => format!("{secs} s ago"),
+        60..3600 => format!("{} min ago", secs / 60),
+        3600..86400 => format!("{} h ago", secs / 3600),
+        _ => format!("{} d ago", secs / 86400),
+    }
+}
+
+/// `45 s`, `12 min`, `2 h 14 min`, `3 d 4 h`.
+fn lasted(secs: i64) -> String {
+    match secs {
+        ..60 => format!("{} s", secs.max(0)),
+        60..3600 => format!("{} min", secs / 60),
+        3600..86400 => format!("{} h {} min", secs / 3600, secs % 3600 / 60),
+        _ => format!("{} d {} h", secs / 86400, secs % 86400 / 3600),
+    }
+}
+
+/// A coloured dot for the status popover (`ok`, `warn` or `bad`).
+fn pop_dot(kind: &str) -> gtk::Box {
+    let d = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    d.add_css_class("pop-dot");
+    d.add_css_class(kind);
+    d.set_valign(gtk::Align::Center);
+    d
+}
+
+/// The status pill: a popover with what's wrong (if anything) and how the connection is doing.
+fn status_clicked(u: &Rc<Ui>) {
+    let pop = gtk::Popover::new();
+    pop.add_css_class("issues");
+    pop.set_position(gtk::PositionType::Bottom);
+    fill_status_pop(u, &pop);
+    pop.set_parent(&u.status);
+    *u.status_pop.borrow_mut() = Some(pop.clone());
+    let u2 = u.clone();
+    pop.connect_closed(move |p| {
+        *u2.status_pop.borrow_mut() = None;
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
+    // the times move on even when nothing else changes
+    let (u3, weak) = (u.clone(), pop.downgrade());
+    glib::timeout_add_local(Duration::from_secs(5), move || match weak.upgrade() {
+        Some(p) if p.is_visible() => {
+            fill_status_pop(&u3, &p);
+            glib::ControlFlow::Continue
+        }
+        _ => glib::ControlFlow::Break,
+    });
+    pop.popup();
+}
+
+/// Dev aid: draws a widget (a popover, which a window screenshot leaves out) to a PNG.
+fn save_widget_png(w: &impl IsA<gtk::Widget>, path: &std::path::Path) {
+    let paintable = gtk::WidgetPaintable::new(Some(w));
+    let (pw, ph) = (paintable.intrinsic_width(), paintable.intrinsic_height());
+    let snap = gtk::Snapshot::new();
+    paintable.snapshot(&snap, f64::from(pw), f64::from(ph));
+    if let (Some(node), Some(r)) = (snap.to_node(), w.native().and_then(|n| n.renderer())) {
+        let _ = r.render_texture(&node, None).save_to_png(path);
+    }
+}
+
+/// Width of the status popover's content, in pixels.
+const STATUS_POP_W: i32 = 270;
+
+/// Redraws the status popover if it's open (the status changed under it).
+fn refresh_status_pop(u: &Rc<Ui>) {
+    let pop = u.status_pop.borrow().clone();
+    if let Some(p) = pop {
+        fill_status_pop(u, &p);
+    }
+}
+
+/// Builds the status popover's content from the current state.
+fn fill_status_pop(u: &Rc<Ui>, pop: &gtk::Popover) {
+    let issues = u.issues.borrow().clone();
+    let since = u.since.get();
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    col.set_size_request(STATUS_POP_W, -1); // a fixed width, so a change of state doesn't make it jump about
+    col.set_margin_start(8);
+    col.set_margin_end(8);
+    col.set_margin_top(4);
+    col.set_margin_bottom(4);
+    let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let kind = ["online", "offline"]
+        .iter()
+        .find(|k| u.status.has_css_class(k))
+        .map_or("warn", |k| if *k == "online" { "ok" } else { "bad" });
+    head.append(&pop_dot(kind));
+    let t = gtk::Label::new(Some(&u.status_title.borrow()));
+    t.add_css_class("pop-title");
+    t.set_hexpand(true);
+    t.set_xalign(0.0);
+    head.append(&t);
+    col.append(&head);
+    let tip = u.status_tip.borrow().clone();
+    if !tip.is_empty() && issues.is_empty() {
+        let l = gtk::Label::new(Some(&tip));
+        l.add_css_class("dim");
+        l.set_wrap(true);
+        l.set_max_width_chars(36);
+        l.set_xalign(0.0);
+        col.append(&l);
+    }
+    for (k, why) in &issues {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.append(&pop_dot(if *k == "offline" { "bad" } else { "warn" }));
+        let l = gtk::Label::new(Some(why));
+        l.set_wrap(true);
+        l.set_max_width_chars(36);
+        l.set_xalign(0.0);
+        row.append(&l);
+        col.append(&row);
+    }
+    if let Some(since) = since {
+        let now = now_unix();
+        let (host, user) = {
+            let st = u.st.borrow();
+            (st.cfg.host.clone(), st.cfg.user.clone())
+        };
+        let grid = gtk::Grid::new();
+        grid.set_row_spacing(3);
+        grid.set_column_spacing(16);
+        let mut rows = vec![
+            ("Mac", host),
+            ("Signed in as", user),
+            (
+                "Connected",
+                format!(
+                    "{} · {}",
+                    rel_time(since, TimeKind::Sep),
+                    lasted(now - since)
+                ),
+            ),
+        ];
+        if let Some(h) = u.heard.get() {
+            rows.push(("Last heard from", ago(now - h)));
+        }
+        for (i, (k, v)) in rows.iter().filter(|(_, v)| !v.is_empty()).enumerate() {
+            let key = gtk::Label::new(Some(k));
+            key.add_css_class("dim");
+            key.set_xalign(0.0);
+            let val = gtk::Label::new(Some(v));
+            val.set_xalign(0.0);
+            val.set_hexpand(true);
+            val.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            val.set_tooltip_text(Some(v));
+            grid.attach(&key, 0, i as i32, 1, 1);
+            grid.attach(&val, 1, i as i32, 1, 1);
+        }
+        col.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        col.append(&grid);
+        let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
+        refresh.add_css_class("head-btn");
+        refresh.add_css_class("pop-refresh");
+        refresh.set_tooltip_text(Some("Refresh now"));
+        let (u2, p2) = (u.clone(), pop.clone());
+        refresh.connect_clicked(move |_| {
+            p2.popdown();
+            let limit = u2.st.borrow().chat_limit;
+            u2.send(Cmd::Chats(limit));
+            refresh_chat(&u2);
+        });
+        head.append(&refresh);
+    }
+    pop.set_child(Some(&col));
+}
+
+/// A short message over the top of the window; it goes by itself.
+fn show_toast(u: &Rc<Ui>, text: &str) {
+    u.toast_text.set_text(text);
+    u.toast.set_reveal_child(true);
+    let gen_ = u.toast_gen.get().wrapping_add(1);
+    u.toast_gen.set(gen_);
+    let u2 = u.clone();
+    glib::timeout_add_local_once(Duration::from_secs(8), move || {
+        if u2.toast_gen.get() == gen_ {
+            u2.toast.set_reveal_child(false);
+        }
+    });
 }
 
 fn cap(s: &str) -> String {
@@ -3372,13 +3646,7 @@ fn save_items(u: &Rc<Ui>, items: Vec<Save>, ask: bool, done: SaveDone) {
     };
     let dir = if !dir.is_empty() && !usable(&dir) {
         let msg = "The default download folder isn't available any more. Choose where to save, or set it again in Settings.";
-        show_banner(u, msg, false);
-        let u2 = u.clone();
-        glib::timeout_add_local_once(Duration::from_secs(8), move || {
-            if u2.banner_text.text() == msg && !u2.banner_offline.get() {
-                u2.banner.set_reveal_child(false);
-            }
-        });
+        show_toast(u, msg);
         String::new()
     } else {
         dir
@@ -3451,7 +3719,7 @@ fn copy_to(u: &Rc<Ui>, src: PathBuf, target: PathBuf, done: SaveDone) {
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                show_banner(&u, &format!("Couldn't save {name}: {}", e.message()), false);
+                show_toast(&u, &format!("Couldn't save {name}: {}", e.message()));
                 done(false);
             }
         }
@@ -4365,10 +4633,9 @@ fn send_new(u: &Rc<Ui>, text: &str) {
         return;
     }
     if !is_addr(&typed) {
-        show_banner(
+        show_toast(
             u,
             "Who's it to? Pick a conversation or type a phone number or email.",
-            false,
         );
         u.to_entry.grab_focus();
         return;
@@ -6667,6 +6934,15 @@ fn append_pending(u: &Ui, pending: &[Pending], sms: bool) {
         line.append(&spin);
         line.append(&pending_bubble(p, sms, i + 1 == pending.len()));
         u.msgs.append(&line);
+        // a send that's taking long says so under its last bubble
+        if pending.get(i + 1).is_none_or(|n| n.token != p.token)
+            && u.st.borrow().slow.contains(&p.token)
+        {
+            let note = gtk::Label::new(Some("Still sending…"));
+            note.add_css_class("receipt"); // looks like "Read" and "Not delivered"
+            note.set_halign(gtk::Align::End);
+            u.msgs.append(&note);
+        }
     }
 }
 
@@ -9759,14 +10035,13 @@ fn settings(u: &Rc<Ui>) {
                     cfg.autostart = !want;
                     crate::save_config(&u3.store.config_file, &cfg);
                     u3.st.borrow_mut().cfg = cfg;
-                    show_banner(
+                    show_toast(
                         &u3,
                         if want {
                             "Couldn't set up starting at login"
                         } else {
                             "Couldn't remove the login entry"
                         },
-                        false,
                     );
                 }
             });
@@ -11236,6 +11511,24 @@ fn schedule_midnight(u: &Rc<Ui>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_times_read_well_at_their_boundaries() {
+        for (secs, ago_text, lasted_text) in [
+            (-5, "just now", "0 s"), // the clock moved back
+            (9, "just now", "9 s"),
+            (10, "10 s ago", "10 s"),
+            (59, "59 s ago", "59 s"),
+            (60, "1 min ago", "1 min"),
+            (3599, "59 min ago", "59 min"),
+            (3600, "1 h ago", "1 h 0 min"),
+            (8040, "2 h ago", "2 h 14 min"),
+            (86400, "1 d ago", "1 d 0 h"),
+        ] {
+            assert_eq!(ago(secs), ago_text, "ago({secs})");
+            assert_eq!(lasted(secs), lasted_text, "lasted({secs})");
+        }
+    }
 
     #[test]
     fn group_events_are_not_messages() {

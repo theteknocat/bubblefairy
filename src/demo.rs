@@ -238,8 +238,46 @@ fn history(id: i64) -> Vec<Value> {
     v
 }
 
+/// Dev aid (`BF_DEMO_MAC=1`): plays out connection trouble on a loop, to see how the status pill and the
+/// popover react, and makes sending slow (a message starting with "fail" fails).
+async fn mac_trouble(ev: mpsc::UnboundedSender<Event>) {
+    use std::time::Duration;
+    let off = |why: &str| Event::Offline(why.into());
+    let wait = |s| tokio::time::sleep(Duration::from_secs(s));
+    loop {
+        let _ = ev.send(off("Connection refused")); // the first miss is only orange "Connecting"
+        wait(4).await;
+        let _ = ev.send(off("Connection refused")); // the second is red, with its reason
+        wait(5).await;
+        let access = "your Mac won't let BubbleFairy read Messages. Turn on \"Allow full disk access for remote users\".";
+        let _ = ev.send(Event::Issue("access", Some(access.into())));
+        let _ = ev.send(Event::Connected); // orange "Needs attention"
+        wait(6).await;
+        let _ = ev.send(Event::Issue("access", None));
+        let _ = ev.send(Event::Issue(
+            "live",
+            Some("live updates unavailable: timed out".into()),
+        ));
+        wait(6).await;
+        let _ = ev.send(Event::ChatsFailed); // a second problem on top
+        wait(6).await;
+        let _ = ev.send(Event::Issue("live", None));
+        let _ = ev.send(Event::Chats(chats())); // everything clear: green
+        wait(8).await;
+        let _ = ev.send(off("Lost the link"));
+        wait(1).await;
+        let _ = ev.send(off("Lost the link"));
+        wait(4).await;
+    }
+}
+
 pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSender<Event>) {
-    let _ = ev.send(Event::Connected);
+    let trouble = std::env::var_os("BF_DEMO_MAC").is_some();
+    if trouble {
+        tokio::spawn(mac_trouble(ev.clone()));
+    } else {
+        let _ = ev.send(Event::Connected);
+    }
     // BF_DEMO_INCOMING=<ms>: a message from chat 3 arrives after this long (to see the notification and hear the sound)
     if let Some(ms) = std::env::var("BF_DEMO_INCOMING")
         .ok()
@@ -302,12 +340,23 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
                 token,
                 ..
             } => {
-                next += 1;
-                let _ = ev.send(Event::Message(msg(chat_id, next, true, "", "", 0, &text)));
+                let mut err = None;
+                if trouble {
+                    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                    let _ = ev.send(Event::SendSlow(token));
+                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                    if text.starts_with("fail") {
+                        err = Some("the Mac didn't answer".to_string());
+                    }
+                }
+                if err.is_none() {
+                    next += 1;
+                    let _ = ev.send(Event::Message(msg(chat_id, next, true, "", "", 0, &text)));
+                }
                 ev.send(Event::Sent {
-                    text: String::new(),
+                    text: if err.is_some() { text } else { String::new() },
                     files: Vec::new(),
-                    err: None,
+                    err,
                     token,
                 })
             }
