@@ -518,6 +518,7 @@ button.save-btn.done:disabled { opacity: 1; }
 /* the people of a big group, in the popover under the header avatar */
 .people-list { padding: 4px 2px; }
 .person-row { padding: 4px 6px; border-radius: 12px; }
+popover.issues button.person-row { padding: 4px 6px; } /* the shared popover rule for flat buttons would make them roomier */
 .side-title { transition: opacity 160ms ease; }
 .sidebar.collapsed .side-title { opacity: 0; } /* the wider avatars-only sidebar would show its first letters */
 /* the row's own texts must never show in the avatars-only sidebar (the short name under the avatar does) */

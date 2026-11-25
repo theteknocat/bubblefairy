@@ -1692,6 +1692,39 @@ pub fn build(
             u.to_entry.set_text(&t);
         });
     }
+    // dev aid: BF_CARD=<ms> opens the header avatar's popover for the open chat (the contact card, or the people list
+    // of a big group); with BF_POPSHOT=<png> it is drawn to a file
+    if let Some(ms) = std::env::var("BF_CARD")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        let u = ui.clone();
+        glib::timeout_add_local_once(Duration::from_millis(ms), move || {
+            let chat = {
+                let st = u.st.borrow();
+                st.chats
+                    .iter()
+                    .find(|c| c["id"].as_i64() == st.sel)
+                    .cloned()
+            };
+            let Some(c) = chat else { return };
+            let people: Vec<String> = c["participants"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.as_str().map(String::from))
+                .collect();
+            let avatar = u.head_avatar.clone().upcast();
+            if c["is_group"].as_bool() == Some(true) && people.len() > BIG_GROUP {
+                show_people(&u, &avatar, &people);
+            } else {
+                let handle = people.first().cloned().unwrap_or_default();
+                let name = c["contact_name"].as_str().unwrap_or(&handle).to_string();
+                show_card(&u, &avatar, &handle, &name, Rc::new(|_| {}));
+            }
+            popshot_soon(&u);
+        });
+    }
     // dev aid: BF_ISSUE=<ms> flags a connection problem then and opens the pill's popover; BF_TOAST=<ms> shows a toast
     for (var, toast) in [("BF_ISSUE", false), ("BF_TOAST", true)] {
         if let Some(ms) = std::env::var(var).ok().and_then(|v| v.parse::<u64>().ok()) {
@@ -1702,17 +1735,7 @@ pub fn build(
                 } else {
                     set_issue(&u, "live", Some("Live updates unavailable: demo".into()));
                     status_clicked(&u);
-                    // BF_POPSHOT=<png>: draw the open popover to a file (a screenshot of the window leaves out popups)
-                    if let Some(path) = std::env::var_os("BF_POPSHOT") {
-                        let u2 = u.clone();
-                        glib::timeout_add_local_once(Duration::from_millis(600), move || {
-                            let pop = u2.status_pop.borrow().clone();
-                            if let Some(pop) = pop {
-                                save_widget_png(&pop, std::path::Path::new(&path));
-                            }
-                            u2.win.close();
-                        });
-                    }
+                    popshot_soon(&u);
                 }
             });
         }
@@ -3104,11 +3127,8 @@ fn status_clicked(u: &Rc<Ui>) {
     pop.set_parent(&u.status);
     *u.status_pop.borrow_mut() = Some(pop.clone());
     let u2 = u.clone();
-    pop.connect_closed(move |p| {
-        *u2.status_pop.borrow_mut() = None;
-        let p = p.clone();
-        glib::idle_add_local_once(move || p.unparent());
-    });
+    pop.connect_closed(move |_| *u2.status_pop.borrow_mut() = None);
+    unparent_on_close(&pop);
     // the times move on even when nothing else changes
     let (u3, weak) = (u.clone(), pop.downgrade());
     glib::timeout_add_local(Duration::from_secs(5), move || match weak.upgrade() {
@@ -3119,6 +3139,27 @@ fn status_clicked(u: &Rc<Ui>) {
         _ => glib::ControlFlow::Break,
     });
     pop.popup();
+}
+
+/// Dev aid: with `BF_POPSHOT=<png>` set, draws the open popover to that file shortly after, then quits.
+fn popshot_soon(u: &Rc<Ui>) {
+    let Some(path) = std::env::var_os("BF_POPSHOT") else {
+        return;
+    };
+    let u = u.clone();
+    glib::timeout_add_local_once(Duration::from_millis(600), move || {
+        // the status popover hangs off the pill, the others off the window
+        let mut pop = u.status_pop.borrow().clone();
+        let mut child = u.win.first_child();
+        while let (None, Some(w)) = (&pop, &child) {
+            pop = w.clone().downcast::<gtk::Popover>().ok();
+            child = w.next_sibling();
+        }
+        if let Some(pop) = pop {
+            save_widget_png(&pop, std::path::Path::new(&path));
+        }
+        u.win.close();
+    });
 }
 
 /// Dev aid: draws a widget (a popover, which a window screenshot leaves out) to a PNG.
@@ -3909,10 +3950,7 @@ fn failed_button(u: &Rc<Ui>, m: &Value) -> gtk::Button {
             p2.popdown();
             retry_failed(&u2, &m2);
         });
-        pop.connect_closed(|p| {
-            let p = p.clone();
-            glib::idle_add_local_once(move || p.unparent());
-        });
+        unparent_on_close(&pop);
         pop.popup();
     });
     b
@@ -6189,10 +6227,7 @@ fn pin_menu(u: &Rc<Ui>, w: &gtk::Widget, keys: &[String], pinned: bool, muted: b
             p3.popdown();
             toggle_mute(&u3, &key3);
         });
-        pop.connect_closed(|p| {
-            let p = p.clone();
-            glib::idle_add_local_once(move || p.unparent());
-        });
+        unparent_on_close(&pop);
         pop.popup();
     });
     w.add_controller(g);
@@ -7852,10 +7887,7 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
                 }),
             );
         });
-        pop.connect_closed(|p| {
-            let p = p.clone();
-            glib::idle_add_local_once(move || p.unparent());
-        });
+        unparent_on_close(&pop);
         pop.popup();
     });
     p.add_controller(menu);
@@ -10668,6 +10700,43 @@ fn chat_avatar(u: &Ui, chat: &Value, title: &str) -> gtk::Widget {
 
 // ---------- contact card ----------
 
+/// A popover in the app's style (`issues`), hung under `anchor` and parented to the window, plus the height left
+/// below the anchor (inside the window and the monitor) for its content.
+fn anchored_popover(u: &Rc<Ui>, anchor: &gtk::Widget) -> (gtk::Popover, i32) {
+    let pop = gtk::Popover::new();
+    pop.add_css_class("issues");
+    // On the window, not the header: a popover parented to a Box gets a slot among its children
+    // and pushes them over.
+    pop.set_parent(&u.win);
+    pop.set_position(gtk::PositionType::Bottom);
+    let mut room = u.win.height();
+    if let Some(r) = anchor.compute_bounds(&u.win) {
+        pop.set_pointing_to(Some(&gdk::Rectangle::new(
+            r.x() as i32,
+            r.y() as i32,
+            r.width() as i32,
+            r.height() as i32,
+        )));
+        room -= (r.y() + r.height()) as i32;
+    }
+    if let Some(mon) = u
+        .win
+        .surface()
+        .and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s))
+    {
+        room = room.min(mon.geometry().height() - 120);
+    }
+    (pop, room)
+}
+
+/// Takes a popover off its parent once it has closed (after the close finishes, not during it).
+fn unparent_on_close(pop: &gtk::Popover) {
+    pop.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
+}
+
 /// The conversation header's avatar; each person in it opens their contact card when clicked.
 fn header_avatar(u: &Rc<Ui>, chat: &Value, title: &str) -> gtk::Widget {
     let click: OpenCard = {
@@ -10709,29 +10778,7 @@ fn header_avatar(u: &Rc<Ui>, chat: &Value, title: &str) -> gtk::Widget {
 
 /// Drop a card in under `w` (a header avatar), with an arrow pointing at it.
 fn show_card(u: &Rc<Ui>, w: &gtk::Widget, handle: &str, name: &str, open: CardOpen) {
-    let pop = gtk::Popover::new();
-    // On the window, not the header: a popover parented to a Box gets a slot among its children
-    // and pushes them over.
-    pop.set_parent(&u.win);
-    pop.set_position(gtk::PositionType::Bottom);
-    // room below the avatar, inside the window and the monitor; taller cards scroll
-    let mut room = u.win.height();
-    if let Some(r) = w.compute_bounds(&u.win) {
-        pop.set_pointing_to(Some(&gdk::Rectangle::new(
-            r.x() as i32,
-            r.y() as i32,
-            r.width() as i32,
-            r.height() as i32,
-        )));
-        room -= (r.y() + r.height()) as i32;
-    }
-    if let Some(mon) = u
-        .win
-        .surface()
-        .and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s))
-    {
-        room = room.min(mon.geometry().height() - 120);
-    }
+    let (pop, room) = anchored_popover(u, w);
     let body = card_body(u, &pop, handle, name);
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -10742,11 +10789,8 @@ fn show_card(u: &Rc<Ui>, w: &gtk::Widget, handle: &str, name: &str, open: CardOp
         .build();
     pop.set_child(Some(&scroll));
     let open2 = open.clone();
-    pop.connect_closed(move |p| {
-        open2(false);
-        let p = p.clone();
-        glib::idle_add_local_once(move || p.unparent());
-    });
+    pop.connect_closed(move |_| open2(false));
+    unparent_on_close(&pop);
     pop.popup();
     open(true);
     body.grab_focus(); // else the first button opens with a focus ring
@@ -10759,26 +10803,7 @@ const BIG_GROUP: usize = 4;
 /// The list of people in a big group, dropped in under its header avatar. Picking a person swaps the list for their
 /// contact card, with a back button, so it is one popover of one width whatever the window's size.
 fn show_people(u: &Rc<Ui>, w: &gtk::Widget, members: &[String]) {
-    let pop = gtk::Popover::new();
-    pop.set_parent(&u.win);
-    pop.set_position(gtk::PositionType::Bottom);
-    let mut room = u.win.height();
-    if let Some(r) = w.compute_bounds(&u.win) {
-        pop.set_pointing_to(Some(&gdk::Rectangle::new(
-            r.x() as i32,
-            r.y() as i32,
-            r.width() as i32,
-            r.height() as i32,
-        )));
-        room -= (r.y() + r.height()) as i32;
-    }
-    if let Some(mon) = u
-        .win
-        .surface()
-        .and_then(|s| WidgetExt::display(&u.win).monitor_at_surface(&s))
-    {
-        room = room.min(mon.geometry().height() - 120);
-    }
+    let (pop, room) = anchored_popover(u, w);
     let max_h = (room - 30).max(200);
     let names = u.st.borrow().names.clone();
 
@@ -10886,10 +10911,7 @@ fn show_people(u: &Rc<Ui>, w: &gtk::Widget, members: &[String]) {
             });
         });
     }
-    pop.connect_closed(move |p| {
-        let p = p.clone();
-        glib::idle_add_local_once(move || p.unparent());
-    });
+    unparent_on_close(&pop);
     pop.popup();
 }
 
