@@ -599,7 +599,13 @@ row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 /* Settings wears the same look as the wizard */
 .bf-settings entry { background-color: var(--field); border-radius: 99px; border: 1px solid transparent; padding: 2px 14px; min-height: 34px; color: var(--ink); box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); }
 .bf-settings frame { background-color: var(--panel); border: none; border-radius: 18px; box-shadow: 0 4px 16px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(alpha(var(--panel-edge), 0), var(--panel-edge), var(--depth)); }
-.bf-settings frame > .box-title { font-weight: 700; margin: 10px 0 0 14px; }
+.bf-settings frame > .box-title { font-weight: 700; margin: 12px 0 2px 16px; }
+/* inside a box: one row per setting, thin dividers between, so each name leads to its control */
+.bf-settings .set-row { padding: 11px 16px; }
+.bf-settings .set-sep { min-height: 1px; margin: 0 16px; background-color: alpha(var(--neutral), 0.30); }
+.bf-settings .toggle-row { border-radius: 12px; transition: background-color 160ms ease; }
+.bf-settings .toggle-row:hover { background-color: alpha(currentColor, 0.05); }
+.set-help { font-size: 0.86em; color: var(--ink-soft); }
 .bf-settings button { border-radius: 99px; }
 .bf-settings button.suggested-action, .bf-settings button.wiz-next { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); background-color: transparent; color: #ffffff; font-weight: 700; border: none; padding: 8px 22px; box-shadow: 0 4px 12px mix(alpha(var(--accent), 0), alpha(var(--accent), 0.40), var(--depth)), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--depth)); }
 .bf-settings dropdown > button { background-color: var(--field); border: none; box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); }
@@ -607,8 +613,11 @@ row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .bf-settings button:not(.suggested-action):not(.wiz-next):not(.info-tab):hover { background-color: alpha(var(--accent), 0.22); }
 .bf-settings dropdown > button { padding: 4px 14px; }
 .bf-tabs button.info-tab { padding: 5px 14px; }
-.bf-settings check, .wizard check { border-radius: 7px; background-image: none; background-color: var(--field); border: 1px solid alpha(var(--accent), 0.55); box-shadow: inset 0 1px 2px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); color: #ffffff; }
-.bf-settings check:checked, .wizard check:checked { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: transparent; }
+/* slide toggles: a pill track with a round knob, no on/off symbols */
+.bf-settings switch, .wizard switch { min-height: 20px; padding: 3px; border-radius: 99px; border: none; background-image: none; background-color: alpha(var(--neutral), 0.35); box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); transition: background-color 160ms ease; }
+.bf-settings switch:checked, .wizard switch:checked { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+.bf-settings switch > slider, .wizard switch > slider { min-width: 20px; min-height: 20px; margin: 0; border-radius: 99px; border: none; background-image: none; background-color: #ffffff; box-shadow: 0 1px 3px mix(rgba(10, 0, 50, 0), rgba(10, 0, 50, 0.40), var(--depth)); }
+.bf-settings switch > image, .wizard switch > image { opacity: 0; -gtk-icon-size: 1px; } /* at full size they stretch the knob into an oval */
 .bf-settings windowcontrols button:not(.suggested-action):not(.wiz-next):not(.info-tab) { background-color: transparent; box-shadow: none; border-radius: 99px; background-image: none; padding: 4px; min-width: 24px; min-height: 24px; color: var(--ink-soft); }
 .bf-settings windowcontrols button:not(.suggested-action):not(.wiz-next):not(.info-tab):hover { background-color: transparent; }
 

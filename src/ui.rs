@@ -9655,41 +9655,25 @@ fn settings(u: &Rc<Ui>) {
     head.set_title_widget(Some(&brand()));
     w.set_titlebar(Some(&head));
     let cfg = u.st.borrow().cfg.clone();
-    let previews = gtk::CheckButton::with_label("Show map previews on contact cards");
-    previews.set_active(cfg.map_previews);
-    let why = gtk::Label::new(Some(
+    let (previews_row, previews, ..) = switch_row(
+        "Show map previews on contact cards",
         "Uses OpenStreetMap: a contact's postal address is sent there to find it on the map. When off, cards show a plain button that opens the address in your maps app.",
-    ));
-    why.set_wrap(true);
-    why.set_max_width_chars(58);
-    why.set_xalign(0.0);
-    why.add_css_class("dim");
-    let links = gtk::CheckButton::with_label("Make previews for links Messages didn't");
-    links.set_active(cfg.link_previews);
-    let links_why = gtk::Label::new(Some(
+    );
+    previews.set_active(cfg.map_previews);
+    let (links_row, links, ..) = switch_row(
+        "Make previews for links Messages didn't",
         "A link with no preview shows its title and picture, read from the page itself. This computer fetches the page, so the linked site sees your internet address. Off: such links stay a plain card with the site's name.",
-    ));
-    links_why.set_wrap(true);
-    links_why.set_max_width_chars(58);
-    links_why.set_xalign(0.0);
-    links_why.add_css_class("dim");
-    let pbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    pbox.append(&previews);
-    pbox.append(&why);
-    pbox.append(&links);
-    pbox.append(&links_why);
-    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
-        pbox.set_property(m, 10);
-    }
+    );
+    links.set_active(cfg.link_previews);
+    let pbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    add_row(&pbox, &previews_row);
+    add_row(&pbox, &links_row);
     let appearance = appearance_frame(u, &w);
     let privacy_frame = titled_frame("bf-privacy-symbolic", "Privacy");
     privacy_frame.set_child(Some(&pbox));
 
     // default download folders: empty = the download buttons ask every time
-    let dl = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
-        dl.set_property(m, 10);
-    }
+    let dl = gtk::Box::new(gtk::Orientation::Vertical, 0);
     // The file chooser hands a Flatpak app a portal path (/run/user/1000/doc/<id>/Pictures); that is what
     // saving needs, but the field shows the real folder, which the portal keeps in an attribute.
     let shown = |path: &str| {
@@ -9762,27 +9746,19 @@ fn settings(u: &Rc<Ui>) {
     };
     let images_row = folder_row("Pictures", &cfg.dir_images, |c, v| c.dir_images = v);
     let files_row = folder_row("Files", &cfg.dir_files, |c, v| c.dir_files = v);
-    let dl_help = gtk::Label::new(Some(
+    let dl_help = help_label(
         "The download button next to a picture or file saves it to the folder set here. With no folder set, it opens a save dialog every time so you choose where it goes.",
-    ));
-    dl_help.set_wrap(true);
-    dl_help.set_max_width_chars(58);
-    dl_help.set_xalign(0.0);
-    dl_help.add_css_class("dim");
-    dl.append(&images_row);
-    dl.append(&files_row);
-    dl.append(&dl_help);
+    );
+    add_row(&dl, &images_row);
+    add_row(&dl, &files_row);
     let dl_frame = titled_frame("bf-download-symbolic", "Default download folders");
     dl_frame.set_child(Some(&dl));
 
     // notifications: whether, with a sound (which), and what they show
-    let nb = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
-        nb.set_property(m, 10);
-    }
-    let notify_on = gtk::CheckButton::with_label("Show a notification for a new message");
+    let nb = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let (notify_on_row, notify_on, ..) = switch_row("Show a notification for a new message", "");
     notify_on.set_active(cfg.notify);
-    let sound_on = gtk::CheckButton::with_label("Play a sound");
+    let (sound_on_row, sound_on, ..) = switch_row("Play a sound", "");
     sound_on.set_active(cfg.notify_sound);
     // the sound: the bundled ones, then "Custom file…" (which shows the chosen file's name once there is one)
     let custom: Rc<RefCell<String>> = Rc::new(RefCell::new(
@@ -9899,35 +9875,26 @@ fn settings(u: &Rc<Ui>) {
     text_pick.set_selected(u32::from(cfg.notify_text.min(2)));
     text_row.append(&text_label);
     text_row.append(&text_pick);
-    let notify_help = gtk::Label::new(Some(
+    let notify_help = help_label(
         "Notifications follow your desktop's own settings (do not disturb, per-app controls). The sound is played by BubbleFairy itself, and stays quiet while the desktop is in do-not-disturb. A message in the chat you are looking at makes neither.",
-    ));
-    notify_help.set_wrap(true);
-    notify_help.set_max_width_chars(58);
-    notify_help.set_xalign(0.0);
-    notify_help.add_css_class("dim");
-    for wd in [
-        notify_on.upcast_ref::<gtk::Widget>(),
-        sound_on.upcast_ref(),
-        sound_row.upcast_ref(),
-        text_row.upcast_ref(),
-        notify_help.upcast_ref(),
-    ] {
-        nb.append(wd);
+    );
+    for row in [&notify_on_row, &sound_on_row, &sound_row, &text_row] {
+        add_row(&nb, row);
     }
     let notify_frame = titled_frame("bf-notifications-symbolic", "Notifications");
     notify_frame.set_child(Some(&nb));
 
-    let auto_on = gtk::CheckButton::with_label("Start hidden in the tray when I log in");
+    let (auto_on_row, auto_on, auto_label, tray_help) =
+        switch_row("Start hidden in the tray when I log in", "");
     auto_on.set_active(cfg.autostart);
-    let tray_help = gtk::Label::new(None);
-    let (th, ao) = (tray_help.clone(), auto_on.clone());
+    let th = tray_help.clone();
     let say = move |found: bool| {
-        ao.set_label(Some(if found {
+        auto_label.set_text(if found {
             "Start hidden in the tray when I log in"
         } else {
             "Start minimized when I log in"
-        }));
+        });
+        th.set_visible(true);
         th.set_text(if found {
             "BubbleFairy keeps an icon in the system tray. Closing the window keeps it running there, so notifications keep coming, and the icon shows a dot while a chat is unread. Quit from the icon's menu or with Ctrl+Q."
         } else {
@@ -9937,54 +9904,33 @@ fn settings(u: &Rc<Ui>) {
     // filled in straight away from the tray we have (or haven't), so the window is sized to the real text
     say(u.tray.borrow().is_some());
     glib::MainContext::default().spawn_local(async move { say(crate::tray::host_present().await) });
-    tray_help.set_wrap(true);
-    tray_help.set_max_width_chars(58);
-    tray_help.set_xalign(0.0);
-    tray_help.add_css_class("dim");
-    let bg = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    for wd in [auto_on.upcast_ref::<gtk::Widget>(), tray_help.upcast_ref()] {
-        bg.append(wd);
-    }
-    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
-        bg.set_property(m, 10);
-    }
+    let bg = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    add_row(&bg, &auto_on_row);
     let bg_frame = titled_frame("bf-background-symbolic", "Background");
     bg_frame.set_child(Some(&bg));
 
     // a local copy of the chat list and contacts, so the next start shows them while the Mac is being reached
-    let cache_on = gtk::CheckButton::with_label(
+    let (cache_on_row, cache_on, ..) = switch_row(
         "Keep a local copy of my chats and contacts for a faster start",
+        "The chat list, the last message of each chat and your contacts (names, numbers and photos) are saved on this computer. The next start shows them straight away and swaps in what the Mac sends as soon as it answers. Turning this off deletes the copy.",
     );
     cache_on.set_active(cfg.local_cache);
-    let cache_help = gtk::Label::new(Some(
-        "The chat list, the last message of each chat and your contacts (names, numbers and photos) are saved on this computer. The next start shows them straight away and swaps in what the Mac sends as soon as it answers. Turning this off deletes the copy.",
-    ));
-    cache_help.set_wrap(true);
-    cache_help.set_max_width_chars(58);
-    cache_help.set_xalign(0.0);
-    cache_help.add_css_class("dim");
     let cache_clear = gtk::Button::with_label("Clear saved copy");
     cache_clear.set_halign(gtk::Align::Start);
     let u2 = u.clone();
     cache_clear.connect_clicked(move |_| clear_snapshot(&u2));
-    let cache_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    for wd in [
-        cache_on.upcast_ref::<gtk::Widget>(),
-        cache_help.upcast_ref(),
-        cache_clear.upcast_ref(),
-    ] {
-        cache_box.append(wd);
-    }
-    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
-        cache_box.set_property(m, 10);
-    }
+    let cache_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    add_row(&cache_box, &cache_on_row);
+    let clear_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    clear_row.append(&cache_clear);
+    add_row(&cache_box, &clear_row);
     let cache_frame = titled_frame("bf-bolt-symbolic", "Faster start");
     cache_frame.set_child(Some(&cache_box));
 
     // every change applies at once
-    let check = |b: &gtk::CheckButton, set: fn(&mut Config, bool)| {
+    let check = |b: &gtk::Switch, set: fn(&mut Config, bool)| {
         let u = u.clone();
-        b.connect_toggled(move |b| change_setting(&u, |c| set(c, b.is_active())));
+        b.connect_active_notify(move |b| change_setting(&u, |c| set(c, b.is_active())));
     };
     check(&previews, |c, on| c.map_previews = on);
     check(&links, |c, on| c.link_previews = on);
@@ -9992,13 +9938,13 @@ fn settings(u: &Rc<Ui>) {
     check(&sound_on, |c, on| c.notify_sound = on);
     check(&cache_on, |c, on| c.local_cache = on);
     let u2 = u.clone();
-    cache_on.connect_toggled(move |b| {
+    cache_on.connect_active_notify(move |b| {
         if !b.is_active() {
             clear_snapshot(&u2);
         }
     });
     let u2 = u.clone();
-    auto_on.connect_toggled(move |b| change_autostart(&u2, b));
+    auto_on.connect_active_notify(move |b| change_autostart(&u2, b));
     let (u2, chosen2) = (u.clone(), chosen.clone());
     // connected after the picker's own handler, so `chosen` is already the new one
     picker.connect_selected_notify(move |_| {
@@ -10060,13 +10006,13 @@ fn settings(u: &Rc<Ui>) {
         "notifications",
         "bf-notifications-symbolic",
         "Notifications",
-        &section(&[notify_frame.upcast_ref()]),
+        &section(&[notify_frame.upcast_ref(), notify_help.upcast_ref()]),
     );
     add(
         "downloads",
         "bf-download-symbolic",
         "Downloads",
-        &section(&[dl_frame.upcast_ref()]),
+        &section(&[dl_frame.upcast_ref(), dl_help.upcast_ref()]),
     );
     add(
         "general",
@@ -10158,6 +10104,67 @@ fn is_dark_scheme(s: &gtk::Settings) -> bool {
     s.gtk_interface_color_scheme() == gtk::InterfaceColorScheme::Dark
 }
 
+/// A small wrapped explanation under a setting or a Settings box.
+fn help_label(text: &str) -> gtk::Label {
+    let l = gtk::Label::new(Some(text));
+    l.set_wrap(true);
+    l.set_max_width_chars(58);
+    l.set_xalign(0.0);
+    l.add_css_class("set-help");
+    l
+}
+
+/// Add a row to a Settings box, with a divider after the row before it.
+fn add_row(list: &gtk::Box, row: &impl IsA<gtk::Widget>) {
+    if list.first_child().is_some() {
+        let line = gtk::Separator::new(gtk::Orientation::Horizontal);
+        line.add_css_class("set-sep");
+        list.append(&line);
+    }
+    row.add_css_class("set-row");
+    list.append(row);
+}
+
+/// An on/off setting: its name (and what it does, if `help` says) with a slide toggle at the right end.
+/// Clicking anywhere on the row toggles it. Returns the row, the toggle, the name and the help.
+pub(crate) fn switch_row(
+    text: &str,
+    help: &str,
+) -> (gtk::Box, gtk::Switch, gtk::Label, gtk::Label) {
+    let label = gtk::Label::new(Some(text));
+    label.set_xalign(0.0);
+    label.set_wrap(true);
+    let more = help_label(help);
+    more.set_visible(!help.is_empty());
+    let words = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    words.set_hexpand(true);
+    words.append(&label);
+    words.append(&more);
+    let switch = gtk::Switch::new();
+    switch.set_valign(gtk::Align::Center);
+    switch.update_relation(&[gtk::accessible::Relation::LabelledBy(&[label.upcast_ref()])]);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    row.add_css_class("toggle-row");
+    row.append(&words);
+    row.append(&switch);
+    let click = gtk::GestureClick::new();
+    let (s, r) = (switch.downgrade(), row.downgrade());
+    click.connect_released(move |_, _, x, y| {
+        let (Some(s), Some(r)) = (s.upgrade(), r.upgrade()) else {
+            return;
+        };
+        // the toggle handles its own clicks
+        let on_switch = r
+            .pick(x, y, gtk::PickFlags::DEFAULT)
+            .is_some_and(|w| w == *s.upcast_ref::<gtk::Widget>() || w.is_ancestor(&s));
+        if !on_switch && s.is_sensitive() && r.contains(x, y) {
+            s.set_active(!s.is_active());
+        }
+    });
+    row.add_controller(click);
+    (row, switch, label, more)
+}
+
 /// An icon and a name, side by side.
 fn icon_label(icon: &str, text: &str) -> (gtk::Box, gtk::Label) {
     let b = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -10188,8 +10195,8 @@ fn change_setting(u: &Ui, f: impl FnOnce(&mut Config)) {
     u.send(Cmd::Configure(cfg)); // the connection is only redone if where we connect to changed
 }
 
-/// Make or remove the login entry; if the desktop refuses, put the checkbox and the setting back.
-fn change_autostart(u: &Rc<Ui>, check: &gtk::CheckButton) {
+/// Make or remove the login entry; if the desktop refuses, put the toggle and the setting back.
+fn change_autostart(u: &Rc<Ui>, check: &gtk::Switch) {
     let want = check.is_active();
     if u.st.borrow().cfg.autostart == want {
         return;
@@ -10230,10 +10237,7 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Frame {
     let colours = Rc::new(Cell::new(colours));
     // a slider drag changes the value many times a second: the file is written once it settles
     let save_queued = Rc::new(Cell::new(false));
-    let rows = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
-        rows.set_property(m, 10);
-    }
+    let rows = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     let schemes = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     schemes.add_css_class("bf-tabs");
@@ -10255,7 +10259,10 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Frame {
         schemes.append(&t);
         group.get_or_insert(t);
     }
-    rows.append(&schemes);
+    // in a box of its own: the row's padding would otherwise swell the control's track
+    let scheme_row = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    scheme_row.append(&schemes);
+    add_row(&rows, &scheme_row);
 
     let Some(settings) = gtk::Settings::default() else {
         return gtk::Frame::new(None);
@@ -10303,10 +10310,7 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Frame {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row.append(&label);
         row.append(&scale);
-        if name == "Tint" {
-            row.set_margin_top(6); // room under the light / dark choice
-        }
-        rows.append(&row);
+        add_row(&rows, &row);
         (scale, field)
     });
     // put the showing scheme's values on the sliders, now and whenever it changes
@@ -10332,7 +10336,9 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Frame {
             s.set_value(0.0);
         }
     });
-    rows.append(&reset);
+    let reset_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    reset_row.append(&reset);
+    add_row(&rows, &reset_row);
 
     win.connect_close_request(move |_| {
         if let Some(id) = watch.take() {

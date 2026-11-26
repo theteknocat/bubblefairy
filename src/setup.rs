@@ -495,7 +495,7 @@ struct W {
     dots: Vec<gtk::Box>,
     /// the welcome page is showing (before page 0)
     intro: Cell<bool>,
-    skip_cb: gtk::CheckButton,
+    skip_cb: gtk::Switch,
 }
 
 const PAGES: [&str; 3] = ["mac", "work", "test"];
@@ -641,10 +641,15 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         "Come back here and click <b>Get started</b>.",
         None,
     ));
-    let skip_cb = gtk::CheckButton::with_label("Don't show this again");
-    skip_cb.set_halign(gtk::Align::Start);
-    skip_cb.set_margin_top(6);
-    p0.append(&skip_cb);
+    let (skip_row, skip_cb, skip_label, _) = crate::ui::switch_row("Don't show this again", "");
+    // here the toggle sits just before its name: at the far right it would be stranded
+    if let Some(words) = skip_label.parent() {
+        words.set_hexpand(false);
+        words.set_valign(gtk::Align::Center);
+        skip_row.reorder_child_after(&words, Some(&skip_cb));
+    }
+    skip_row.set_margin_top(6);
+    p0.append(&skip_row);
 
     // 1: the Mac
     let p1 = page("Connect to your Mac");
