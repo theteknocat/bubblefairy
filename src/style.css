@@ -96,6 +96,7 @@ paned > separator { background: transparent; min-width: 2px; }
 
 /* chat list */
 list.chat-list { background: transparent; }
+list.settings-nav { padding: 4px 0; } /* room inside the panel's rounded ends */
 row.chat-row {
   color: var(--ink);
   border-radius: 16px;

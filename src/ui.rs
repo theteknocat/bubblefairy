@@ -1773,7 +1773,7 @@ pub fn build(
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
     {
-        // dev aid: open Settings after <ms>; BF_SETTINGS_TAB=mac|about shows that tab, BF_SETTINGS_SHOT=<png> saves the dialog 1.5 s later
+        // dev aid: open Settings after <ms>; BF_SETTINGS_TAB=<section> opens on it, BF_SETTINGS_SHOT=<png> saves the dialog 1.5 s later
         let u = ui.clone();
         glib::timeout_add_local_once(Duration::from_millis(ms), move || settings(&u));
     }
@@ -9501,9 +9501,8 @@ fn tab_switcher(stack: &gtk::Stack, items: &[(&'static str, &str)]) -> gtk::Box 
 }
 
 /// Settings > About: name, version, licence and where to find the project.
-fn about_tab() -> gtk::Box {
+fn about_tab() -> gtk::Frame {
     let page = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    page.set_valign(gtk::Align::Start);
     page.set_halign(gtk::Align::Center);
     for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
         page.set_property(m, 18);
@@ -9554,16 +9553,15 @@ fn about_tab() -> gtk::Box {
         links.append(&gtk::LinkButton::with_label(&url, label));
     }
     page.append(&links);
-    page
+    let frame = gtk::Frame::new(None);
+    frame.set_child(Some(&page));
+    frame
 }
 
 /// Settings' second tab: where BubbleFairy connects, read only. Changing any of it is what the setup wizard is for.
 fn mac_tab(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Box {
     let cfg = u.st.borrow().cfg.clone();
     let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
-        page.set_property(m, 18);
-    }
     let mut in_card = None;
     if cfg.host.is_empty() {
         let l = gtk::Label::new(Some("Not set up yet."));
@@ -9647,7 +9645,7 @@ fn settings(u: &Rc<Ui>) {
         .transient_for(&u.win)
         .modal(true)
         .title("Settings")
-        .default_width(520)
+        .default_width(700)
         .build();
     w.set_application(u.win.application().as_ref()); // so the light/dark class reaches it, as for the other windows
     w.add_css_class("bf");
@@ -9656,14 +9654,6 @@ fn settings(u: &Rc<Ui>) {
     head.add_css_class("bf-head");
     head.set_title_widget(Some(&brand()));
     w.set_titlebar(Some(&head));
-    let grid = gtk::Grid::builder()
-        .row_spacing(10)
-        .column_spacing(12)
-        .margin_top(18)
-        .margin_bottom(18)
-        .margin_start(18)
-        .margin_end(18)
-        .build();
     let cfg = u.st.borrow().cfg.clone();
     let previews = gtk::CheckButton::with_label("Show map previews on contact cards");
     previews.set_active(cfg.map_previews);
@@ -9691,11 +9681,9 @@ fn settings(u: &Rc<Ui>) {
     for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
         pbox.set_property(m, 10);
     }
-    let (appearance, look) = appearance_frame(u, &w);
-    grid.attach(&appearance, 0, 0, 2, 1);
+    let appearance = appearance_frame(u, &w);
     let privacy_frame = gtk::Frame::new(Some("Privacy"));
     privacy_frame.set_child(Some(&pbox));
-    grid.attach(&privacy_frame, 0, 1, 2, 1);
 
     // default download folders: empty = the download buttons ask every time
     let dl = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -9716,7 +9704,7 @@ fn settings(u: &Rc<Ui>) {
             .map(|s| s.to_string())
             .unwrap_or_else(|| path.to_string())
     };
-    let folder_row = |label: &str, value: &str| {
+    let folder_row = |label: &str, value: &str, set: fn(&mut Config, String)| {
         let l = gtk::Label::new(Some(label));
         l.set_xalign(0.0);
         l.set_width_chars(8);
@@ -9756,21 +9744,24 @@ fn settings(u: &Rc<Ui>) {
             d.select_folder(Some(&win), gio::Cancellable::NONE, move |r| {
                 if let Some(p) = r.ok().and_then(|f| f.path()) {
                     let p = p.to_string_lossy().to_string();
-                    e3.set_text(&shown(&p));
+                    let text = shown(&p);
                     *p3.borrow_mut() = p;
+                    e3.set_text(&text);
                 }
             });
         });
         let e2 = e.clone();
         let p2 = path.clone();
         clear.connect_clicked(move |_| {
-            e2.set_text("");
             p2.borrow_mut().clear();
+            e2.set_text("");
         });
-        (row, path)
+        let u = u.clone();
+        e.connect_changed(move |_| change_setting(&u, |c| set(c, path.borrow().clone())));
+        row
     };
-    let (images_row, dir_images) = folder_row("Pictures", &cfg.dir_images);
-    let (files_row, dir_files) = folder_row("Files", &cfg.dir_files);
+    let images_row = folder_row("Pictures", &cfg.dir_images, |c, v| c.dir_images = v);
+    let files_row = folder_row("Files", &cfg.dir_files, |c, v| c.dir_files = v);
     let dl_help = gtk::Label::new(Some(
         "The download button next to a picture or file saves it to the folder set here. With no folder set, it opens a save dialog every time so you choose where it goes.",
     ));
@@ -9783,7 +9774,6 @@ fn settings(u: &Rc<Ui>) {
     dl.append(&dl_help);
     let dl_frame = gtk::Frame::new(Some("Default download folders"));
     dl_frame.set_child(Some(&dl));
-    grid.attach(&dl_frame, 0, 2, 2, 1);
 
     // notifications: whether, with a sound (which), and what they show
     let nb = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -9831,6 +9821,7 @@ fn settings(u: &Rc<Ui>) {
     listen2.connect_clicked(move |_| crate::sound::play(&chosen2.borrow()));
     let last_ok = Rc::new(Cell::new(current as u32));
     {
+        let u = u.clone();
         let (win, custom, chosen, sounds, last_ok) = (
             w.clone(),
             custom.clone(),
@@ -9858,6 +9849,7 @@ fn settings(u: &Rc<Ui>) {
                     .modal(true)
                     .filters(&filters)
                     .build();
+                let u = u.clone();
                 let (p2, custom, chosen, sounds, last_ok) = (
                     p.clone(),
                     custom.clone(),
@@ -9876,6 +9868,7 @@ fn settings(u: &Rc<Ui>) {
                                 &[&custom_label(&path)],
                             );
                             *chosen.borrow_mut() = format!("file:{path}");
+                            change_setting(&u, |c| c.sound = format!("file:{path}"));
                             last_ok.set(crate::sound::BUNDLED.len() as u32);
                             p2.set_selected(crate::sound::BUNDLED.len() as u32);
                             crate::sound::play(&chosen.borrow());
@@ -9924,23 +9917,26 @@ fn settings(u: &Rc<Ui>) {
     }
     let notify_frame = gtk::Frame::new(Some("Notifications"));
     notify_frame.set_child(Some(&nb));
-    grid.attach(&notify_frame, 0, 3, 2, 1);
 
     let auto_on = gtk::CheckButton::with_label("Start hidden in the tray when I log in");
     auto_on.set_active(cfg.autostart);
-    let tray_help = gtk::Label::new(Some("Looking for a system tray..."));
+    let tray_help = gtk::Label::new(None);
     let (th, ao) = (tray_help.clone(), auto_on.clone());
-    glib::MainContext::default().spawn_local(async move {
-        let found = crate::tray::host_present().await;
-        if !found {
-            ao.set_label(Some("Start minimized when I log in"));
-        }
+    let say = move |found: bool| {
+        ao.set_label(Some(if found {
+            "Start hidden in the tray when I log in"
+        } else {
+            "Start minimized when I log in"
+        }));
         th.set_text(if found {
             "BubbleFairy keeps an icon in the system tray. Closing the window keeps it running there, so notifications keep coming, and the icon shows a dot while a chat is unread. Quit from the icon's menu or with Ctrl+Q."
         } else {
             "I couldn't find a system tray on this desktop (KDE Plasma has one, GNOME needs the AppIndicator extension), so closing the window quits the app. Starting at login opens the window minimized instead, though you may see it for a moment first."
         });
-    });
+    };
+    // filled in straight away from the tray we have (or haven't), so the window is sized to the real text
+    say(u.tray.borrow().is_some());
+    glib::MainContext::default().spawn_local(async move { say(crate::tray::host_present().await) });
     tray_help.set_wrap(true);
     tray_help.set_max_width_chars(58);
     tray_help.set_xalign(0.0);
@@ -9954,7 +9950,6 @@ fn settings(u: &Rc<Ui>) {
     }
     let bg_frame = gtk::Frame::new(Some("Background"));
     bg_frame.set_child(Some(&bg));
-    grid.attach(&bg_frame, 0, 4, 2, 1);
 
     // a local copy of the chat list and contacts, so the next start shows them while the Mac is being reached
     let cache_on = gtk::CheckButton::with_label(
@@ -9985,122 +9980,124 @@ fn settings(u: &Rc<Ui>) {
     }
     let cache_frame = gtk::Frame::new(Some("Faster start"));
     cache_frame.set_child(Some(&cache_box));
-    grid.attach(&cache_frame, 0, 5, 2, 1);
 
-    let save = gtk::Button::with_label("Save");
-    save.add_css_class("suggested-action");
-    let cancel = gtk::Button::with_label("Cancel");
-    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    buttons.set_halign(gtk::Align::End);
-    buttons.append(&cancel);
-    buttons.append(&save);
-    // the settings scroll, the buttons stay in view; the window is never taller than the screen
+    // every change applies at once
+    let check = |b: &gtk::CheckButton, set: fn(&mut Config, bool)| {
+        let u = u.clone();
+        b.connect_toggled(move |b| change_setting(&u, |c| set(c, b.is_active())));
+    };
+    check(&previews, |c, on| c.map_previews = on);
+    check(&links, |c, on| c.link_previews = on);
+    check(&notify_on, |c, on| c.notify = on);
+    check(&sound_on, |c, on| c.notify_sound = on);
+    check(&cache_on, |c, on| c.local_cache = on);
+    let u2 = u.clone();
+    cache_on.connect_toggled(move |b| {
+        if !b.is_active() {
+            clear_snapshot(&u2);
+        }
+    });
+    let u2 = u.clone();
+    auto_on.connect_toggled(move |b| change_autostart(&u2, b));
+    let (u2, chosen2) = (u.clone(), chosen.clone());
+    // connected after the picker's own handler, so `chosen` is already the new one
+    picker.connect_selected_notify(move |_| {
+        change_setting(&u2, |c| c.sound = chosen2.borrow().clone());
+    });
+    let u2 = u.clone();
+    text_pick.connect_selected_notify(move |p| {
+        change_setting(&u2, |c| c.notify_text = p.selected() as u8);
+    });
+
+    // the window is as tall as its tallest part, never taller than the screen (a section then scrolls)
     let max_h = u
         .win
         .surface()
         .and_then(|s| gdk::Display::default()?.monitor_at_surface(&s))
-        .map_or(700, |m| (m.geometry().height() * 85 / 100).min(780));
-    w.set_default_height(max_h);
-    let scroller = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vexpand(true)
-        .child(&grid)
-        .build();
+        .map_or(600, |m| m.geometry().height() * 80 / 100);
     let pages = gtk::Stack::new();
-    pages.add_named(&scroller, Some("app"));
-    pages.add_named(
-        &gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(&mac_tab(u, &w))
-            .build(),
-        Some("mac"),
+    pages.set_hexpand(true);
+    let nav = gtk::ListBox::new();
+    nav.add_css_class("chat-list");
+    nav.add_css_class("settings-nav");
+    let add = |name: &str, title: &str, content: &gtk::Widget| {
+        pages.add_named(
+            &gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .propagate_natural_height(true)
+                .max_content_height(max_h)
+                .child(content)
+                .build(),
+            Some(name),
+        );
+        let label = gtk::Label::new(Some(title));
+        label.set_xalign(0.0);
+        label.add_css_class("chat-name");
+        let row = gtk::ListBoxRow::new();
+        row.add_css_class("chat-row");
+        row.set_widget_name(name);
+        row.set_child(Some(&label));
+        nav.append(&row);
+    };
+    // the same edges for every section, level with the sidebar panel's
+    let section = |parts: &[&gtk::Widget]| -> gtk::Widget {
+        let b = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        b.set_valign(gtk::Align::Start);
+        b.set_margin_top(2);
+        b.set_margin_bottom(14);
+        b.set_margin_end(14);
+        for p in parts {
+            b.append(*p);
+        }
+        b.upcast()
+    };
+    add(
+        "appearance",
+        "Appearance",
+        &section(&[appearance.upcast_ref()]),
     );
-    pages.add_named(&about_tab(), Some("about"));
-    let tabs = tab_switcher(
-        &pages,
-        &[
-            ("app", "Settings"),
-            ("mac", "Mac connection"),
-            ("about", "About"),
-        ],
+    add(
+        "notifications",
+        "Notifications",
+        &section(&[notify_frame.upcast_ref()]),
     );
-    tabs.set_halign(gtk::Align::Center);
-    tabs.set_hexpand(false);
-    tabs.set_margin_bottom(10);
-    // the buttons only apply to the first tab
-    pages.connect_visible_child_name_notify({
-        let buttons = buttons.clone();
-        move |p| buttons.set_visible(p.visible_child_name().as_deref() == Some("app"))
+    add("downloads", "Downloads", &section(&[dl_frame.upcast_ref()]));
+    add(
+        "general",
+        "General",
+        &section(&[bg_frame.upcast_ref(), cache_frame.upcast_ref()]),
+    );
+    add(
+        "privacy",
+        "Privacy",
+        &section(&[privacy_frame.upcast_ref()]),
+    );
+    add(
+        "mac",
+        "Mac connection",
+        &section(&[mac_tab(u, &w).upcast_ref()]),
+    );
+    add("about", "About", &section(&[about_tab().upcast_ref()]));
+    let stack = pages.clone();
+    nav.connect_row_selected(move |_, row| {
+        if let Some(row) = row {
+            stack.set_visible_child_name(&row.widget_name());
+        }
     });
-    buttons.set_margin_top(10);
-    buttons.set_margin_bottom(14);
-    buttons.set_margin_end(18);
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    root.append(&tabs);
+    // BF_SETTINGS_TAB picks the section to open on
+    let wanted = std::env::var("BF_SETTINGS_TAB").unwrap_or_default();
+    let first = std::iter::successors(nav.row_at_index(0), |r| nav.row_at_index(r.index() + 1))
+        .find(|r| r.widget_name() == wanted.as_str());
+    nav.select_row(first.or_else(|| nav.row_at_index(0)).as_ref());
+    let side = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    side.add_css_class("sidebar");
+    side.set_size_request(170, -1);
+    side.append(&nav);
+    let root = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    root.append(&side);
     root.append(&pages);
-    root.append(&buttons);
     w.set_child(Some(&root));
-
-    let w2 = w.clone();
-    cancel.connect_clicked(move |_| w2.close());
-    let (u2, w2) = (u.clone(), w.clone());
-    save.connect_clicked(move |_| {
-        let [theme_light, theme_dark] = look.colours.get();
-        let cfg = Config {
-            color_scheme: look.scheme.get(),
-            theme_light,
-            theme_dark,
-            map_previews: previews.is_active(),
-            link_previews: links.is_active(),
-            dir_images: dir_images.borrow().clone(),
-            dir_files: dir_files.borrow().clone(),
-            notify: notify_on.is_active(),
-            notify_sound: sound_on.is_active(),
-            sound: chosen.borrow().clone(),
-            notify_text: text_pick.selected() as u8,
-            autostart: auto_on.is_active(),
-            local_cache: cache_on.is_active(),
-            ..u2.st.borrow().cfg.clone()
-        };
-        if !cfg.local_cache {
-            clear_snapshot(&u2);
-        }
-        crate::save_config(&u2.store.config_file, &cfg);
-        let old = std::mem::replace(&mut u2.st.borrow_mut().cfg, cfg.clone());
-        if cfg.autostart != old.autostart
-            && let Some(rt) = crate::setup::RT.get()
-        {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let want = cfg.autostart;
-            rt.spawn(async move {
-                let _ = tx.send(crate::tray::set_autostart(want).await);
-            });
-            let u3 = u2.clone();
-            glib::spawn_future_local(async move {
-                if rx.await == Ok(false) {
-                    // the desktop didn't make (or remove) the login entry: don't pretend it did
-                    let mut cfg = u3.st.borrow().cfg.clone();
-                    cfg.autostart = !want;
-                    crate::save_config(&u3.store.config_file, &cfg);
-                    u3.st.borrow_mut().cfg = cfg;
-                    show_toast(
-                        &u3,
-                        if want {
-                            "Couldn't set up starting at login"
-                        } else {
-                            "Couldn't remove the login entry"
-                        },
-                    );
-                }
-            });
-        }
-        u2.send(Cmd::Configure(cfg)); // the connection is only redone if where we connect to changed
-        w2.close();
-    });
     w.present();
-    if let Ok(tab @ ("mac" | "about")) = std::env::var("BF_SETTINGS_TAB").as_deref() {
-        pages.set_visible_child_name(tab);
-    }
     if let Some(out) = std::env::var_os("BF_SETTINGS_SHOT") {
         let w = w.clone();
         glib::timeout_add_local_once(Duration::from_millis(1500), move || {
@@ -10147,23 +10144,59 @@ fn is_dark_scheme(s: &gtk::Settings) -> bool {
     s.gtk_interface_color_scheme() == gtk::InterfaceColorScheme::Dark
 }
 
-/// What Settings' Appearance box holds for Save.
-#[derive(Clone, Default)]
-struct Appearance {
-    scheme: Rc<Cell<u8>>,
-    /// the sliders, light then dark
-    colours: Rc<Cell<[Adjust; 2]>>,
+/// Save one change from the Settings window and put it into effect.
+fn change_setting(u: &Ui, f: impl FnOnce(&mut Config)) {
+    let cfg = {
+        let mut st = u.st.borrow_mut();
+        f(&mut st.cfg);
+        st.cfg.clone()
+    };
+    crate::save_config(&u.store.config_file, &cfg);
+    u.send(Cmd::Configure(cfg)); // the connection is only redone if where we connect to changed
+}
+
+/// Make or remove the login entry; if the desktop refuses, put the checkbox and the setting back.
+fn change_autostart(u: &Rc<Ui>, check: &gtk::CheckButton) {
+    let want = check.is_active();
+    if u.st.borrow().cfg.autostart == want {
+        return;
+    }
+    change_setting(u, |c| c.autostart = want);
+    let Some(rt) = crate::setup::RT.get() else {
+        return;
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    rt.spawn(async move {
+        let _ = tx.send(crate::tray::set_autostart(want).await);
+    });
+    let (u, check) = (u.clone(), check.clone());
+    glib::spawn_future_local(async move {
+        if rx.await == Ok(false) {
+            // the desktop didn't make (or remove) the login entry: don't pretend it did
+            change_setting(&u, |c| c.autostart = !want);
+            check.set_active(!want);
+            show_toast(
+                &u,
+                if want {
+                    "Couldn't set up starting at login"
+                } else {
+                    "Couldn't remove the login entry"
+                },
+            );
+        }
+    });
 }
 
 /// Settings' appearance box: light / dark / system, and the theme sliders for whichever of light and
-/// dark is showing. Both recolour the app at once; closing the window goes back to what is saved.
-fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> (gtk::Frame, Appearance) {
-    let now = Appearance::default();
-    {
+/// dark is showing. Everything recolours the app and is saved as it changes.
+fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Frame {
+    let (scheme, colours) = {
         let st = u.st.borrow();
-        now.scheme.set(st.cfg.color_scheme);
-        now.colours.set([st.cfg.theme_light, st.cfg.theme_dark]);
-    }
+        (st.cfg.color_scheme, [st.cfg.theme_light, st.cfg.theme_dark])
+    };
+    let colours = Rc::new(Cell::new(colours));
+    // a slider drag changes the value many times a second: the file is written once it settles
+    let save_queued = Rc::new(Cell::new(false));
     let rows = gtk::Box::new(gtk::Orientation::Vertical, 8);
     for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
         rows.set_property(m, 10);
@@ -10172,17 +10205,18 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> (gtk::Frame, Appearance) {
     let schemes = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     schemes.add_css_class("bf-tabs");
     schemes.set_homogeneous(true);
+    schemes.set_halign(gtk::Align::Center);
     let mut group: Option<gtk::ToggleButton> = None;
     for (mode, name) in [(0, "System"), (1, "Light"), (2, "Dark")] {
         let t = gtk::ToggleButton::with_label(name);
         t.add_css_class("info-tab");
         t.set_group(group.as_ref());
-        t.set_active(now.scheme.get() == mode);
-        let scheme = now.scheme.clone();
+        t.set_active(scheme == mode);
+        let u = u.clone();
         t.connect_toggled(move |t| {
             if t.is_active() {
-                scheme.set(mode);
                 set_scheme(mode);
+                change_setting(&u, |c| c.color_scheme = mode);
             }
         });
         schemes.append(&t);
@@ -10191,7 +10225,7 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> (gtk::Frame, Appearance) {
     rows.append(&schemes);
 
     let Some(settings) = gtk::Settings::default() else {
-        return (gtk::Frame::new(None), now);
+        return gtk::Frame::new(None);
     };
     type Field = fn(&mut Adjust) -> &mut i32;
     let sliders: [(&str, i32, Field); 4] = [
@@ -10209,12 +10243,29 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> (gtk::Frame, Appearance) {
         scale.set_draw_value(false);
         scale.set_hexpand(true);
         scale.update_property(&[gtk::accessible::Property::Label(name)]);
-        let (u, colours, settings) = (u.clone(), now.colours.clone(), settings.clone());
+        let (u, colours, settings) = (u.clone(), colours.clone(), settings.clone());
+        let save_queued = save_queued.clone();
         scale.connect_value_changed(move |s| {
             let mut c = colours.get();
-            *field(&mut c[usize::from(is_dark_scheme(&settings))]) = s.value().round() as i32;
+            let value = s.value().round() as i32;
+            let slot = field(&mut c[usize::from(is_dark_scheme(&settings))]);
+            if *slot == value {
+                return; // the sliders being filled in
+            }
+            *slot = value;
             colours.set(c);
+            {
+                let mut st = u.st.borrow_mut();
+                (st.cfg.theme_light, st.cfg.theme_dark) = (c[0], c[1]);
+            }
             apply_theme(&u, c[0], c[1]);
+            if !save_queued.replace(true) {
+                let (u, save_queued) = (u.clone(), save_queued.clone());
+                glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                    save_queued.set(false);
+                    crate::save_config(&u.store.config_file, &u.st.borrow().cfg);
+                });
+            }
         });
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row.append(&label);
@@ -10227,7 +10278,7 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> (gtk::Frame, Appearance) {
     });
     // put the showing scheme's values on the sliders, now and whenever it changes
     let show = {
-        let (scales, colours) = (scales.clone(), now.colours.clone());
+        let (scales, colours) = (scales.clone(), colours.clone());
         move |s: &gtk::Settings| {
             let dark = is_dark_scheme(s);
             let mut a = colours.get()[usize::from(dark)];
@@ -10250,25 +10301,15 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> (gtk::Frame, Appearance) {
     });
     rows.append(&reset);
 
-    // however it closes: back to what is saved (after Save, that's the new choice)
-    let (u, chosen) = (u.clone(), now.scheme.clone());
     win.connect_close_request(move |_| {
         if let Some(id) = watch.take() {
             settings.disconnect(id);
         }
-        let (scheme, light, dark) = {
-            let st = u.st.borrow();
-            (st.cfg.color_scheme, st.cfg.theme_light, st.cfg.theme_dark)
-        };
-        if scheme != chosen.get() {
-            set_scheme(scheme);
-        }
-        apply_theme(&u, light, dark);
         glib::Propagation::Proceed
     });
     let frame = gtk::Frame::new(Some("Appearance"));
     frame.set_child(Some(&rows));
-    (frame, now)
+    frame
 }
 
 // ---------- helpers ----------
