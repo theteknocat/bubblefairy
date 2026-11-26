@@ -10433,11 +10433,15 @@ fn avatar(u: &Ui, name: &str, handle: Option<&str>, small: bool) -> gtk::Widget 
         b.set_halign(gtk::Align::Center);
         return b.upcast();
     }
-    initials_avatar(name, small)
+    let w = initials_avatar(name, if small { 28 } else { 44 });
+    if small {
+        w.add_css_class("small");
+    }
+    w
 }
 
 /// Initials on a colour, or a generic person for numbers and other names with no letters.
-fn initials_avatar(name: &str, small: bool) -> gtk::Widget {
+fn initials_avatar(name: &str, d: i32) -> gtk::Widget {
     let hue = name
         .bytes()
         .fold(0u32, |a, c| a.wrapping_mul(31).wrapping_add(c as u32))
@@ -10447,8 +10451,8 @@ fn initials_avatar(name: &str, small: bool) -> gtk::Widget {
         l.set_halign(gtk::Align::Center);
         l.upcast()
     } else {
-        let img = gtk::Image::from_icon_name("avatar-default-symbolic");
-        img.set_pixel_size(if small { 16 } else { 26 });
+        let img = gtk::Image::from_icon_name("bf-contact-symbolic"); // ours: themes differ
+        img.set_pixel_size(d * 3 / 5);
         img.set_halign(gtk::Align::Center);
         img.set_valign(gtk::Align::Center);
         img.set_hexpand(false); // an avatar never takes spare row width
@@ -10461,9 +10465,6 @@ fn initials_avatar(name: &str, small: bool) -> gtk::Widget {
     };
     w.add_css_class("avatar");
     w.add_css_class(&format!("av{hue}"));
-    if small {
-        w.add_css_class("small");
-    }
     w.set_valign(gtk::Align::Center);
     w
 }
@@ -10475,9 +10476,7 @@ fn mini_avatar(u: &Ui, name: &str, handle: &str, d: i32) -> gtk::Widget {
         b.set_texture(Some(&t));
         b.upcast()
     } else {
-        let w = initials_avatar(name, true);
-        w.remove_css_class("small");
-        w
+        initials_avatar(name, d)
     };
     w.add_css_class("avatar");
     w.add_css_class("mini");
