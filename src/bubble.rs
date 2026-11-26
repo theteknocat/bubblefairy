@@ -198,8 +198,8 @@ fn palette(look: Look, dark: bool) -> (gdk::RGBA, gdk::RGBA, gdk::RGBA, f32, Opt
             None,
         ),
         (false, _, false) => (
-            rgba(0xffffff, 1.0),
-            rgba(0xf2f0fa, 1.0),
+            rgba(0xfdfbff, 1.0),
+            rgba(0xf3eefd, 1.0),
             rgba(0x4c3c96, 0.16),
             0.6,
             Some(rgba(0x7a6eb4, 0.20)),

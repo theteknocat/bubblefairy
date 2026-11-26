@@ -1,22 +1,23 @@
 /* BubbleFairy look: soft gradients, layered shadows, rounded glassy panels. Light first, dark below. */
 
 :root {
-  --bg-a: #fbf4ff;
-  --bg-b: #eaf1ff;
-  --bg-c: #fff3f8;
-  --panel: rgba(255, 255, 255, 0.70);
-  --panel-solid: #f6f1fd; /* the info panel when it slides over the chat */
+  --bg-a: #e6dcfa;
+  --bg-b: #dcd9f8;
+  --bg-c: #f0dcf2;
+  --panel: rgba(255, 255, 255, 0.55);
+  --panel-solid: #ebe5fb; /* the info panel when it slides over the chat */
   --panel-edge: rgba(255, 255, 255, 0.95);
   --ink: #2a2442;
-  --ink-soft: #7a7397;
+  --ink-soft: #5a5380;
   --shadow: rgba(76, 60, 150, 0.16);
   --shadow-strong: rgba(76, 60, 150, 0.26);
-  --them-a: #ffffff;
-  --them-b: #f2f0fa;
+  --them-a: #fdfbff;
+  --them-b: #f3eefd;
   --them-ink: #2a2442;
   --them-edge: rgba(122, 110, 180, 0.16);
-  --sel-a: #ece5ff;
-  --sel-b: #dfeaff;
+  --sel-a: #dacdff;
+  --sel-b: #c9dbff;
+  --sel-edge: rgba(123, 92, 255, 0.38); /* the white top edge alone vanishes on light */
   --field: rgba(255, 255, 255, 0.92);
   --banner-a: #fff3d9;
   --banner-b: #ffe4ef;
@@ -41,6 +42,7 @@ window.dark {
     --them-edge: rgba(255, 255, 255, 0.10);
     --sel-a: rgba(165, 140, 255, 0.40);
     --sel-b: rgba(95, 150, 255, 0.32);
+    --sel-edge: transparent;
     --field: rgba(255, 255, 255, 0.09);
     --banner-a: #5a3d20;
     --banner-b: #5a2742;
@@ -141,7 +143,7 @@ row.chat-row:hover { background-color: alpha(currentColor, 0.05); }
 row.chat-row:selected {
   background-color: transparent;
   background-image: linear-gradient(135deg, var(--sel-a), var(--sel-b));
-  box-shadow: 0 3px 10px var(--shadow), inset 0 1px rgba(255, 255, 255, 0.55);
+  box-shadow: 0 3px 10px var(--shadow), inset 0 0 0 1px var(--sel-edge), inset 0 1px rgba(255, 255, 255, 0.55);
   color: var(--ink);
 }
 .chat-name { font-weight: 700; }
@@ -227,7 +229,7 @@ row.unread .chat-preview { color: var(--ink); }
 .tile.dragging { background-color: alpha(currentColor, 0.10); box-shadow: 0 8px 22px var(--shadow-strong); }
 .tile.selected {
   background-image: linear-gradient(135deg, var(--sel-a), var(--sel-b));
-  box-shadow: 0 3px 10px var(--shadow), inset 0 1px rgba(255, 255, 255, 0.55);
+  box-shadow: 0 3px 10px var(--shadow), inset 0 0 0 1px var(--sel-edge), inset 0 1px rgba(255, 255, 255, 0.55);
 }
 .tile-name { font-weight: 700; font-size: 0.9em; color: var(--ink); }
 .tile .unread-dot { margin: 0 0 0 -2px; }
