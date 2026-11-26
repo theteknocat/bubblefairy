@@ -146,20 +146,12 @@ impl Viewer {
             root.add_overlay(&b);
             b
         };
-        let prev = nav(
-            "go-previous-symbolic",
-            gtk::Align::Start,
-            "Previous photo (←)",
-        );
-        let next = nav("go-next-symbolic", gtk::Align::End, "Next photo (→)");
-        let close = nav("window-close-symbolic", gtk::Align::End, "Close (Esc)");
+        let prev = nav("bf-left-symbolic", gtk::Align::Start, "Previous photo (←)");
+        let next = nav("bf-right-symbolic", gtk::Align::End, "Next photo (→)");
+        let close = nav("bf-close-symbolic", gtk::Align::End, "Close (Esc)");
         close.set_valign(gtk::Align::Start);
         close.add_css_class("viewer-close");
-        let full_btn = nav(
-            "view-fullscreen-symbolic",
-            gtk::Align::End,
-            "Full screen (F)",
-        );
+        let full_btn = nav("bf-fullscreen-symbolic", gtk::Align::End, "Full screen (F)");
         full_btn.set_valign(gtk::Align::Start);
         full_btn.add_css_class("viewer-close");
         full_btn.set_margin_end(14 + 32 + 8); // beside the close button
@@ -472,9 +464,9 @@ impl Viewer {
             self.root.remove_css_class("full");
         }
         self.full_btn.set_icon_name(if on {
-            "view-restore-symbolic"
+            "bf-restore-symbolic"
         } else {
-            "view-fullscreen-symbolic"
+            "bf-fullscreen-symbolic"
         });
         self.full_btn.set_tooltip_text(Some(if on {
             "Leave full screen (F, Esc)"

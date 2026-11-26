@@ -655,7 +655,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         .css_classes(["wiz-field"])
         .build();
     // the button at the right end is a real, focusable button: the list's arrow, or "clear" once a Mac is chosen
-    let drop_btn = gtk::Button::from_icon_name("pan-down-symbolic");
+    let drop_btn = gtk::Button::from_icon_name("bf-drop-symbolic");
     drop_btn.add_css_class("wiz-drop-btn");
     drop_btn.set_halign(gtk::Align::End);
     drop_btn.set_valign(gtk::Align::Center);
@@ -668,7 +668,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     host_status.set_valign(gtk::Align::Center);
     host_status.set_margin_start(13);
     host_status.set_can_target(false);
-    let idle = gtk::Image::from_icon_name("computer-symbolic");
+    let idle = gtk::Image::from_icon_name("bf-computer-symbolic");
     idle.add_css_class("dim");
     host_status.add_named(&idle, Some("none"));
     let spin = gtk::Spinner::new();
@@ -681,8 +681,8 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
         i.add_css_class(class);
         i
     };
-    host_status.add_named(&badge("object-select-symbolic", "good"), Some("ok"));
-    host_status.add_named(&badge("window-close-symbolic", "bad"), Some("bad"));
+    host_status.add_named(&badge("bf-check-symbolic", "good"), Some("ok"));
+    host_status.add_named(&badge("bf-close-symbolic", "bad"), Some("bad"));
     host.add_css_class("with-status");
     let field = gtk::Overlay::new();
     field.set_child(Some(&host));
@@ -806,7 +806,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     sending.set_halign(gtk::Align::Center);
     sending.set_valign(gtk::Align::Center);
     test_stack.add_named(&sending, Some("spin"));
-    let sent = gtk::Image::from_icon_name("object-select-symbolic");
+    let sent = gtk::Image::from_icon_name("bf-check-symbolic");
     sent.set_pixel_size(10);
     sent.add_css_class("wiz-badge");
     sent.add_css_class("good");
@@ -1086,7 +1086,7 @@ fn lock_host(w: &Rc<W>, host: &str, move_focus: bool) {
     w.host.add_css_class("locked");
     w.host.set_sensitive(false); // like a disabled input: it can't take focus, so Tab lands on the clear button
     w.locked.set(true);
-    w.drop_btn.set_icon_name("edit-clear-symbolic");
+    w.drop_btn.set_icon_name("bf-clear-symbolic");
     w.drop_btn.set_tooltip_text(Some("Choose a different Mac"));
     set_host_status(w, "ok", "");
     // the next thing is the password; the Mac field is locked, so no cursor in it
@@ -1104,7 +1104,7 @@ fn unlock_host(w: &Rc<W>) {
     w.editing.set(true);
     w.host.set_text("");
     w.editing.set(false);
-    w.drop_btn.set_icon_name("pan-down-symbolic");
+    w.drop_btn.set_icon_name("bf-drop-symbolic");
     w.drop_btn
         .set_tooltip_text(Some("Macs found on the network"));
     set_host_status(w, "none", "");
@@ -1435,17 +1435,17 @@ fn set_step(w: &Rc<W>, i: usize, s: Step) {
     icon.set_visible(s != Step::Run);
     match s {
         Step::Wait => {
-            icon.set_icon_name(Some("media-record-symbolic"));
+            icon.set_icon_name(Some("bf-dot-symbolic"));
             label.add_css_class("dim");
         }
         Step::Run => label.remove_css_class("dim"),
         Step::Ok => {
-            icon.set_icon_name(Some("object-select-symbolic"));
+            icon.set_icon_name(Some("bf-check-symbolic"));
             icon.add_css_class("step-ok");
             label.remove_css_class("dim");
         }
         Step::Bad => {
-            icon.set_icon_name(Some("dialog-error-symbolic"));
+            icon.set_icon_name(Some("bf-error-symbolic"));
             icon.add_css_class("step-bad");
         }
     }

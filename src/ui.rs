@@ -443,11 +443,11 @@ pub fn build(
     status.set_tooltip_text(Some("Starting"));
     status.set_valign(gtk::Align::Center);
     head.pack_start(&status);
-    let settings_btn = gtk::Button::from_icon_name("emblem-system-symbolic");
+    let settings_btn = gtk::Button::from_icon_name("bf-settings-symbolic");
     settings_btn.set_tooltip_text(Some("Settings"));
     settings_btn.add_css_class("head-btn");
     head.pack_end(&settings_btn);
-    let search_btn = gtk::Button::from_icon_name("system-search-symbolic");
+    let search_btn = gtk::Button::from_icon_name("bf-search-symbolic");
     search_btn.set_tooltip_text(Some("Search (Ctrl+F)"));
     search_btn.add_css_class("head-btn");
     head.pack_start(&search_btn);
@@ -465,7 +465,7 @@ pub fn build(
     search_spin.set_can_target(false);
     search_spin.set_visible(false);
     // always there while the field is out, empty or not (the field's own clear icon is hidden in the CSS)
-    let search_close = gtk::Button::from_icon_name("window-close-symbolic");
+    let search_close = gtk::Button::from_icon_name("bf-close-symbolic");
     search_close.set_tooltip_text(Some("Close search (Esc)"));
     search_close.add_css_class("head-btn");
     search_close.add_css_class("search-close");
@@ -527,7 +527,7 @@ pub fn build(
     side_title.add_css_class("side-title");
     side_title.set_xalign(0.0);
     side_title.set_valign(gtk::Align::Center);
-    let new_btn = gtk::Button::from_icon_name("document-edit-symbolic");
+    let new_btn = gtk::Button::from_icon_name("bf-compose-symbolic");
     new_btn.set_tooltip_text(Some("New message (Ctrl+N)"));
     new_btn.add_css_class("head-btn");
     new_btn.add_css_class("new-btn");
@@ -720,7 +720,7 @@ pub fn build(
         .connect_changed(move |b| hint.set_visible(b.char_count() == 0));
     compose_box.set_valign(gtk::Align::Center);
     let emoji = gtk::MenuButton::new();
-    let smile = gtk::Image::from_icon_name("face-smile-symbolic");
+    let smile = gtk::Image::from_icon_name("bf-smile-symbolic");
     smile.set_pixel_size(20);
     emoji.set_child(Some(&smile));
     emoji.set_tooltip_text(Some("Emoji"));
@@ -730,14 +730,14 @@ pub fn build(
     emoji.set_popover(Some(&chooser));
     let buf = compose.buffer();
     chooser.connect_emoji_picked(move |_, e| buf.insert_at_cursor(e));
-    let send_btn = gtk::Button::from_icon_name("go-up-symbolic");
+    let send_btn = gtk::Button::from_icon_name("bf-up-symbolic");
     send_btn.add_css_class("send-btn");
     send_btn.set_sensitive(false); // enabled once there's something to send
     send_btn.set_tooltip_text(Some("Send (Enter)"));
     send_btn.set_valign(gtk::Align::End);
     let composer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     composer.add_css_class("composer");
-    let attach_btn = gtk::Button::from_icon_name("mail-attachment-symbolic");
+    let attach_btn = gtk::Button::from_icon_name("bf-attach-symbolic");
     attach_btn.add_css_class("head-btn");
     attach_btn.add_css_class("attach-btn");
     attach_btn.set_tooltip_text(Some("Attach files (or drop or paste them)"));
@@ -754,13 +754,13 @@ pub fn build(
     find_label.set_xalign(0.0);
     find_label.set_hexpand(true);
     find_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    let find_older = gtk::Button::from_icon_name("go-previous-symbolic");
+    let find_older = gtk::Button::from_icon_name("bf-left-symbolic");
     find_older.set_tooltip_text(Some("Older match"));
-    let find_newer = gtk::Button::from_icon_name("go-next-symbolic");
+    let find_newer = gtk::Button::from_icon_name("bf-right-symbolic");
     find_newer.set_tooltip_text(Some("Newer match"));
     let find_latest = gtk::Button::with_label("Latest");
     find_latest.set_tooltip_text(Some("Back to the newest messages"));
-    let find_close = gtk::Button::from_icon_name("window-close-symbolic");
+    let find_close = gtk::Button::from_icon_name("bf-close-symbolic");
     find_close.set_tooltip_text(Some("Close search"));
     let find_bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     find_bar.add_css_class("find-bar");
@@ -780,7 +780,7 @@ pub fn build(
     conv.append(&find_bar);
     conv.append(&suggest_scroll);
     // a round button over the bottom of the messages that jumps back down once you're a panel's height or more up
-    let to_bottom = gtk::Button::from_icon_name("go-down-symbolic");
+    let to_bottom = gtk::Button::from_icon_name("bf-down-symbolic");
     to_bottom.add_css_class("to-bottom");
     to_bottom.set_halign(gtk::Align::Center);
     to_bottom.set_valign(gtk::Align::End);
@@ -3273,7 +3273,7 @@ fn fill_status_pop(u: &Rc<Ui>, pop: &gtk::Popover) {
         }
         col.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         col.append(&grid);
-        let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
+        let refresh = gtk::Button::from_icon_name("bf-refresh-symbolic");
         refresh.add_css_class("head-btn");
         refresh.add_css_class("pop-refresh");
         refresh.set_tooltip_text(Some("Refresh now"));
@@ -3575,7 +3575,7 @@ fn save_name(m: &Value, path: &str) -> String {
 
 /// The small download button beside a photo, video or file.
 fn save_button(u: &Rc<Ui>, items: Vec<Save>) -> gtk::Button {
-    let b = gtk::Button::from_icon_name("document-save-symbolic");
+    let b = gtk::Button::from_icon_name("bf-download-symbolic");
     b.add_css_class("save-btn");
     b.set_valign(gtk::Align::Center);
     b.set_tooltip_text(Some(if items.len() > 1 {
@@ -3602,12 +3602,12 @@ fn save_button(u: &Rc<Ui>, items: Vec<Save>) -> gtk::Button {
 
 /// Finished: the save button is a green check for 3 s (and can't be clicked) before it turns back into the save icon.
 fn show_saved(b: &gtk::Button) {
-    b.set_icon_name("object-select-symbolic");
+    b.set_icon_name("bf-check-symbolic");
     b.add_css_class("done");
     b.set_sensitive(false);
     let b = b.clone();
     glib::timeout_add_local_once(Duration::from_secs(3), move || {
-        b.set_icon_name("document-save-symbolic");
+        b.set_icon_name("bf-download-symbolic");
         b.remove_css_class("done");
         b.set_sensitive(true);
     });
@@ -4099,7 +4099,7 @@ fn render_attach(u: &Rc<Ui>) {
             pic.add_css_class("attach-thumb");
             card.append(&pic);
         } else {
-            let icon = gtk::Image::from_icon_name("text-x-generic-symbolic");
+            let icon = gtk::Image::from_icon_name("bf-document-symbolic");
             icon.set_pixel_size(24);
             card.append(&icon);
             let l = gtk::Label::new(Some(&name));
@@ -4107,7 +4107,7 @@ fn render_attach(u: &Rc<Ui>) {
             l.set_max_width_chars(18);
             card.append(&l);
         }
-        let x = gtk::Button::from_icon_name("window-close-symbolic");
+        let x = gtk::Button::from_icon_name("bf-close-symbolic");
         x.add_css_class("attach-remove");
         x.set_tooltip_text(Some("Remove"));
         x.set_halign(gtk::Align::End);
@@ -8169,11 +8169,11 @@ fn build_info() -> Info {
     btn.add_css_class("head-btn");
     btn.set_valign(gtk::Align::Center);
     btn.set_tooltip_text(Some("Conversation info"));
-    let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
+    let refresh = gtk::Button::from_icon_name("bf-refresh-symbolic");
     refresh.add_css_class("head-btn");
     refresh.set_valign(gtk::Align::Center);
     refresh.set_tooltip_text(Some("Reload this conversation from the Mac"));
-    let close = gtk::Button::from_icon_name("window-close-symbolic");
+    let close = gtk::Button::from_icon_name("bf-close-symbolic");
     close.add_css_class("head-btn");
     close.set_valign(gtk::Align::Center);
     let photos = gtk::FlowBox::new();
@@ -8239,8 +8239,8 @@ fn build_info() -> Info {
         ],
     );
     // narrow panel: "‹ Photos ›". Both carets take the same room even when one is hidden, so the name stays centred.
-    let prev = gtk::Button::from_icon_name("pan-start-symbolic");
-    let next = gtk::Button::from_icon_name("pan-end-symbolic");
+    let prev = gtk::Button::from_icon_name("bf-left-symbolic");
+    let next = gtk::Button::from_icon_name("bf-right-symbolic");
     let name = gtk::Label::new(Some("Photos"));
     name.add_css_class("tab-name");
     name.set_hexpand(true);
@@ -8295,7 +8295,7 @@ fn build_info() -> Info {
     head.set_margin_start(14);
     head.set_margin_end(14);
     // an invisible twin of the close button on the left, so the carets' label is centred on the whole row
-    let twin = gtk::Button::from_icon_name("window-close-symbolic");
+    let twin = gtk::Button::from_icon_name("bf-close-symbolic");
     twin.add_css_class("head-btn");
     twin.set_opacity(0.0);
     twin.set_can_target(false);
@@ -9682,7 +9682,7 @@ fn settings(u: &Rc<Ui>) {
         pbox.set_property(m, 10);
     }
     let appearance = appearance_frame(u, &w);
-    let privacy_frame = gtk::Frame::new(Some("Privacy"));
+    let privacy_frame = titled_frame("bf-privacy-symbolic", "Privacy");
     privacy_frame.set_child(Some(&pbox));
 
     // default download folders: empty = the download buttons ask every time
@@ -9772,7 +9772,7 @@ fn settings(u: &Rc<Ui>) {
     dl.append(&images_row);
     dl.append(&files_row);
     dl.append(&dl_help);
-    let dl_frame = gtk::Frame::new(Some("Default download folders"));
+    let dl_frame = titled_frame("bf-download-symbolic", "Default download folders");
     dl_frame.set_child(Some(&dl));
 
     // notifications: whether, with a sound (which), and what they show
@@ -9815,7 +9815,7 @@ fn settings(u: &Rc<Ui>) {
         });
     picker.set_selected(current as u32);
     let chosen: Rc<RefCell<String>> = Rc::new(RefCell::new(cfg.sound.clone()));
-    let listen = gtk::Button::from_icon_name("media-playback-start-symbolic");
+    let listen = gtk::Button::from_icon_name("bf-listen-symbolic");
     listen.set_tooltip_text(Some("Listen"));
     let (chosen2, listen2) = (chosen.clone(), listen.clone());
     listen2.connect_clicked(move |_| crate::sound::play(&chosen2.borrow()));
@@ -9915,7 +9915,7 @@ fn settings(u: &Rc<Ui>) {
     ] {
         nb.append(wd);
     }
-    let notify_frame = gtk::Frame::new(Some("Notifications"));
+    let notify_frame = titled_frame("bf-notifications-symbolic", "Notifications");
     notify_frame.set_child(Some(&nb));
 
     let auto_on = gtk::CheckButton::with_label("Start hidden in the tray when I log in");
@@ -9948,7 +9948,7 @@ fn settings(u: &Rc<Ui>) {
     for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
         bg.set_property(m, 10);
     }
-    let bg_frame = gtk::Frame::new(Some("Background"));
+    let bg_frame = titled_frame("bf-background-symbolic", "Background");
     bg_frame.set_child(Some(&bg));
 
     // a local copy of the chat list and contacts, so the next start shows them while the Mac is being reached
@@ -9978,7 +9978,7 @@ fn settings(u: &Rc<Ui>) {
     for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
         cache_box.set_property(m, 10);
     }
-    let cache_frame = gtk::Frame::new(Some("Faster start"));
+    let cache_frame = titled_frame("bf-bolt-symbolic", "Faster start");
     cache_frame.set_child(Some(&cache_box));
 
     // every change applies at once
@@ -10020,7 +10020,7 @@ fn settings(u: &Rc<Ui>) {
     let nav = gtk::ListBox::new();
     nav.add_css_class("chat-list");
     nav.add_css_class("settings-nav");
-    let add = |name: &str, title: &str, content: &gtk::Widget| {
+    let add = |name: &str, icon: &str, title: &str, content: &gtk::Widget| {
         pages.add_named(
             &gtk::ScrolledWindow::builder()
                 .hscrollbar_policy(gtk::PolicyType::Never)
@@ -10030,13 +10030,12 @@ fn settings(u: &Rc<Ui>) {
                 .build(),
             Some(name),
         );
-        let label = gtk::Label::new(Some(title));
-        label.set_xalign(0.0);
+        let (head, label) = icon_label(icon, title);
         label.add_css_class("chat-name");
         let row = gtk::ListBoxRow::new();
         row.add_css_class("chat-row");
         row.set_widget_name(name);
-        row.set_child(Some(&label));
+        row.set_child(Some(&head));
         nav.append(&row);
     };
     // the same edges for every section, level with the sidebar panel's
@@ -10053,31 +10052,46 @@ fn settings(u: &Rc<Ui>) {
     };
     add(
         "appearance",
+        "bf-appearance-symbolic",
         "Appearance",
         &section(&[appearance.upcast_ref()]),
     );
     add(
         "notifications",
+        "bf-notifications-symbolic",
         "Notifications",
         &section(&[notify_frame.upcast_ref()]),
     );
-    add("downloads", "Downloads", &section(&[dl_frame.upcast_ref()]));
+    add(
+        "downloads",
+        "bf-download-symbolic",
+        "Downloads",
+        &section(&[dl_frame.upcast_ref()]),
+    );
     add(
         "general",
+        "bf-general-symbolic",
         "General",
         &section(&[bg_frame.upcast_ref(), cache_frame.upcast_ref()]),
     );
     add(
         "privacy",
+        "bf-privacy-symbolic",
         "Privacy",
         &section(&[privacy_frame.upcast_ref()]),
     );
     add(
         "mac",
+        "bf-computer-symbolic",
         "Mac connection",
         &section(&[mac_tab(u, &w).upcast_ref()]),
     );
-    add("about", "About", &section(&[about_tab().upcast_ref()]));
+    add(
+        "about",
+        "bf-info-symbolic",
+        "About",
+        &section(&[about_tab().upcast_ref()]),
+    );
     let stack = pages.clone();
     nav.connect_row_selected(move |_, row| {
         if let Some(row) = row {
@@ -10142,6 +10156,25 @@ fn set_scheme(mode: u8) {
 
 fn is_dark_scheme(s: &gtk::Settings) -> bool {
     s.gtk_interface_color_scheme() == gtk::InterfaceColorScheme::Dark
+}
+
+/// An icon and a name, side by side.
+fn icon_label(icon: &str, text: &str) -> (gtk::Box, gtk::Label) {
+    let b = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    b.append(&gtk::Image::from_icon_name(icon));
+    let l = gtk::Label::new(Some(text));
+    l.set_xalign(0.0);
+    b.append(&l);
+    (b, l)
+}
+
+/// A Settings box with its icon and title.
+fn titled_frame(icon: &str, title: &str) -> gtk::Frame {
+    let frame = gtk::Frame::new(None);
+    let (head, _) = icon_label(icon, title);
+    head.add_css_class("box-title");
+    frame.set_label_widget(Some(&head));
+    frame
 }
 
 /// Save one change from the Settings window and put it into effect.
@@ -10307,7 +10340,7 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> gtk::Frame {
         }
         glib::Propagation::Proceed
     });
-    let frame = gtk::Frame::new(Some("Appearance"));
+    let frame = titled_frame("bf-appearance-symbolic", "Appearance");
     frame.set_child(Some(&rows));
     frame
 }
@@ -11284,14 +11317,14 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
             col.append(&chips);
         }
         row.append(&col);
-        let copy = card_button("edit-copy-symbolic", "Copy");
+        let copy = card_button("bf-copy-symbolic", "Copy");
         let (win, text) = (u.win.clone(), pretty_handle(&addr));
         copy.connect_clicked(move |b| {
             win.clipboard().set_text(&text);
-            b.set_icon_name("object-select-symbolic"); // a moment of "done"
+            b.set_icon_name("bf-check-symbolic"); // a moment of "done"
             let b = b.clone();
             glib::timeout_add_local_once(Duration::from_millis(1500), move || {
-                b.set_icon_name("edit-copy-symbolic")
+                b.set_icon_name("bf-copy-symbolic")
             });
         });
         row.append(&copy);
@@ -11305,7 +11338,7 @@ fn card_body(u: &Rc<Ui>, pop: &gtk::Popover, handle: &str, name: &str) -> gtk::B
         });
         row.append(&msg);
         if addr.contains('@') {
-            let mail = card_button("mail-message-new-symbolic", "Write an email");
+            let mail = card_button("bf-mail-symbolic", "Write an email");
             let (pop2, win) = (pop.downgrade(), u.win.clone());
             mail.connect_clicked(move |_| {
                 if let Some(p) = pop2.upgrade() {

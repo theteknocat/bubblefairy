@@ -91,4 +91,4 @@ BubbleFairy is an independent project. It is not made, endorsed or supported by 
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Most of the little icons are Google's [Material Symbols](https://github.com/google/material-design-icons), which are under the [Apache License 2.0](data/icons/LICENSE-material-symbols).

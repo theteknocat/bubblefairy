@@ -599,7 +599,7 @@ row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 /* Settings wears the same look as the wizard */
 .bf-settings entry { background-color: var(--field); border-radius: 99px; border: 1px solid transparent; padding: 2px 14px; min-height: 34px; color: var(--ink); box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); }
 .bf-settings frame { background-color: var(--panel); border: none; border-radius: 18px; box-shadow: 0 4px 16px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(alpha(var(--panel-edge), 0), var(--panel-edge), var(--depth)); }
-.bf-settings frame > label { font-weight: 700; margin: 10px 0 0 14px; }
+.bf-settings frame > .box-title { font-weight: 700; margin: 10px 0 0 14px; }
 .bf-settings button { border-radius: 99px; }
 .bf-settings button.suggested-action, .bf-settings button.wiz-next { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); background-color: transparent; color: #ffffff; font-weight: 700; border: none; padding: 8px 22px; box-shadow: 0 4px 12px mix(alpha(var(--accent), 0), alpha(var(--accent), 0.40), var(--depth)), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--depth)); }
 .bf-settings dropdown > button { background-color: var(--field); border: none; box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); }
