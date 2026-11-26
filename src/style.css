@@ -1,53 +1,16 @@
 /* BubbleFairy look: soft gradients, layered shadows, rounded glassy panels. Light first, dark below. */
 
+/* The chrome and trim colours are variables defined in theme.rs; only the toast's are here. */
 :root {
-  --bg-a: #e6dcfa;
-  --bg-b: #dcd9f8;
-  --bg-c: #f0dcf2;
-  --panel: rgba(255, 255, 255, 0.55);
-  --panel-solid: #ebe5fb; /* the info panel when it slides over the chat */
-  --panel-edge: rgba(255, 255, 255, 0.95);
-  --ink: #2a2442;
-  --ink-soft: #5a5380;
-  --shadow: rgba(76, 60, 150, 0.16);
-  --shadow-strong: rgba(76, 60, 150, 0.26);
-  --them-a: #fdfbff;
-  --them-b: #f3eefd;
-  --them-ink: #2a2442;
-  --them-edge: rgba(122, 110, 180, 0.16);
-  --sel-a: #dacdff;
-  --sel-b: #c9dbff;
-  --sel-edge: rgba(123, 92, 255, 0.38); /* the white top edge alone vanishes on light */
-  --field: rgba(255, 255, 255, 0.92);
   --banner-a: #fff3d9;
   --banner-b: #ffe4ef;
   --banner-ink: #5b3a1c;
 }
-
-/* dark: ui.rs adds .dark to every window when GTK's colour scheme is dark */
 window.dark {
-    --bg-a: #2d2659;
-    --bg-b: #1c2550;
-    --bg-c: #3a2455;
-    --panel: rgba(255, 255, 255, 0.075);
-    --panel-solid: #2c2759;
-    --panel-edge: rgba(255, 255, 255, 0.14);
-    --ink: #f6f3ff;
-    --ink-soft: #bdb6e4;
-    --shadow: rgba(8, 4, 30, 0.40);
-    --shadow-strong: rgba(8, 4, 30, 0.55);
-    --them-a: #544d93;
-    --them-b: #453f80;
-    --them-ink: #fbfaff;
-    --them-edge: rgba(255, 255, 255, 0.10);
-    --sel-a: rgba(165, 140, 255, 0.40);
-    --sel-b: rgba(95, 150, 255, 0.32);
-    --sel-edge: transparent;
-    --field: rgba(255, 255, 255, 0.09);
-    --banner-a: #5a3d20;
-    --banner-b: #5a2742;
-    --banner-ink: #fff1e0;
-  }
+  --banner-a: #5a3d20;
+  --banner-b: #5a2742;
+  --banner-ink: #fff1e0;
+}
 
 window.bf {
   background-color: var(--bg-b);
@@ -99,7 +62,7 @@ button.status {
 }
 button.status { transition: background-image 140ms ease; }
 button.status:hover { background-image: linear-gradient(alpha(currentColor, 0.10), alpha(currentColor, 0.10)); }
-button.status:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: 1px; }
+button.status:focus-visible { outline: 2px solid alpha(var(--accent), 0.7); outline-offset: 1px; }
 button.status .dot {
   min-width: 8px;
   min-height: 8px;
@@ -150,7 +113,7 @@ row.chat-row:selected {
 row.unread .chat-name { font-weight: 800; }
 .chat-time { color: var(--ink-soft); font-size: 0.82em; }
 .addr-chip {
-  background-color: rgba(128, 118, 200, 0.22); color: var(--ink-soft);
+  background-color: alpha(var(--neutral), 0.22); color: var(--ink-soft);
   border-radius: 99px; padding: 0 8px; font-size: 0.75em;
 }
 .addr-chip.imessage { background-color: rgba(40, 120, 255, 0.28); color: var(--ink); }
@@ -159,7 +122,7 @@ row.unread .chat-name { font-weight: 800; }
 .info-panel { background-color: var(--panel-solid); } /* opaque: it covers the chat */
 .info-panel scrolledwindow, .info-panel viewport { background: transparent; }
 .link-glyph { background-color: #5f6b85; color: #ffffff; border-radius: 99px; }
-.link-tile { border-radius: 12px; background-color: rgba(128, 118, 200, 0.18); border: 1px solid rgba(128, 118, 200, 0.3); }
+.link-tile { border-radius: 12px; background-color: alpha(var(--neutral), 0.18); border: 1px solid alpha(var(--neutral), 0.3); }
 .link-tile.plain { background-color: #f1efe9; border-color: rgba(0, 0, 0, 0.12); }
 .tile-glyph { color: #3f4962; }
 .tile-caption { background-color: rgba(0, 0, 0, 0.55); color: #ffffff; font-size: 0.7em; padding: 2px 6px; }
@@ -167,26 +130,26 @@ row.unread .chat-name { font-weight: 800; }
 .play-badge.big { min-width: 48px; min-height: 48px; font-size: 1em; padding-left: 4px; }
 .video-pill { background-color: rgba(0, 0, 0, 0.55); color: #ffffff; border-radius: 99px; padding: 1px 8px; margin: 0 0 8px 8px; font-size: 0.75em; font-weight: 700; }
 .play-badge { background-color: rgba(0, 0, 0, 0.55); color: #ffffff; border-radius: 99px; min-width: 24px; min-height: 24px; font-size: 0.7em; padding-left: 2px; }
-.info-missing { background-color: rgba(128, 118, 200, 0.14); border-radius: 12px; }
+.info-missing { background-color: alpha(var(--neutral), 0.14); border-radius: 12px; }
 .info-tab { padding: 4px 10px; min-width: 0; }
 /* tabs (info panel, Settings): a soft track with pill buttons, the open one filled with the brand gradient */
 .bf-tabs { background-color: alpha(currentColor, 0.07); border-radius: 99px; padding: 3px; }
 .bf-tabs .info-tab { border-radius: 99px; background: transparent; background-image: none; box-shadow: none; border: none; padding: 5px 14px; color: var(--ink-soft); transition: background-color 160ms ease; }
 .bf-tabs .info-tab:hover { background-color: alpha(currentColor, 0.08); }
-.bf-tabs .info-tab:checked { background-image: linear-gradient(135deg, #7b5cff, #ff5fa8); color: #ffffff; font-weight: 700; box-shadow: 0 2px 8px alpha(#7b5cff, 0.35); }
+.bf-tabs .info-tab:checked { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #ffffff; font-weight: 700; box-shadow: 0 2px 8px alpha(var(--accent), 0.35); }
 .tab-name { font-weight: 700; }
 .info-person { padding: 4px 0; }
 .text link, .text link:visited, .text link:hover { color: inherit; text-decoration: underline; }
 .info-link { color: #5b8def; }
-.map-box { border-radius: 12px; background-color: rgba(128, 118, 200, 0.18); border: 1px solid rgba(128, 118, 200, 0.35); }
+.map-box { border-radius: 12px; background-color: alpha(var(--neutral), 0.18); border: 1px solid alpha(var(--neutral), 0.35); }
 .map-note { font-size: 0.7em; color: var(--ink-soft); }
 .map-pin { background-color: #e5383b; border: 2px solid #ffffff; border-radius: 99px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5); }
 .map-attr { font-size: 0.65em; color: #333333; background-color: rgba(255, 255, 255, 0.75); padding: 1px 5px; border-top-left-radius: 6px; }
 button.card-action {
   min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px;
-  background-color: rgba(128, 118, 200, 0.22); background-image: none; box-shadow: none; border: none;
+  background-color: alpha(var(--neutral), 0.22); background-image: none; box-shadow: none; border: none;
 }
-button.card-action:hover { background-color: rgba(128, 118, 200, 0.42); }
+button.card-action:hover { background-color: alpha(var(--neutral), 0.42); }
 .card-name { font-weight: 700; font-size: 1.15em; }
 .chat-preview { color: var(--ink-soft); font-size: 0.9em; }
 row.unread .chat-preview { color: var(--ink); }
@@ -218,7 +181,7 @@ row.unread .chat-preview { color: var(--ink); }
 .head-search image.right, .head-search > image:last-child { opacity: 0; min-width: 0; min-height: 0; margin: 0; padding: 0; -gtk-icon-size: 0px; } /* the close button does its job */
 .search-close { min-width: 24px; min-height: 24px; padding: 0; }
 .search-close image { -gtk-icon-size: 14px; }
-.head-search:focus-within { outline: none; border-color: alpha(#7b5cff, 0.55); box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(#7b5cff, 0.18); }
+.head-search:focus-within { outline: none; border-color: alpha(var(--accent), 0.55); box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(var(--accent), 0.18); }
 
 /* pinned chats: avatar tiles above the list */
 .tiles { margin: 6px 5px 12px 5px; } /* + the tile's own 3 px = the rows' 8 px */ /* room before the list; the avatars-only sidebar keeps it tight */
@@ -266,7 +229,7 @@ row.unread .chat-preview { color: var(--ink); }
 }
 .avatar.mini.more {
   background-image: none;
-  background-color: #6a55e8;
+  background-color: var(--accent-deep);
   color: #ffffff;
   font-weight: 800;
   font-size: 0.72em;
@@ -356,7 +319,7 @@ entry.to-entry {
   color: var(--ink);
   box-shadow: inset 0 1px 3px var(--shadow);
 }
-entry.to-entry:focus-within { outline: none; border-color: alpha(#7b5cff, 0.55); box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(#7b5cff, 0.18); }
+entry.to-entry:focus-within { outline: none; border-color: alpha(var(--accent), 0.55); box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(var(--accent), 0.18); }
 list.suggest { padding: 8px 6px; }
 
 /* files waiting to be sent */
@@ -389,8 +352,8 @@ button.attach-remove image { -gtk-icon-size: 12px; }
   transition: box-shadow 160ms ease, border-color 160ms ease;
 }
 .composer:focus-within {
-  border-color: alpha(#7b5cff, 0.55);
-  box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(#7b5cff, 0.18), 0 4px 14px var(--shadow);
+  border-color: alpha(var(--accent), 0.55);
+  box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(var(--accent), 0.18), 0 4px 14px var(--shadow);
 }
 .composer scrolledwindow { background: transparent; }
 textview.compose, textview.compose > text { background: transparent; color: var(--ink); font-size: 1.02em; }
@@ -569,23 +532,23 @@ label:focus, label:focus-visible { outline: none; }
   color: var(--ink);
   box-shadow: inset 0 1px 3px var(--shadow);
 }
-.wizard .wiz-field:focus-within { outline: none; border-color: alpha(#7b5cff, 0.55); box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(#7b5cff, 0.18); }
+.wizard .wiz-field:focus-within { outline: none; border-color: alpha(var(--accent), 0.55); box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(var(--accent), 0.18); }
 .wizard button.wiz-next {
-  background-image: linear-gradient(135deg, #7b5cff, #ff5fa8);
+  background-image: linear-gradient(135deg, var(--accent), var(--accent-2));
   background-color: transparent;
   color: #ffffff;
   font-weight: 700;
   border: none;
   border-radius: 99px;
   padding: 8px 22px;
-  box-shadow: 0 4px 12px alpha(#7b5cff, 0.40), inset 0 1px rgba(255, 255, 255, 0.35);
+  box-shadow: 0 4px 12px alpha(var(--accent), 0.40), inset 0 1px rgba(255, 255, 255, 0.35);
 }
 .wizard button.wiz-next:disabled { background-image: none; background-color: alpha(currentColor, 0.12); color: var(--ink-soft); box-shadow: none; }
 .wizard button.wiz-back { background: transparent; border: none; box-shadow: none; border-radius: 99px; color: var(--ink-soft); padding: 8px 16px; }
 .wizard button.wiz-back:hover { background-color: alpha(currentColor, 0.08); }
 .wizard button.flat, .wizard button.wiz-retry { border-radius: 99px; }
 .wiz-dot { min-width: 8px; min-height: 8px; border-radius: 99px; background-color: alpha(currentColor, 0.18); transition: background-color 160ms ease, min-width 160ms ease; }
-.wiz-dot.on { background-color: #7b5cff; min-width: 20px; }
+.wiz-dot.on { background-color: var(--accent); min-width: 20px; }
 .wizard .setup-fp { background-color: var(--field); }
 
 /* the Mac picker's list (and the status pill's list of problems): it drops down from the field, as wide as the field */
@@ -607,11 +570,11 @@ popover.wiz-drop button.flat:hover, popover.issues button.flat:hover { backgroun
 .wiz-badge.bad { background-color: #b3262e; }
 .wiz-err { color: #ff6b6b; }
 popover.wiz-drop button.flat, popover.issues button.flat { background: transparent; box-shadow: none; outline: none; }
-popover.wiz-drop > contents button.flat:hover, popover.issues > contents button.flat:hover { background-color: alpha(#7b5cff, 0.32); background-image: none; }
-popover.wiz-drop > contents button.flat:focus-visible, popover.issues > contents button.flat:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
+popover.wiz-drop > contents button.flat:hover, popover.issues > contents button.flat:hover { background-color: alpha(var(--accent), 0.32); background-image: none; }
+popover.wiz-drop > contents button.flat:focus-visible, popover.issues > contents button.flat:focus-visible { outline: 2px solid alpha(var(--accent), 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
 popover.wiz-drop > contents button.flat, popover.issues > contents button.flat { background-color: transparent; background-image: none; box-shadow: none; border: none; transition: background-color 160ms ease; } /* fades out as well as in */
-popover.wiz-drop > contents button.flat:hover, popover.issues > contents button.flat:hover { background-color: alpha(#7b5cff, 0.32); background-image: none; }
-popover.wiz-drop > contents button.flat:focus-visible, popover.issues > contents button.flat:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
+popover.wiz-drop > contents button.flat:hover, popover.issues > contents button.flat:hover { background-color: alpha(var(--accent), 0.32); background-image: none; }
+popover.wiz-drop > contents button.flat:focus-visible, popover.issues > contents button.flat:focus-visible { outline: 2px solid alpha(var(--accent), 0.7); outline-offset: -2px; } /* a ring for the keyboard, no fill */
 
 /* the button at the right end of the Mac field */
 .wiz-drop-btn { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; background: transparent; box-shadow: none; border: none; color: var(--ink-soft); }
@@ -622,28 +585,28 @@ popover.wiz-drop > contents button.flat:focus-visible, popover.issues > contents
 
 
 /* keyboard focus, everywhere: a clear light-purple ring (the default outline vanishes against the panels) */
-button:focus-visible, checkbutton:focus-visible, switch:focus-visible, dropdown:focus-visible > button, scale:focus-visible, spinbutton:focus-visible { outline: 2px solid #b9a6ff; outline-offset: 2px; }
-row:focus-visible { outline: 2px solid #b9a6ff; outline-offset: -2px; }
+button:focus-visible, checkbutton:focus-visible, switch:focus-visible, dropdown:focus-visible > button, scale:focus-visible, spinbutton:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 
 .wizard entry.with-action { padding-right: 44px; }
 .wiz-link { background: transparent; border: none; box-shadow: none; color: var(--ink-soft); text-decoration: underline; }
 
-.wizard button.wiz-retry { background: transparent; background-image: none; border: 1px solid alpha(#7b5cff, 0.7); color: var(--ink); border-radius: 99px; padding: 6px 18px; box-shadow: none; }
-.wizard button.wiz-retry:hover { background-color: alpha(#7b5cff, 0.25); }
+.wizard button.wiz-retry { background: transparent; background-image: none; border: 1px solid alpha(var(--accent), 0.7); color: var(--ink); border-radius: 99px; padding: 6px 18px; box-shadow: none; }
+.wizard button.wiz-retry:hover { background-color: alpha(var(--accent), 0.25); }
 
 /* Settings wears the same look as the wizard */
 .bf-settings entry { background-color: var(--field); border-radius: 99px; border: 1px solid transparent; padding: 2px 14px; min-height: 34px; color: var(--ink); box-shadow: inset 0 1px 3px var(--shadow); }
 .bf-settings frame { background-color: var(--panel); border: none; border-radius: 18px; box-shadow: 0 4px 16px var(--shadow), inset 0 1px var(--panel-edge); }
 .bf-settings frame > label { font-weight: 700; margin: 10px 0 0 14px; }
 .bf-settings button { border-radius: 99px; }
-.bf-settings button.suggested-action, .bf-settings button.wiz-next { background-image: linear-gradient(135deg, #7b5cff, #ff5fa8); background-color: transparent; color: #ffffff; font-weight: 700; border: none; padding: 8px 22px; box-shadow: 0 4px 12px alpha(#7b5cff, 0.40), inset 0 1px rgba(255, 255, 255, 0.35); }
+.bf-settings button.suggested-action, .bf-settings button.wiz-next { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); background-color: transparent; color: #ffffff; font-weight: 700; border: none; padding: 8px 22px; box-shadow: 0 4px 12px alpha(var(--accent), 0.40), inset 0 1px rgba(255, 255, 255, 0.35); }
 .bf-settings dropdown > button { background-color: var(--field); border: none; box-shadow: inset 0 1px 3px var(--shadow); }
 .bf-settings button:not(.suggested-action):not(.wiz-next):not(.info-tab) { background-image: none; background-color: alpha(currentColor, 0.09); color: var(--ink); box-shadow: none; border: none; padding: 6px 16px; }
-.bf-settings button:not(.suggested-action):not(.wiz-next):not(.info-tab):hover { background-color: alpha(#7b5cff, 0.22); }
+.bf-settings button:not(.suggested-action):not(.wiz-next):not(.info-tab):hover { background-color: alpha(var(--accent), 0.22); }
 .bf-settings dropdown > button { padding: 4px 14px; }
 .bf-tabs button.info-tab { padding: 5px 14px; }
-.bf-settings check, .wizard check { border-radius: 7px; background-image: none; background-color: var(--field); border: 1px solid alpha(#7b5cff, 0.55); box-shadow: inset 0 1px 2px var(--shadow); color: #ffffff; }
-.bf-settings check:checked, .wizard check:checked { background-image: linear-gradient(135deg, #7b5cff, #ff5fa8); border-color: transparent; }
+.bf-settings check, .wizard check { border-radius: 7px; background-image: none; background-color: var(--field); border: 1px solid alpha(var(--accent), 0.55); box-shadow: inset 0 1px 2px var(--shadow); color: #ffffff; }
+.bf-settings check:checked, .wizard check:checked { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: transparent; }
 .bf-settings windowcontrols button:not(.suggested-action):not(.wiz-next):not(.info-tab) { background-color: transparent; box-shadow: none; border-radius: 99px; background-image: none; padding: 4px; min-width: 24px; min-height: 24px; color: var(--ink-soft); }
 .bf-settings windowcontrols button:not(.suggested-action):not(.wiz-next):not(.info-tab):hover { background-color: transparent; }
 
@@ -670,7 +633,7 @@ row:focus-visible { outline: 2px solid #b9a6ff; outline-offset: -2px; }
 .pop-dot.bad { background-color: #ff5a73; box-shadow: 0 0 6px rgba(255, 90, 115, 0.8); }
 .pop-title { font-weight: 700; }
 .pop-refresh { min-width: 24px; min-height: 24px; padding: 0; -gtk-icon-size: 13px; } /* the rest is .head-btn */
-.pop-refresh:focus-visible { outline: 2px solid alpha(#7b5cff, 0.7); outline-offset: -2px; }
+.pop-refresh:focus-visible { outline: 2px solid alpha(var(--accent), 0.7); outline-offset: -2px; }
 popover.issues > contents { padding: 2px 4px; }
 popover.issues > arrow {
   background-color: var(--panel-solid);

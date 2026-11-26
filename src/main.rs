@@ -7,6 +7,7 @@ mod player;
 mod setup;
 mod snapshot;
 mod sound;
+mod theme;
 mod tilegrid;
 mod tray;
 mod ui;
@@ -236,7 +237,7 @@ fn main() -> glib::ExitCode {
         gtk::IconTheme::for_display(&gdk::Display::default().expect("display"))
             .add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/data/icons"));
         let css = gtk::CssProvider::new();
-        css.load_from_string(include_str!("style.css"));
+        css.load_from_string(&(theme::css() + include_str!("style.css")));
         gtk::style_context_add_provider_for_display(
             &gdk::Display::default().expect("display"),
             &css,

@@ -2,6 +2,7 @@
 //! border all follow the tail. GTK CSS has no clip-path or pseudo-elements, hence the custom drawing.
 //! Padding and text colour still come from CSS (`.bubble` classes); only the background is drawn here.
 
+use crate::theme;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, glib, graphene, gsk};
@@ -170,6 +171,16 @@ fn card_palette() -> (gdk::RGBA, gdk::RGBA, gdk::RGBA, f32, Option<gdk::RGBA>) {
     )
 }
 
+/// Whether the widget's window is in dark mode.
+fn is_dark(w: &impl IsA<gtk::Widget>) -> bool {
+    w.root().is_some_and(|r| r.has_css_class("dark"))
+}
+
+fn themed(t: theme::Token, dark: bool) -> gdk::RGBA {
+    let c = t.get(dark);
+    rgba(c.0, c.1)
+}
+
 fn rgba(hex: u32, a: f32) -> gdk::RGBA {
     gdk::RGBA::new(
         ((hex >> 16) & 255) as f32 / 255.0,
@@ -197,19 +208,12 @@ fn palette(look: Look, dark: bool) -> (gdk::RGBA, gdk::RGBA, gdk::RGBA, f32, Opt
             0.38,
             None,
         ),
-        (false, _, false) => (
-            rgba(0xfdfbff, 1.0),
-            rgba(0xf3eefd, 1.0),
-            rgba(0x4c3c96, 0.16),
-            0.6,
-            Some(rgba(0x7a6eb4, 0.20)),
-        ),
-        (false, _, true) => (
-            rgba(0x544d93, 1.0),
-            rgba(0x453f80, 1.0),
-            rgba(0x08041e, 0.40),
-            0.18,
-            Some(rgba(0xffffff, 0.10)),
+        (false, ..) => (
+            themed(theme::THEM_A, dark),
+            themed(theme::THEM_B, dark),
+            themed(theme::BUBBLE_SHADOW, dark),
+            if dark { 0.18 } else { 0.6 },
+            Some(themed(theme::BUBBLE_EDGE, dark)),
         ),
     }
 }
@@ -375,7 +379,7 @@ mod imp {
                 match self.tex.borrow().as_ref() {
                     // cover the whole widget, gutter included, so the tail shows a sliver of the photo
                     Some(t) => draw_cover(s, t, &bounds),
-                    None => s.append_color(&rgba(0x8a7cc8, 0.22), &bounds),
+                    None => s.append_color(&themed(theme::PLACEHOLDER, is_dark(&*w)), &bounds),
                 }
                 s.pop();
                 s.pop();
@@ -404,7 +408,7 @@ mod imp {
             }
             if width > TAIL && height > 0.0 {
                 let look = self.look.get();
-                let dark = w.root().is_some_and(|r| r.has_css_class("dark"));
+                let dark = is_dark(&*w);
                 let (top, bottom, shadow, hi, border) = if self.is_card.get() {
                     card_palette()
                 } else {
@@ -434,7 +438,7 @@ mod imp {
                     s.push_fill(&path, gsk::FillRule::Winding);
                     match self.tex.borrow().as_ref() {
                         Some(t) => draw_cover(s, t, &r),
-                        None => s.append_color(&rgba(0x8a7cc8, 0.22), &r),
+                        None => s.append_color(&themed(theme::PLACEHOLDER, dark), &r),
                     }
                     s.pop();
                 }
