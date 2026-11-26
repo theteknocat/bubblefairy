@@ -240,14 +240,14 @@ row.unread .chat-preview { color: var(--ink); }
 .avatar.mini.more.stackav { font-size: 0.8em; }
 .avatar.photo { background-image: none; background-color: var(--panel); }
 .avatar-spacer { min-width: 28px; margin-right: 4px; }
-.av0 { background-image: linear-gradient(160deg, #ff9a8b, #ff5e7e); }
-.av1 { background-image: linear-gradient(160deg, #ffc56b, #ff8a3d); }
-.av2 { background-image: linear-gradient(160deg, #7ee8b0, #26b98a); }
-.av3 { background-image: linear-gradient(160deg, #7cc8ff, #3a7bff); }
-.av4 { background-image: linear-gradient(160deg, #c3a1ff, #7d5cff); }
-.av5 { background-image: linear-gradient(160deg, #ff9fd4, #e8559f); }
-.av6 { background-image: linear-gradient(160deg, #6ee7e0, #1fa6c4); }
-.av7 { background-image: linear-gradient(160deg, #ffe17a, #f2a81d); }
+.av0 { background-image: linear-gradient(160deg, var(--av0-a), var(--av0-b)); }
+.av1 { background-image: linear-gradient(160deg, var(--av1-a), var(--av1-b)); }
+.av2 { background-image: linear-gradient(160deg, var(--av2-a), var(--av2-b)); }
+.av3 { background-image: linear-gradient(160deg, var(--av3-a), var(--av3-b)); }
+.av4 { background-image: linear-gradient(160deg, var(--av4-a), var(--av4-b)); }
+.av5 { background-image: linear-gradient(160deg, var(--av5-a), var(--av5-b)); }
+.av6 { background-image: linear-gradient(160deg, var(--av6-a), var(--av6-b)); }
+.av7 { background-image: linear-gradient(160deg, var(--av7-a), var(--av7-b)); }
 
 /* conversation */
 .conv-head {
@@ -640,3 +640,8 @@ popover.issues > arrow {
   border: 1px solid var(--panel-edge);
   box-shadow: none;
 }
+
+/* the theme sliders */
+.bf-settings scale trough { background-color: alpha(var(--neutral), 0.30); border: none; min-height: 6px; border-radius: 99px; }
+.bf-settings scale highlight { background: none; border: none; }
+.bf-settings scale slider { min-width: 16px; min-height: 16px; margin: -7px; border-radius: 99px; background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); border: 2px solid #ffffff; box-shadow: 0 1px 4px var(--shadow-strong); }

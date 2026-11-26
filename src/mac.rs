@@ -48,6 +48,11 @@ pub struct Config {
     pub autostart: bool,
     /// keep a local copy of the chat list and contacts so the next start shows them at once (`snapshot.rs`)
     pub local_cache: bool,
+    /// light or dark: 0 = follow the system, 1 = light, 2 = dark
+    pub color_scheme: u8,
+    /// the theme sliders, kept apart for the light and dark schemes
+    pub theme_light: crate::theme::Adjust,
+    pub theme_dark: crate::theme::Adjust,
 }
 
 pub enum Cmd {

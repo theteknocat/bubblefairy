@@ -13,6 +13,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::mac::{Cmd, Config, Event, Kind, MediaItem};
+use crate::theme::{Adjust, LEVEL_MAX, TINT_MAX};
 use crate::{bubble, viewer};
 
 const SIDEBAR_MIN: i32 = 260; // paned positions and widths below include the panels' side margins
@@ -1463,6 +1464,11 @@ pub fn build(
             }
         }
     };
+    // the saved choice, if any; "system" leaves GTK (and the BF_DARK / BF_LIGHT switches) alone
+    let scheme = ui.st.borrow().cfg.color_scheme;
+    if scheme != 0 {
+        set_scheme(scheme);
+    }
     apply(&gs);
     let a2 = apply.clone();
     gs.connect_gtk_interface_color_scheme_notify(move |s| a2(s));
@@ -9685,9 +9691,11 @@ fn settings(u: &Rc<Ui>) {
     for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
         pbox.set_property(m, 10);
     }
+    let (appearance, look) = appearance_frame(u, &w);
+    grid.attach(&appearance, 0, 0, 2, 1);
     let privacy_frame = gtk::Frame::new(Some("Privacy"));
     privacy_frame.set_child(Some(&pbox));
-    grid.attach(&privacy_frame, 0, 0, 2, 1);
+    grid.attach(&privacy_frame, 0, 1, 2, 1);
 
     // default download folders: empty = the download buttons ask every time
     let dl = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -9775,7 +9783,7 @@ fn settings(u: &Rc<Ui>) {
     dl.append(&dl_help);
     let dl_frame = gtk::Frame::new(Some("Default download folders"));
     dl_frame.set_child(Some(&dl));
-    grid.attach(&dl_frame, 0, 1, 2, 1);
+    grid.attach(&dl_frame, 0, 2, 2, 1);
 
     // notifications: whether, with a sound (which), and what they show
     let nb = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -9916,7 +9924,7 @@ fn settings(u: &Rc<Ui>) {
     }
     let notify_frame = gtk::Frame::new(Some("Notifications"));
     notify_frame.set_child(Some(&nb));
-    grid.attach(&notify_frame, 0, 2, 2, 1);
+    grid.attach(&notify_frame, 0, 3, 2, 1);
 
     let auto_on = gtk::CheckButton::with_label("Start hidden in the tray when I log in");
     auto_on.set_active(cfg.autostart);
@@ -9946,7 +9954,7 @@ fn settings(u: &Rc<Ui>) {
     }
     let bg_frame = gtk::Frame::new(Some("Background"));
     bg_frame.set_child(Some(&bg));
-    grid.attach(&bg_frame, 0, 3, 2, 1);
+    grid.attach(&bg_frame, 0, 4, 2, 1);
 
     // a local copy of the chat list and contacts, so the next start shows them while the Mac is being reached
     let cache_on = gtk::CheckButton::with_label(
@@ -9977,7 +9985,7 @@ fn settings(u: &Rc<Ui>) {
     }
     let cache_frame = gtk::Frame::new(Some("Faster start"));
     cache_frame.set_child(Some(&cache_box));
-    grid.attach(&cache_frame, 0, 4, 2, 1);
+    grid.attach(&cache_frame, 0, 5, 2, 1);
 
     let save = gtk::Button::with_label("Save");
     save.add_css_class("suggested-action");
@@ -10037,7 +10045,11 @@ fn settings(u: &Rc<Ui>) {
     cancel.connect_clicked(move |_| w2.close());
     let (u2, w2) = (u.clone(), w.clone());
     save.connect_clicked(move |_| {
+        let [theme_light, theme_dark] = look.colours.get();
         let cfg = Config {
+            color_scheme: look.scheme.get(),
+            theme_light,
+            theme_dark,
             map_previews: previews.is_active(),
             link_previews: links.is_active(),
             dir_images: dir_images.borrow().clone(),
@@ -10103,6 +10115,165 @@ fn settings(u: &Rc<Ui>) {
             }
         });
     }
+}
+
+/// Recolour the app: the CSS, then everything that draws itself.
+fn apply_theme(u: &Ui, light: Adjust, dark: Adjust) {
+    fn redraw(w: &gtk::Widget) {
+        w.queue_draw();
+        let mut c = w.first_child();
+        while let Some(child) = c {
+            redraw(&child);
+            c = child.next_sibling();
+        }
+    }
+    crate::theme::apply(light, dark);
+    redraw(u.win.upcast_ref());
+}
+
+/// Light, dark (`Config.color_scheme`) or whatever the system says.
+fn set_scheme(mode: u8) {
+    let Some(s) = gtk::Settings::default() else {
+        return;
+    };
+    match mode {
+        1 => s.set_gtk_interface_color_scheme(gtk::InterfaceColorScheme::Light),
+        2 => s.set_gtk_interface_color_scheme(gtk::InterfaceColorScheme::Dark),
+        _ => s.reset_property("gtk-interface-color-scheme"), // the next read asks the system again
+    }
+}
+
+fn is_dark_scheme(s: &gtk::Settings) -> bool {
+    s.gtk_interface_color_scheme() == gtk::InterfaceColorScheme::Dark
+}
+
+/// What Settings' Appearance box holds for Save.
+#[derive(Clone, Default)]
+struct Appearance {
+    scheme: Rc<Cell<u8>>,
+    /// the sliders, light then dark
+    colours: Rc<Cell<[Adjust; 2]>>,
+}
+
+/// Settings' appearance box: light / dark / system, and the theme sliders for whichever of light and
+/// dark is showing. Both recolour the app at once; closing the window goes back to what is saved.
+fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> (gtk::Frame, Appearance) {
+    let now = Appearance::default();
+    {
+        let st = u.st.borrow();
+        now.scheme.set(st.cfg.color_scheme);
+        now.colours.set([st.cfg.theme_light, st.cfg.theme_dark]);
+    }
+    let rows = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    for m in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
+        rows.set_property(m, 10);
+    }
+
+    let schemes = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    schemes.add_css_class("bf-tabs");
+    schemes.set_homogeneous(true);
+    let mut group: Option<gtk::ToggleButton> = None;
+    for (mode, name) in [(0, "System"), (1, "Light"), (2, "Dark")] {
+        let t = gtk::ToggleButton::with_label(name);
+        t.add_css_class("info-tab");
+        t.set_group(group.as_ref());
+        t.set_active(now.scheme.get() == mode);
+        let scheme = now.scheme.clone();
+        t.connect_toggled(move |t| {
+            if t.is_active() {
+                scheme.set(mode);
+                set_scheme(mode);
+            }
+        });
+        schemes.append(&t);
+        group.get_or_insert(t);
+    }
+    rows.append(&schemes);
+
+    let heading = gtk::Label::new(None);
+    heading.set_xalign(0.0);
+    heading.set_margin_top(6);
+    rows.append(&heading);
+    let Some(settings) = gtk::Settings::default() else {
+        return (gtk::Frame::new(None), now);
+    };
+    type Field = fn(&mut Adjust) -> &mut i32;
+    let sliders: [(&str, i32, Field); 3] = [
+        ("Tint", TINT_MAX, |a| &mut a.tint),
+        ("Saturation", LEVEL_MAX, |a| &mut a.saturation),
+        ("Brightness", LEVEL_MAX, |a| &mut a.brightness),
+    ];
+    let scales = sliders.map(|(name, max, field)| {
+        let label = gtk::Label::new(Some(name));
+        label.set_width_chars(10);
+        label.set_xalign(0.0);
+        let max = f64::from(max);
+        let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, -max, max, 1.0);
+        scale.set_draw_value(false);
+        scale.set_hexpand(true);
+        scale.update_property(&[gtk::accessible::Property::Label(name)]);
+        let (u, colours, settings) = (u.clone(), now.colours.clone(), settings.clone());
+        scale.connect_value_changed(move |s| {
+            let mut c = colours.get();
+            *field(&mut c[usize::from(is_dark_scheme(&settings))]) = s.value().round() as i32;
+            colours.set(c);
+            apply_theme(&u, c[0], c[1]);
+        });
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.append(&label);
+        row.append(&scale);
+        rows.append(&row);
+        (scale, field)
+    });
+    // put the showing scheme's values on the sliders, now and whenever it changes
+    let show = {
+        let (scales, colours) = (scales.clone(), now.colours.clone());
+        move |s: &gtk::Settings| {
+            let dark = is_dark_scheme(s);
+            heading.set_text(if dark {
+                "Colours in dark mode"
+            } else {
+                "Colours in light mode"
+            });
+            let mut a = colours.get()[usize::from(dark)];
+            for (scale, field) in &scales {
+                scale.set_value(f64::from(*field(&mut a)));
+            }
+        }
+    };
+    show(&settings);
+    let watch = Cell::new(Some(
+        settings.connect_gtk_interface_color_scheme_notify(show),
+    ));
+
+    let reset = gtk::Button::with_label("Reset colours");
+    reset.set_halign(gtk::Align::Start);
+    reset.connect_clicked(move |_| {
+        for (s, _) in &scales {
+            s.set_value(0.0);
+        }
+    });
+    rows.append(&reset);
+
+    // however it closes: back to what is saved (after Save, that's the new choice)
+    let (u, chosen) = (u.clone(), now.scheme.clone());
+    win.connect_close_request(move |_| {
+        if let Some(id) = watch.take() {
+            settings.disconnect(id);
+        }
+        let (scheme, light, dark) = {
+            let st = u.st.borrow();
+            (st.cfg.color_scheme, st.cfg.theme_light, st.cfg.theme_dark)
+        };
+        if scheme != chosen.get() {
+            set_scheme(scheme);
+        }
+        apply_theme(&u, light, dark);
+        glib::Propagation::Proceed
+    });
+    let frame = gtk::Frame::new(Some("Appearance"));
+    frame.set_child(Some(&rows));
+    (frame, now)
 }
 
 // ---------- helpers ----------

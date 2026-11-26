@@ -48,6 +48,9 @@ fn load_config(path: &Path) -> mac::Config {
             Some(("skip_intro", v)) => c.skip_intro = v.trim() == "1",
             Some(("autostart", v)) => c.autostart = v.trim() == "1",
             Some(("local_cache", v)) => c.local_cache = v.trim() == "1",
+            Some(("color_scheme", v)) => c.color_scheme = v.trim().parse().unwrap_or(0),
+            Some(("theme_light", v)) => c.theme_light = theme::Adjust::parse(v),
+            Some(("theme_dark", v)) => c.theme_dark = theme::Adjust::parse(v),
             _ => {}
         }
     }
@@ -67,7 +70,7 @@ pub fn save_config(path: &Path, c: &mac::Config) {
     write_state(
         path,
         format!(
-            "host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\nskip_intro={}\nautostart={}\nlocal_cache={}\n",
+            "host={}\nuser={}\nimsg={}\nmap_previews={}\nlink_previews={}\nnotify={}\nnotify_sound={}\nsound={}\nnotify_text={}\ndir_images={}\ndir_files={}\nskip_intro={}\nautostart={}\nlocal_cache={}\ntheme_light={}\ntheme_dark={}\ncolor_scheme={}\n",
             c.host,
             c.user,
             c.imsg,
@@ -81,7 +84,10 @@ pub fn save_config(path: &Path, c: &mac::Config) {
             c.dir_files,
             u8::from(c.skip_intro),
             u8::from(c.autostart),
-            u8::from(c.local_cache)
+            u8::from(c.local_cache),
+            c.theme_light.save(),
+            c.theme_dark.save(),
+            c.color_scheme
         ),
     );
 }
@@ -182,6 +188,11 @@ fn main() -> glib::ExitCode {
     if demo {
         cfg.host = "demo".into();
     }
+    if let Ok(v) = std::env::var("BF_THEME") {
+        let a = theme::Adjust::parse(&v);
+        (cfg.theme_light, cfg.theme_dark) = (a, a);
+    }
+    let themes = (cfg.theme_light, cfg.theme_dark);
     let store = ui::Store {
         config_file,
         known_host: paths.known_host.clone(),
@@ -224,7 +235,7 @@ fn main() -> glib::ExitCode {
         .application_id(APP_ID)
         .flags(flags)
         .build();
-    app.connect_startup(|_| {
+    app.connect_startup(move |_| {
         // dev aid for screenshots
         if let Some(settings) = gtk::Settings::default() {
             if std::env::var_os("BF_DARK").is_some() {
@@ -236,13 +247,7 @@ fn main() -> glib::ExitCode {
         // our own icons (the chat bubble); installed under share/icons in the Flatpak, found here when run from source
         gtk::IconTheme::for_display(&gdk::Display::default().expect("display"))
             .add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/data/icons"));
-        let css = gtk::CssProvider::new();
-        css.load_from_string(&(theme::css() + include_str!("style.css")));
-        gtk::style_context_add_provider_for_display(
-            &gdk::Display::default().expect("display"),
-            &css,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
+        theme::apply(themes.0, themes.1);
     });
     let parts = std::cell::RefCell::new(Some((store, cfg, cmd_tx, ev_rx)));
     app.connect_activate(move |app| match parts.borrow_mut().take() {
