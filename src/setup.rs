@@ -526,12 +526,7 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     win.add_css_class("wizard");
     let head = gtk::HeaderBar::new();
     head.add_css_class("bf-head");
-    let brand = gtk::Label::new(None);
-    brand.set_markup(
-        "<span foreground='#7b5cff'>Bubble</span><span foreground='#ff5fa8'>Fairy</span> ✨",
-    );
-    brand.add_css_class("app-title");
-    head.set_title_widget(Some(&brand));
+    head.set_title_widget(Some(&crate::ui::brand()));
     win.set_titlebar(Some(&head));
     let closed = ctx.closed.clone();
     win.connect_close_request(move |_| {

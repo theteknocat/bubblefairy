@@ -386,7 +386,7 @@ fn wordmark() -> gtk::Box {
 }
 
 /// The header's name: the bubble-and-wand mark, then the wordmark.
-fn brand() -> gtk::Box {
+pub(crate) fn brand() -> gtk::Box {
     let b = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let icon = gtk::Image::from_icon_name("bf-mark");
     icon.set_pixel_size(32);

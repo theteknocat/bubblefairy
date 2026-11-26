@@ -32,9 +32,10 @@ headerbar.bf-head {
   letter-spacing: 0.02em;
 }
 
-.brand-b { color: #2b79ff; }
-.brand-f { color: #ff5fa8; }
+.brand-b { color: #1459d9; } /* deeper than the artwork's, to hold up on a pale header */
+.brand-f { color: #db2777; }
 window.dark .brand-b { color: #5aa8ff; }
+window.dark .brand-f { color: #ff5fa8; }
 
 .head-btn, .emoji-btn > button {
   border-radius: 99px;
