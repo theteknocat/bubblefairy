@@ -1,0 +1,53 @@
+/* The glossy side of the Bubbliness slider, loaded after style.css. Every layer is scaled by --shine, so at 0
+   it matches style.css. GTK CSS has no pseudo-elements, so each reflection is one more background layer. */
+.wizard button.wiz-next, .bf-settings button.suggested-action, .bf-settings button.wiz-next,
+.bf-tabs button.info-tab:checked {
+  background-image:
+    linear-gradient(180deg, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.78), var(--shine)) 4%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.28), var(--shine)) 47%, rgba(255, 255, 255, 0) 49%),
+    linear-gradient(0deg, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.5), var(--shine)), rgba(255, 255, 255, 0) 45%),
+    linear-gradient(135deg, var(--accent), var(--accent-2));
+  text-shadow: 0 1px 2px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.55), var(--shine));
+  box-shadow: inset 0 0 0 1px mix(rgba(10, 0, 50, 0), rgba(10, 0, 50, 0.3), var(--shine)), inset 0 2px 4px mix(rgba(10, 0, 50, 0), rgba(10, 0, 50, 0.25), var(--shine)),
+    0 4px 12px alpha(var(--accent), var(--glow)),
+    inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--plain));
+}
+.wizard button.wiz-next:disabled { background-image: none; box-shadow: none; text-shadow: none; }
+.avatar.av0 { background-image:
+    radial-gradient(ellipse 36% 24% at 50% 22%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.9), var(--shine)), mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--shine)) 92%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(ellipse 60% 35% at 50% 96%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.6), var(--shine)), rgba(255, 255, 255, 0) 100%),
+    linear-gradient(160deg, mix(var(--av0-a), var(--av0-b), var(--shine)), mix(var(--av0-b), var(--av0-a), var(--shine))); }
+.avatar.av1 { background-image:
+    radial-gradient(ellipse 36% 24% at 50% 22%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.9), var(--shine)), mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--shine)) 92%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(ellipse 60% 35% at 50% 96%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.6), var(--shine)), rgba(255, 255, 255, 0) 100%),
+    linear-gradient(160deg, mix(var(--av1-a), var(--av1-b), var(--shine)), mix(var(--av1-b), var(--av1-a), var(--shine))); }
+.avatar.av2 { background-image:
+    radial-gradient(ellipse 36% 24% at 50% 22%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.9), var(--shine)), mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--shine)) 92%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(ellipse 60% 35% at 50% 96%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.6), var(--shine)), rgba(255, 255, 255, 0) 100%),
+    linear-gradient(160deg, mix(var(--av2-a), var(--av2-b), var(--shine)), mix(var(--av2-b), var(--av2-a), var(--shine))); }
+.avatar.av3 { background-image:
+    radial-gradient(ellipse 36% 24% at 50% 22%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.9), var(--shine)), mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--shine)) 92%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(ellipse 60% 35% at 50% 96%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.6), var(--shine)), rgba(255, 255, 255, 0) 100%),
+    linear-gradient(160deg, mix(var(--av3-a), var(--av3-b), var(--shine)), mix(var(--av3-b), var(--av3-a), var(--shine))); }
+.avatar.av4 { background-image:
+    radial-gradient(ellipse 36% 24% at 50% 22%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.9), var(--shine)), mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--shine)) 92%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(ellipse 60% 35% at 50% 96%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.6), var(--shine)), rgba(255, 255, 255, 0) 100%),
+    linear-gradient(160deg, mix(var(--av4-a), var(--av4-b), var(--shine)), mix(var(--av4-b), var(--av4-a), var(--shine))); }
+.avatar.av5 { background-image:
+    radial-gradient(ellipse 36% 24% at 50% 22%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.9), var(--shine)), mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--shine)) 92%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(ellipse 60% 35% at 50% 96%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.6), var(--shine)), rgba(255, 255, 255, 0) 100%),
+    linear-gradient(160deg, mix(var(--av5-a), var(--av5-b), var(--shine)), mix(var(--av5-b), var(--av5-a), var(--shine))); }
+.avatar.av6 { background-image:
+    radial-gradient(ellipse 36% 24% at 50% 22%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.9), var(--shine)), mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--shine)) 92%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(ellipse 60% 35% at 50% 96%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.6), var(--shine)), rgba(255, 255, 255, 0) 100%),
+    linear-gradient(160deg, mix(var(--av6-a), var(--av6-b), var(--shine)), mix(var(--av6-b), var(--av6-a), var(--shine))); }
+.avatar.av7 { background-image:
+    radial-gradient(ellipse 36% 24% at 50% 22%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.9), var(--shine)), mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--shine)) 92%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(ellipse 60% 35% at 50% 96%, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.6), var(--shine)), rgba(255, 255, 255, 0) 100%),
+    linear-gradient(160deg, mix(var(--av7-a), var(--av7-b), var(--shine)), mix(var(--av7-b), var(--av7-a), var(--shine))); }
+.avatar.av0, .avatar.av1, .avatar.av2, .avatar.av3, .avatar.av4, .avatar.av5, .avatar.av6, .avatar.av7 {
+  box-shadow: 0 2px 6px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.55), var(--plain)),
+    inset 0 -3px 4px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.1), var(--plain)), 0 3px 8px mix(alpha(var(--shadow-strong), 0), var(--shadow-strong), var(--shine)),
+    inset 0 0 0 1px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.22), var(--shine)), inset 0 2px 5px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.22), var(--shine));
+}
+.avatar.mini.av0, .avatar.mini.av1, .avatar.mini.av2, .avatar.mini.av3, .avatar.mini.av4, .avatar.mini.av5,
+.avatar.mini.av6, .avatar.mini.av7 { box-shadow: 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 0 0 1px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.22), var(--shine)); }

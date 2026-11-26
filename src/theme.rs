@@ -1,8 +1,9 @@
 //! The app's chrome and trim colours: the one place they're defined, for CSS and for drawn widgets.
 //! Colours that carry meaning (sent bubbles, avatars, status, errors, brand) stay where they're used.
 
-//! The user's three sliders (tint, saturation, brightness) are applied here, in OKLCH, where a hue
-//! change keeps the perceived lightness and so the text contrast.
+//! The user's sliders are applied here. Colour (tint, saturation, brightness) works in OKLCH, where a
+//! hue change keeps the perceived lightness and so the text contrast. Bubbliness runs from flat (no
+//! shadows, bevels or gradients) through the designed look to glossy.
 
 use gtk::gdk;
 use std::cell::{Cell, RefCell};
@@ -19,18 +20,20 @@ impl Colour {
 }
 
 /// The slider values for one scheme: tint in degrees, the others -100 to 100. All zero = as designed.
+/// Bubbliness: -100 flat, 100 fully glossy.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct Adjust {
     pub tint: i32,
     pub saturation: i32,
     pub brightness: i32,
+    pub bubbliness: i32,
 }
 
 pub const TINT_MAX: i32 = 180;
 pub const LEVEL_MAX: i32 = 100;
 
 impl Adjust {
-    /// From the config file's `tint,saturation,brightness`; anything unreadable is 0.
+    /// From the config file's `tint,saturation,brightness,bubbliness`; anything unreadable is 0.
     pub fn parse(s: &str) -> Self {
         let mut n = s.split(',').map(|v| v.trim().parse::<i32>().unwrap_or(0));
         let mut next = |max: i32| n.next().unwrap_or(0).clamp(-max, max);
@@ -38,17 +41,26 @@ impl Adjust {
             tint: next(TINT_MAX),
             saturation: next(LEVEL_MAX),
             brightness: next(LEVEL_MAX),
+            bubbliness: next(LEVEL_MAX),
         }
     }
 
     pub fn save(self) -> String {
-        format!("{},{},{}", self.tint, self.saturation, self.brightness)
+        let Adjust {
+            tint,
+            saturation,
+            brightness,
+            bubbliness,
+        } = self;
+        format!("{tint},{saturation},{brightness},{bubbliness}")
     }
 }
 
 /// How a colour answers the sliders.
 #[derive(Clone, Copy)]
 enum Role {
+    /// The sliders leave the colour alone (the send button's blue and green).
+    Fixed,
     /// Tint and saturation only: text and shadows keep their lightness.
     Tinted,
     /// A background: brightness moves it, by this much (1 = fully, to near white or near black).
@@ -79,7 +91,7 @@ impl Token {
 
     fn adjusted(&self, dark: bool, a: Adjust) -> Colour {
         let base = if dark { self.dark } else { self.light };
-        if a == Adjust::default() {
+        if matches!(self.role, Role::Fixed) || (a.tint, a.saturation, a.brightness) == (0, 0, 0) {
             return base;
         }
         let [mut l, mut c, mut h] = to_oklch(base.0);
@@ -91,7 +103,7 @@ impl Token {
         c *= 1.0
             + s * match self.role {
                 Role::Incoming => 0.15,
-                Role::Trim | Role::Avatar => 0.25,
+                Role::Trim | Role::Avatar | Role::Fixed => 0.25,
                 _ if s > 0.0 => 0.8,
                 _ => 0.7,
             };
@@ -105,7 +117,7 @@ impl Token {
             Role::Surface(k) if b > 0.0 => l += b * (0.995 - l) * 0.95 * k,
             Role::Surface(k) => l += b * 0.05 * k,
             Role::Trim | Role::Avatar => l += b * 0.04,
-            Role::Tinted | Role::Incoming => {}
+            Role::Tinted | Role::Incoming | Role::Fixed => {}
         }
         Colour(from_oklch(l, c, h), base.1)
     }
@@ -141,6 +153,13 @@ const fn trim(light: Colour, dark: Colour) -> Token {
     Token {
         role: Role::Trim,
         ..pair(light, dark)
+    }
+}
+
+const fn fixed(rgb: u32) -> Token {
+    Token {
+        role: Role::Fixed,
+        ..same(solid(rgb))
     }
 }
 
@@ -201,6 +220,11 @@ const VARS: &[(&str, Token)] = &[
     ("accent-deep", trim(solid(0x6a55e8), solid(0x6a55e8))),
     ("focus", trim(solid(0xb9a6ff), solid(0xb9a6ff))),
     ("neutral", trim(solid(0x8076c8), solid(0x8076c8))),
+    // the send button, as the sent bubbles
+    ("send-a", fixed(0x2f7cf6)),
+    ("send-b", fixed(0x1456e0)),
+    ("sms-a", fixed(0x17984a)),
+    ("sms-b", fixed(0x0a6b2e)),
     // avatar discs, top and bottom of each gradient
     ("av0-a", avatar(0xff9a8b)),
     ("av0-b", avatar(0xff5e7e)),
@@ -242,8 +266,62 @@ pub fn apply(light: Adjust, dark: Adjust) {
             );
             p
         })
-        .load_from_string(&(css() + include_str!("style.css")));
+        .load_from_string(&(css() + include_str!("style.css") + include_str!("gloss.css")));
     });
+}
+
+/// 0 to 1: how far Bubbliness is toward glossy.
+pub fn shine(dark: bool) -> f32 {
+    ADJUST.get()[usize::from(dark)].bubbliness.max(0) as f32 / LEVEL_MAX as f32
+}
+
+/// 1 to 0: how much of the shadows, bevels and gradients is left toward flat.
+pub fn depth(dark: bool) -> f32 {
+    1.0 + ADJUST.get()[usize::from(dark)].bubbliness.min(0) as f32 / LEVEL_MAX as f32
+}
+
+/// `a` moved the fraction `t` of the way to `b`.
+fn mix(a: Colour, b: Colour, t: f32) -> Colour {
+    let (x, y) = (a.0.to_be_bytes(), b.0.to_be_bytes());
+    let rgb = u32::from_be_bytes(std::array::from_fn(|i| {
+        (f32::from(x[i]) + (f32::from(y[i]) - f32::from(x[i])) * t).round() as u8
+    }));
+    Colour(rgb, a.1 + (b.1 - a.1) * t)
+}
+
+/// Gradients that go flat by one end moving all the way to the other.
+const FLATTEN_TO: [(&str, &str); 3] = [("bg-a", "bg-b"), ("bg-c", "bg-b"), ("accent-2", "accent")];
+/// Gradients that go flat by both ends meeting in the middle (and every avatar's).
+const FLATTEN_MID: [(&str, &str); 4] = [
+    ("sel-a", "sel-b"),
+    ("them-a", "them-b"),
+    ("send-a", "send-b"),
+    ("sms-a", "sms-b"),
+];
+
+/// A variable's colour with the sliders applied, flattened as far as Bubbliness says.
+fn value(name: &str, dark: bool) -> Option<Colour> {
+    let get = |n: &str| VARS.iter().find(|v| v.0 == n).map(|v| v.1.get(dark));
+    let own = get(name)?;
+    let flat = 1.0 - depth(dark);
+    if let Some((_, to)) = FLATTEN_TO.iter().find(|p| p.0 == name) {
+        return Some(mix(own, get(to)?, flat));
+    }
+    let avatar = name.starts_with("av").then(|| {
+        let (disc, end) = name.split_at(name.len() - 1);
+        format!("{disc}{}", if end == "a" { "b" } else { "a" })
+    });
+    let other = avatar.as_deref().or_else(|| {
+        FLATTEN_MID.iter().find_map(|&(a, b)| match name {
+            n if n == a => Some(b),
+            n if n == b => Some(a),
+            _ => None,
+        })
+    });
+    Some(match other {
+        Some(o) => mix(own, get(o)?, flat / 2.0),
+        None => own,
+    })
 }
 
 /// The variable definitions to load ahead of `style.css`; ui.rs puts `.dark` on windows in dark mode.
@@ -251,9 +329,16 @@ fn css() -> String {
     let block = |selector: &str, dark: bool| {
         let vars: String = VARS
             .iter()
-            .map(|(name, t)| format!("  --{name}: {};\n", t.get(dark).css()))
+            .filter_map(|(name, _)| Some(format!("  --{name}: {};\n", value(name, dark)?.css())))
             .collect();
-        format!("{selector} {{\n{vars}}}\n")
+        let (depth, shine) = (depth(dark), shine(dark));
+        // text shadows carry the avatars' contrast, so flat keeps a trace of them
+        let lift = 0.35 + 0.65 * depth;
+        // GTK rejects most calc() inside colours, so style.css only mixes by these; sums are worked out here
+        let (plain, glow) = (depth - shine, 0.40 * depth + 0.20 * shine);
+        format!(
+            "{selector} {{\n{vars}  --depth: {depth};\n  --shine: {shine};\n  --lift: {lift};\n  --plain: {plain};\n  --glow: {glow};\n}}\n"
+        )
     };
     block(":root", false) + &block("window.dark", true)
 }
@@ -330,7 +415,7 @@ mod tests {
 
     #[test]
     fn every_css_variable_is_defined() {
-        let style = include_str!("style.css");
+        let style = concat!(include_str!("style.css"), include_str!("gloss.css"));
         let defined = css() + style;
         for rest in style.split("var(--").skip(1) {
             let name = rest.split(')').next().unwrap_or_default();
@@ -345,9 +430,38 @@ mod tests {
             let [l, c, h] = to_oklch(t.light.0);
             assert_eq!(from_oklch(l, c, h), t.light.0, "{name}");
         }
-        let a = Adjust::parse("-20,300,x");
-        assert_eq!((a.tint, a.saturation, a.brightness), (-20, 100, 0));
+        let a = Adjust::parse("-20,300,x"); // an older config has no bubbliness
+        assert_eq!(
+            (a.tint, a.saturation, a.brightness, a.bubbliness),
+            (-20, 100, 0, 0)
+        );
         assert_eq!(Adjust::parse(&a.save()), a);
+    }
+
+    #[test]
+    fn flat_leaves_no_gradient_and_gloss_no_change_of_colour() {
+        let at = |bubbliness| {
+            let a = Adjust {
+                bubbliness,
+                ..Adjust::default()
+            };
+            ADJUST.set([a, a]);
+        };
+        at(-LEVEL_MAX);
+        assert_eq!((depth(false), shine(false)), (0.0, 0.0));
+        let ends = |a, b| (value(a, true).map(|c| c.0), value(b, true).map(|c| c.0));
+        for (a, b) in FLATTEN_TO
+            .iter()
+            .chain(&FLATTEN_MID)
+            .chain(&[("av7-a", "av7-b")])
+        {
+            let (x, y) = ends(a, b);
+            assert_eq!(x, y, "{a} {b}");
+        }
+        at(LEVEL_MAX);
+        assert_eq!((depth(false), shine(false)), (1.0, 1.0));
+        assert_eq!(value("av7-a", false).map(|c| c.0), Some(0xffe17a));
+        at(0);
     }
 
     /// Every slider position at the extremes and in between keeps text and controls readable.
@@ -364,6 +478,7 @@ mod tests {
                             tint,
                             saturation,
                             brightness,
+                            ..Adjust::default()
                         };
                         let check = |fg: &str, bg: &str, min: f32| {
                             let got = contrast(get(fg, dark, a), get(bg, dark, a));

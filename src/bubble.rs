@@ -160,6 +160,33 @@ pub fn draw_cover(s: &gtk::Snapshot, t: &gdk::Texture, r: &graphene::Rect) {
     s.pop();
 }
 
+/// `a` moved the fraction `t` of the way to `b`.
+fn blend(a: gdk::RGBA, b: gdk::RGBA, t: f32) -> gdk::RGBA {
+    let at = |x: f32, y: f32| x + (y - x) * t;
+    gdk::RGBA::new(
+        at(a.red(), b.red()),
+        at(a.green(), b.green()),
+        at(a.blue(), b.blue()),
+        at(a.alpha(), b.alpha()),
+    )
+}
+
+/// A glass reflection: a rounded patch of white, strongest at its top edge.
+fn draw_shine(s: &gtk::Snapshot, shape: &gsk::RoundedRect, alpha: f32) {
+    let r = shape.bounds();
+    s.push_rounded_clip(shape);
+    s.append_linear_gradient(
+        r,
+        &graphene::Point::new(0.0, r.y()),
+        &graphene::Point::new(0.0, r.y() + r.height()),
+        &[
+            gsk::ColorStop::new(0.0, rgba(0xffffff, alpha)),
+            gsk::ColorStop::new(1.0, rgba(0xffffff, alpha * 0.12)),
+        ],
+    );
+    s.pop();
+}
+
 /// Link-preview cards: soft off-white in light and dark mode alike (dark grey text, set in CSS).
 fn card_palette() -> (gdk::RGBA, gdk::RGBA, gdk::RGBA, f32, Option<gdk::RGBA>) {
     (
@@ -346,6 +373,13 @@ mod imp {
                     if let Some(t) = self.tex.borrow().as_ref() {
                         draw_cover(s, t, &bounds);
                     }
+                    let k = theme::shine(is_dark(&*w));
+                    if disc && k > 0.0 {
+                        let (w, h) = (width * 0.70, height * 0.42);
+                        let top = graphene::Rect::new((width - w) / 2.0, height * 0.05, w, h);
+                        let round = gsk::RoundedRect::from_rect(top, h / 2.0);
+                        draw_shine(s, &round, 0.65 * k);
+                    }
                     s.pop();
                     kids(s); // the loading spinner, if any
                     return;
@@ -374,7 +408,13 @@ mod imp {
                 let look = self.look.get();
                 let path = outline(look, width, height);
                 let bounds = graphene::Rect::new(0.0, 0.0, width, height);
-                s.push_shadow(&[gsk::Shadow::new(rgba(0x0a0528, 0.35), 0.0, 4.0, 14.0)]);
+                let depth = theme::depth(is_dark(&*w));
+                s.push_shadow(&[gsk::Shadow::new(
+                    rgba(0x0a0528, 0.35 * depth),
+                    0.0,
+                    4.0,
+                    14.0,
+                )]);
                 s.push_fill(&path, gsk::FillRule::Winding);
                 match self.tex.borrow().as_ref() {
                     // cover the whole widget, gutter included, so the tail shows a sliver of the photo
@@ -389,14 +429,14 @@ mod imp {
                 s.append_stroke(
                     &path,
                     &gsk::Stroke::new(1.5),
-                    &gdk::RGBA::new(1.0, 1.0, 1.0, 0.30),
+                    &gdk::RGBA::new(1.0, 1.0, 1.0, 0.30 * depth),
                 );
                 s.restore();
                 s.pop();
                 s.append_stroke(
                     &path,
                     &gsk::Stroke::new(1.0),
-                    &gdk::RGBA::new(1.0, 1.0, 1.0, 0.22),
+                    &gdk::RGBA::new(1.0, 1.0, 1.0, 0.22 * depth),
                 );
                 // the loading spinner (see ui::load_texture) is the only child
                 let mut c = w.first_child();
@@ -416,6 +456,13 @@ mod imp {
                 };
                 let path = outline(look, width, height);
                 let bounds = graphene::Rect::new(0.0, 0.0, width, height);
+                // flat: the gradient's ends meet, and the shadow and highlight fade out
+                let (depth, k) = (theme::depth(dark), theme::shine(dark));
+                let flat = (1.0 - depth) / 2.0;
+                let (top, bottom) = (blend(top, bottom, flat), blend(bottom, top, flat));
+                let mut shadow = shadow;
+                shadow.set_alpha(shadow.alpha() * depth);
+                let hi = hi * depth;
 
                 s.push_shadow(&[gsk::Shadow::new(shadow, 0.0, 3.0, 10.0)]);
                 s.push_fill(&path, gsk::FillRule::Winding);
@@ -441,6 +488,30 @@ mod imp {
                         None => s.append_color(&themed(theme::PLACEHOLDER, dark), &r),
                     }
                     s.pop();
+                }
+
+                if k > 0.0 && !self.is_card.get() {
+                    // light pooling at the bottom, then the reflection across the top
+                    s.push_fill(&path, gsk::FillRule::Winding);
+                    s.append_linear_gradient(
+                        &bounds,
+                        &graphene::Point::new(0.0, height - 30.0_f32.min(height / 2.0)),
+                        &graphene::Point::new(0.0, height),
+                        &[
+                            gsk::ColorStop::new(0.0, rgba(0xffffff, 0.0)),
+                            gsk::ColorStop::new(1.0, rgba(0xffffff, 0.30 * k)),
+                        ],
+                    );
+                    s.pop();
+                    // inset 3 px and rounded with the bubble's own corners, so it reads as a curved surface
+                    let x = if look.me { 0.0 } else { TAIL };
+                    let h = (height * 0.45).min(22.0);
+                    let r = graphene::Rect::new(x + 3.0, 2.0, width - TAIL - 6.0, h);
+                    let corner = |v: f32| graphene::Size::new(v, v);
+                    let (up, down) = (corner(R - 2.5), corner((h / 2.0).min(7.0)));
+                    let top = gsk::RoundedRect::new(r, up, up, down, down);
+                    draw_shine(s, &top, k * if look.me { 0.60 } else { 0.40 });
+                    s.append_stroke(&path, &gsk::Stroke::new(1.0), &rgba(0x0a0032, 0.35 * k));
                 }
 
                 // glassy rim: the outline nudged down 1px and clipped to the shape lights the top edge

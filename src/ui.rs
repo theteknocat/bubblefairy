@@ -10190,18 +10190,15 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> (gtk::Frame, Appearance) {
     }
     rows.append(&schemes);
 
-    let heading = gtk::Label::new(None);
-    heading.set_xalign(0.0);
-    heading.set_margin_top(6);
-    rows.append(&heading);
     let Some(settings) = gtk::Settings::default() else {
         return (gtk::Frame::new(None), now);
     };
     type Field = fn(&mut Adjust) -> &mut i32;
-    let sliders: [(&str, i32, Field); 3] = [
+    let sliders: [(&str, i32, Field); 4] = [
         ("Tint", TINT_MAX, |a| &mut a.tint),
         ("Saturation", LEVEL_MAX, |a| &mut a.saturation),
         ("Brightness", LEVEL_MAX, |a| &mut a.brightness),
+        ("Bubbliness", LEVEL_MAX, |a| &mut a.bubbliness),
     ];
     let scales = sliders.map(|(name, max, field)| {
         let label = gtk::Label::new(Some(name));
@@ -10222,6 +10219,9 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> (gtk::Frame, Appearance) {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row.append(&label);
         row.append(&scale);
+        if name == "Tint" {
+            row.set_margin_top(6); // room under the light / dark choice
+        }
         rows.append(&row);
         (scale, field)
     });
@@ -10230,11 +10230,6 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> (gtk::Frame, Appearance) {
         let (scales, colours) = (scales.clone(), now.colours.clone());
         move |s: &gtk::Settings| {
             let dark = is_dark_scheme(s);
-            heading.set_text(if dark {
-                "Colours in dark mode"
-            } else {
-                "Colours in light mode"
-            });
             let mut a = colours.get()[usize::from(dark)];
             for (scale, field) in &scales {
                 scale.set_value(f64::from(*field(&mut a)));
@@ -10246,7 +10241,7 @@ fn appearance_frame(u: &Rc<Ui>, win: &gtk::Window) -> (gtk::Frame, Appearance) {
         settings.connect_gtk_interface_color_scheme_notify(show),
     ));
 
-    let reset = gtk::Button::with_label("Reset colours");
+    let reset = gtk::Button::with_label("Restore Defaults");
     reset.set_halign(gtk::Align::Start);
     reset.connect_clicked(move |_| {
         for (s, _) in &scales {

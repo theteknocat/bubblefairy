@@ -59,7 +59,7 @@ button.status {
   color: var(--ink);
   font-weight: 600;
   font-size: 0.88em;
-  box-shadow: inset 0 1px var(--panel-edge), 0 1px 4px var(--shadow);
+  box-shadow: inset 0 1px mix(alpha(var(--panel-edge), 0), var(--panel-edge), var(--depth)), 0 1px 4px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth));
 }
 button.status { transition: background-image 140ms ease; }
 button.status:hover { background-image: linear-gradient(alpha(currentColor, 0.10), alpha(currentColor, 0.10)); }
@@ -70,15 +70,15 @@ button.status .dot {
   border-radius: 99px;
   background-color: #ffb340;
 }
-button.status.online .dot { background-color: #2fd27a; box-shadow: 0 0 6px rgba(47, 210, 122, 0.8); }
-button.status.connecting .dot, button.status.issue .dot { background-color: #ffb340; box-shadow: 0 0 6px rgba(255, 179, 64, 0.8); }
-button.status.offline .dot { background-color: #ff5a73; box-shadow: 0 0 6px rgba(255, 90, 115, 0.8); }
+button.status.online .dot { background-color: #2fd27a; box-shadow: 0 0 6px mix(rgba(47, 210, 122, 0), rgba(47, 210, 122, 0.8), var(--depth)); }
+button.status.connecting .dot, button.status.issue .dot { background-color: #ffb340; box-shadow: 0 0 6px mix(rgba(255, 179, 64, 0), rgba(255, 179, 64, 0.8), var(--depth)); }
+button.status.offline .dot { background-color: #ff5a73; box-shadow: 0 0 6px mix(rgba(255, 90, 115, 0), rgba(255, 90, 115, 0.8), var(--depth)); }
 
 /* panels */
 .sidebar, .conv {
   background-color: var(--panel);
   border-radius: 22px;
-  box-shadow: 0 8px 28px var(--shadow), 0 1px 3px var(--shadow), inset 0 1px var(--panel-edge);
+  box-shadow: 0 8px 28px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(alpha(var(--panel-edge), 0), var(--panel-edge), var(--depth));
 }
 .sidebar { margin: 2px 6px 14px 14px; }
 .conv { margin: 2px 14px 14px 6px; transition: opacity 200ms ease-out; }
@@ -107,7 +107,7 @@ row.chat-row:hover { background-color: alpha(currentColor, 0.05); }
 row.chat-row:selected {
   background-color: transparent;
   background-image: linear-gradient(135deg, var(--sel-a), var(--sel-b));
-  box-shadow: 0 3px 10px var(--shadow), inset 0 0 0 1px var(--sel-edge), inset 0 1px rgba(255, 255, 255, 0.55);
+  box-shadow: 0 3px 10px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 0 0 1px var(--sel-edge), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.55), var(--depth));
   color: var(--ink);
 }
 .chat-name { font-weight: 700; }
@@ -119,7 +119,7 @@ row.unread .chat-name { font-weight: 800; }
 }
 .addr-chip.imessage { background-color: rgba(40, 120, 255, 0.28); color: var(--ink); }
 .contact-card { padding: 14px; }
-.info-panel { background-color: var(--panel); border-radius: 22px; margin: 2px 14px 14px 0; box-shadow: 0 8px 28px var(--shadow), 0 1px 3px var(--shadow), inset 0 1px var(--panel-edge); }
+.info-panel { background-color: var(--panel); border-radius: 22px; margin: 2px 14px 14px 0; box-shadow: 0 0 0 1px mix(alpha(var(--neutral), 0.45), alpha(var(--neutral), 0), var(--depth)), 0 8px 28px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(alpha(var(--panel-edge), 0), var(--panel-edge), var(--depth)); }
 .info-panel { background-color: var(--panel-solid); } /* opaque: it covers the chat */
 .info-panel scrolledwindow, .info-panel viewport { background: transparent; }
 .link-glyph { background-color: #5f6b85; color: #ffffff; border-radius: 99px; }
@@ -137,14 +137,14 @@ row.unread .chat-name { font-weight: 800; }
 .bf-tabs { background-color: alpha(currentColor, 0.07); border-radius: 99px; padding: 3px; }
 .bf-tabs .info-tab { border-radius: 99px; background: transparent; background-image: none; box-shadow: none; border: none; padding: 5px 14px; color: var(--ink-soft); transition: background-color 160ms ease; }
 .bf-tabs .info-tab:hover { background-color: alpha(currentColor, 0.08); }
-.bf-tabs .info-tab:checked { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #ffffff; font-weight: 700; box-shadow: 0 2px 8px alpha(var(--accent), 0.35); }
+.bf-tabs .info-tab:checked { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #ffffff; font-weight: 700; box-shadow: 0 2px 8px mix(alpha(var(--accent), 0), alpha(var(--accent), 0.35), var(--depth)); }
 .tab-name { font-weight: 700; }
 .info-person { padding: 4px 0; }
 .text link, .text link:visited, .text link:hover { color: inherit; text-decoration: underline; }
 .info-link { color: #5b8def; }
 .map-box { border-radius: 12px; background-color: alpha(var(--neutral), 0.18); border: 1px solid alpha(var(--neutral), 0.35); }
 .map-note { font-size: 0.7em; color: var(--ink-soft); }
-.map-pin { background-color: #e5383b; border: 2px solid #ffffff; border-radius: 99px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5); }
+.map-pin { background-color: #e5383b; border: 2px solid #ffffff; border-radius: 99px; box-shadow: 0 1px 4px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.5), var(--depth)); }
 .map-attr { font-size: 0.65em; color: #333333; background-color: rgba(255, 255, 255, 0.75); padding: 1px 5px; border-top-left-radius: 6px; }
 button.card-action {
   min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px;
@@ -157,7 +157,7 @@ row.unread .chat-preview { color: var(--ink); }
 .unread-dot, .read-dot { min-width: 10px; min-height: 10px; border-radius: 99px; }
 .unread-dot {
   background-image: radial-gradient(circle at 35% 30%, #a9dcff, #2f7bff 70%);
-  box-shadow: 0 0 7px rgba(47, 123, 255, 0.65);
+  box-shadow: 0 0 7px mix(rgba(47, 123, 255, 0), rgba(47, 123, 255, 0.65), var(--depth));
 }
 
 /* unread count after the app's title */
@@ -166,7 +166,7 @@ row.unread .chat-preview { color: var(--ink); }
   border-radius: 99px;
   background-image: linear-gradient(135deg, #5aa0ff, #2f7bff);
   color: #ffffff; font-size: 0.78em; font-weight: 800;
-  box-shadow: 0 1px 6px rgba(47, 123, 255, 0.55);
+  box-shadow: 0 1px 6px mix(rgba(47, 123, 255, 0), rgba(47, 123, 255, 0.55), var(--depth));
 }
 
 /* the search field in the header: as tall as the connection pill */
@@ -177,12 +177,12 @@ row.unread .chat-preview { color: var(--ink); }
   padding: 0 34px 0 10px; /* room for the close button on the right */
   min-height: 30px;
   color: var(--ink);
-  box-shadow: inset 0 1px 3px var(--shadow);
+  box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth));
 }
 .head-search image.right, .head-search > image:last-child { opacity: 0; min-width: 0; min-height: 0; margin: 0; padding: 0; -gtk-icon-size: 0px; } /* the close button does its job */
 .search-close { min-width: 24px; min-height: 24px; padding: 0; }
 .search-close image { -gtk-icon-size: 14px; }
-.head-search:focus-within { outline: none; border-color: alpha(var(--accent), 0.55); box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(var(--accent), 0.18); }
+.head-search:focus-within { outline: none; border-color: alpha(var(--accent), 0.55); box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), 0 0 0 3px alpha(var(--accent), 0.18); }
 
 /* pinned chats: avatar tiles above the list */
 .tiles { margin: 6px 5px 12px 5px; } /* + the tile's own 3 px = the rows' 8 px */ /* room before the list; the avatars-only sidebar keeps it tight */
@@ -190,10 +190,10 @@ row.unread .chat-preview { color: var(--ink); }
 .sidebar.collapsed .tile { margin: 4px; padding: 8px 4px; } /* the same size and gaps as the list rows, close to the edges */
 .tile { margin: 3px; padding: 8px 4px 6px 4px; border-radius: 16px; transition: background-color 160ms ease; }
 .tile:hover { background-color: alpha(currentColor, 0.05); }
-.tile.dragging { background-color: alpha(currentColor, 0.10); box-shadow: 0 8px 22px var(--shadow-strong); }
+.tile.dragging { background-color: alpha(currentColor, 0.10); box-shadow: 0 8px 22px mix(alpha(var(--shadow-strong), 0), var(--shadow-strong), var(--depth)); }
 .tile.selected {
   background-image: linear-gradient(135deg, var(--sel-a), var(--sel-b));
-  box-shadow: 0 3px 10px var(--shadow), inset 0 0 0 1px var(--sel-edge), inset 0 1px rgba(255, 255, 255, 0.55);
+  box-shadow: 0 3px 10px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 0 0 1px var(--sel-edge), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.55), var(--depth));
 }
 .tile-name { font-weight: 700; font-size: 0.9em; color: var(--ink); }
 .tile .unread-dot { margin: 0 0 0 -2px; }
@@ -207,9 +207,9 @@ row.unread .chat-preview { color: var(--ink); }
   color: #ffffff;
   font-size: 1.25em;
   font-weight: 800;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 5px rgba(0, 0, 0, 0.30);
-  -gtk-icon-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 5px rgba(0, 0, 0, 0.30);
-  box-shadow: 0 2px 6px var(--shadow), inset 0 1px rgba(255, 255, 255, 0.55), inset 0 -3px 4px rgba(0, 0, 0, 0.10);
+  text-shadow: 0 1px 2px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.55), var(--lift)), 0 0 5px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.30), var(--lift));
+  -gtk-icon-shadow: 0 1px 2px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.55), var(--lift)), 0 0 5px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.30), var(--lift));
+  box-shadow: 0 2px 6px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.55), var(--depth)), inset 0 -3px 4px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.10), var(--depth));
 }
 .avatar.small { min-width: 28px; min-height: 28px; font-size: 0.9em; margin-right: 4px; }
 .group-avatar {
@@ -217,7 +217,7 @@ row.unread .chat-preview { color: var(--ink); }
   min-height: 44px;
   border-radius: 99px;
   background-color: var(--panel);
-  box-shadow: 0 2px 6px var(--shadow), inset 0 1px var(--panel-edge);
+  box-shadow: 0 2px 6px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(alpha(var(--panel-edge), 0), var(--panel-edge), var(--depth));
 }
 .avatar.mini {
   min-width: 0;
@@ -226,7 +226,7 @@ row.unread .chat-preview { color: var(--ink); }
   padding: 0;
   font-size: 0.7em;
   border: 1.5px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 1px 3px var(--shadow);
+  box-shadow: 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth));
 }
 .avatar.mini.more {
   background-image: none;
@@ -237,7 +237,7 @@ row.unread .chat-preview { color: var(--ink); }
   text-shadow: none;
   border-color: rgba(255, 255, 255, 0.9);
 }
-.avatar.mini.stackav { font-size: 1.05em; border-width: 2px; box-shadow: 0 2px 6px var(--shadow); }
+.avatar.mini.stackav { font-size: 1.05em; border-width: 2px; box-shadow: 0 2px 6px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); }
 .avatar.mini.more.stackav { font-size: 0.8em; }
 .avatar.photo { background-image: none; background-color: var(--panel); }
 .avatar-spacer { min-width: 28px; margin-right: 4px; }
@@ -267,7 +267,7 @@ row.unread .chat-preview { color: var(--ink); }
 button.failed-btn {
   min-width: 22px; min-height: 22px; padding: 0; margin-left: 8px; border-radius: 99px;
   background-image: none; background-color: #ff453a; color: #ffffff; font-weight: 800; border: none;
-  box-shadow: 0 1px 5px rgba(255, 69, 58, 0.5);
+  box-shadow: 0 1px 5px mix(rgba(255, 69, 58, 0), rgba(255, 69, 58, 0.5), var(--depth));
 }
 button.failed-btn:hover { background-color: #ff6a60; }
 button.failed-btn.retried { background-color: transparent; color: #ff453a; border: 2px solid #ff453a; box-shadow: none; }
@@ -318,9 +318,9 @@ entry.to-entry {
   padding: 2px 12px;
   min-height: 36px;
   color: var(--ink);
-  box-shadow: inset 0 1px 3px var(--shadow);
+  box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth));
 }
-entry.to-entry:focus-within { outline: none; border-color: alpha(var(--accent), 0.55); box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(var(--accent), 0.18); }
+entry.to-entry:focus-within { outline: none; border-color: alpha(var(--accent), 0.55); box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), 0 0 0 3px alpha(var(--accent), 0.18); }
 list.suggest { padding: 8px 6px; }
 
 /* files waiting to be sent */
@@ -331,12 +331,12 @@ list.suggest { padding: 8px 6px; }
   padding: 6px;
   margin: 6px 6px 0 0;
   color: var(--ink);
-  box-shadow: 0 2px 8px var(--shadow), inset 0 1px rgba(255, 255, 255, 0.35);
+  box-shadow: 0 2px 8px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--depth));
 }
 .attach-thumb { border-radius: 10px; }
 button.attach-remove {
   min-width: 22px; min-height: 22px; padding: 0; border-radius: 99px;
-  background-color: rgba(20, 14, 50, 0.75); color: #ffffff; border: none; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  background-color: rgba(20, 14, 50, 0.75); color: #ffffff; border: none; box-shadow: 0 1px 4px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.4), var(--depth));
 }
 button.attach-remove image { -gtk-icon-size: 12px; }
 .attach-btn { min-width: 36px; min-height: 36px; padding: 0; }
@@ -349,12 +349,12 @@ button.attach-remove image { -gtk-icon-size: 12px; }
   padding: 4px 5px; /* buttons sit as close to the ends as the send button, so the curves nest */
   margin: 6px 14px 14px;
   border: 1px solid transparent;
-  box-shadow: inset 0 1px 3px var(--shadow), 0 1px rgba(255, 255, 255, 0.45), 0 4px 14px var(--shadow);
+  box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.45), var(--depth)), 0 4px 14px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth));
   transition: box-shadow 160ms ease, border-color 160ms ease;
 }
 .composer:focus-within {
   border-color: alpha(var(--accent), 0.55);
-  box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(var(--accent), 0.18), 0 4px 14px var(--shadow);
+  box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), 0 0 0 3px alpha(var(--accent), 0.18), 0 4px 14px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth));
 }
 .composer scrolledwindow { background: transparent; }
 textview.compose, textview.compose > text { background: transparent; color: var(--ink); font-size: 1.02em; }
@@ -367,13 +367,13 @@ button.send-btn {
   padding: 0;
   border: none;
   color: #ffffff;
-  background-image: linear-gradient(180deg, #2f7cf6, #1456e0);
-  box-shadow: 0 2px 8px rgba(20, 86, 224, 0.45), inset 0 1px rgba(255, 255, 255, 0.45);
+  background-image: linear-gradient(180deg, var(--send-a), var(--send-b));
+  box-shadow: 0 2px 8px mix(rgba(20, 86, 224, 0), rgba(20, 86, 224, 0.45), var(--depth)), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.45), var(--depth));
   transition: filter 120ms ease, box-shadow 120ms ease;
 }
 button.send-btn.sms {
-  background-image: linear-gradient(180deg, #17984a, #0a6b2e);
-  box-shadow: 0 2px 8px rgba(10, 107, 46, 0.45), inset 0 1px rgba(255, 255, 255, 0.45);
+  background-image: linear-gradient(180deg, var(--sms-a), var(--sms-b));
+  box-shadow: 0 2px 8px mix(rgba(10, 107, 46, 0), rgba(10, 107, 46, 0.45), var(--depth)), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.45), var(--depth));
 }
 button.send-btn:hover { filter: brightness(1.08); }
 button.send-btn:active { filter: brightness(0.94); }
@@ -386,7 +386,7 @@ button.send-btn:disabled { filter: saturate(0.25) opacity(0.45); box-shadow: non
   border-radius: 16px;
   margin: 8px 14px;
   padding: 8px 16px;
-  box-shadow: 0 3px 12px var(--shadow), inset 0 1px rgba(255, 255, 255, 0.4);
+  box-shadow: 0 3px 12px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.4), var(--depth));
   font-weight: 600;
 }
 
@@ -405,7 +405,7 @@ button.send-btn:disabled { filter: saturate(0.25) opacity(0.45); box-shadow: non
   background-color: rgba(20, 20, 24, 0.55); /* dark fill so the white icon reads on light photos */
   background-image: none;
   color: #ffffff;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 2px 10px mix(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.45), var(--depth));
   opacity: 0;
   transition: opacity 180ms ease, background-color 120ms ease;
 }
@@ -417,7 +417,7 @@ button.send-btn:disabled { filter: saturate(0.25) opacity(0.45); box-shadow: non
 
 /* the photo viewer: a panel of its own over the sidebar and chat. The panels under it drop their shadows and
    bevels so nothing shows around it or adds to its own shadow */
-.viewer { border-radius: 22px; box-shadow: 0 8px 28px var(--shadow); } /* the canvas paints the black, fading in */
+.viewer { border-radius: 22px; box-shadow: 0 8px 28px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); } /* the canvas paints the black, fading in */
 window.viewing .sidebar, window.viewing .conv, window.viewing .info-panel { box-shadow: none; }
 
 /* jump-to-newest button over the chat: like the viewer's round buttons, smaller, in the panel's own colours */
@@ -429,9 +429,9 @@ window.viewing .sidebar, window.viewing .conv, window.viewing .info-panel { box-
   border-radius: 99px;
   border: 1px solid alpha(currentColor, 0.20);
   background-color: var(--panel-solid);
-  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.02));
+  background-image: linear-gradient(180deg, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.16), var(--depth)), mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.02), var(--depth)));
   color: var(--ink);
-  box-shadow: 0 4px 14px var(--shadow), inset 0 1px var(--panel-edge);
+  box-shadow: 0 4px 14px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(alpha(var(--panel-edge), 0), var(--panel-edge), var(--depth));
   opacity: 0;
   transition: opacity 180ms ease, background-color 120ms ease;
 }
@@ -439,7 +439,7 @@ window.viewing .sidebar, window.viewing .conv, window.viewing .info-panel { box-
 .to-bottom.shown { opacity: 1; }
 /* hover: a tint over the solid fill, never instead of it (the messages behind would show through) */
 .to-bottom:hover {
-  background-image: linear-gradient(alpha(var(--ink), 0.14), alpha(var(--ink), 0.14)), linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.02));
+  background-image: linear-gradient(alpha(var(--ink), 0.14), alpha(var(--ink), 0.14)), linear-gradient(180deg, mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.16), var(--depth)), mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.02), var(--depth)));
   border-color: alpha(currentColor, 0.32);
 }
 
@@ -463,11 +463,11 @@ window.viewing .sidebar, window.viewing .conv, window.viewing .info-panel { box-
 /* the blinking text cursor: the full text colour, so it shows against the panel in both schemes */
 text, textview > text { caret-color: var(--ink); }
 
-.reactions { background: var(--them-a); color: var(--them-ink); border: 1px solid var(--them-edge); box-shadow: 0 1px 3px var(--shadow); border-radius: 999px; min-height: 28px; padding: 0 8px; font-size: 1.15em; margin: 0 6px; }
+.reactions { background: var(--them-a); color: var(--them-ink); border: 1px solid var(--them-edge); box-shadow: 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); border-radius: 999px; min-height: 28px; padding: 0 8px; font-size: 1.15em; margin: 0 6px; }
 .reactions.one { min-width: 28px; padding: 0; }
 .reactions label { padding: 0; }
 
-button.save-btn { min-width: 26px; min-height: 26px; padding: 0; margin: 0 8px; border-radius: 999px; background: var(--them-a); color: var(--ink-soft); border: 1px solid var(--them-edge); box-shadow: 0 1px 3px var(--shadow); }
+button.save-btn { min-width: 26px; min-height: 26px; padding: 0; margin: 0 8px; border-radius: 999px; background: var(--them-a); color: var(--ink-soft); border: 1px solid var(--them-edge); box-shadow: 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); }
 button.save-btn:hover { color: var(--ink); }
 button.save-btn.done { background: #1e7d3a; color: #fff; border-color: #1e7d3a; }
 button.save-btn.done:disabled { opacity: 1; }
@@ -514,7 +514,7 @@ label:focus, label:focus-visible { outline: none; }
 .wizard .wiz-panel {
   background-color: var(--panel);
   border-radius: 22px;
-  box-shadow: 0 8px 28px var(--shadow), 0 1px 3px var(--shadow), inset 0 1px var(--panel-edge);
+  box-shadow: 0 8px 28px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(alpha(var(--panel-edge), 0), var(--panel-edge), var(--depth));
   margin: 2px 14px 14px 14px;
   padding: 10px 28px 20px 0;
   color: var(--ink);
@@ -531,9 +531,9 @@ label:focus, label:focus-visible { outline: none; }
   padding: 2px 14px;
   min-height: 38px;
   color: var(--ink);
-  box-shadow: inset 0 1px 3px var(--shadow);
+  box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth));
 }
-.wizard .wiz-field:focus-within { outline: none; border-color: alpha(var(--accent), 0.55); box-shadow: inset 0 1px 3px var(--shadow), 0 0 0 3px alpha(var(--accent), 0.18); }
+.wizard .wiz-field:focus-within { outline: none; border-color: alpha(var(--accent), 0.55); box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), 0 0 0 3px alpha(var(--accent), 0.18); }
 .wizard button.wiz-next {
   background-image: linear-gradient(135deg, var(--accent), var(--accent-2));
   background-color: transparent;
@@ -542,7 +542,7 @@ label:focus, label:focus-visible { outline: none; }
   border: none;
   border-radius: 99px;
   padding: 8px 22px;
-  box-shadow: 0 4px 12px alpha(var(--accent), 0.40), inset 0 1px rgba(255, 255, 255, 0.35);
+  box-shadow: 0 4px 12px mix(alpha(var(--accent), 0), alpha(var(--accent), 0.40), var(--depth)), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--depth));
 }
 .wizard button.wiz-next:disabled { background-image: none; background-color: alpha(currentColor, 0.12); color: var(--ink-soft); box-shadow: none; }
 .wizard button.wiz-back { background: transparent; border: none; box-shadow: none; border-radius: 99px; color: var(--ink-soft); padding: 8px 16px; }
@@ -559,7 +559,7 @@ popover.wiz-drop > contents, popover.issues > contents {
   border-radius: 16px;
   border: 1px solid var(--panel-edge);
   padding: 6px;
-  box-shadow: 0 10px 26px var(--shadow-strong);
+  box-shadow: 0 10px 26px mix(alpha(var(--shadow-strong), 0), var(--shadow-strong), var(--depth));
 }
 popover.wiz-drop button.flat, popover.issues button.flat { border-radius: 12px; padding: 6px 10px; color: var(--ink); }
 popover.wiz-drop button.flat:hover, popover.issues button.flat:hover { background-color: var(--sel-a); }
@@ -596,17 +596,17 @@ row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .wizard button.wiz-retry:hover { background-color: alpha(var(--accent), 0.25); }
 
 /* Settings wears the same look as the wizard */
-.bf-settings entry { background-color: var(--field); border-radius: 99px; border: 1px solid transparent; padding: 2px 14px; min-height: 34px; color: var(--ink); box-shadow: inset 0 1px 3px var(--shadow); }
-.bf-settings frame { background-color: var(--panel); border: none; border-radius: 18px; box-shadow: 0 4px 16px var(--shadow), inset 0 1px var(--panel-edge); }
+.bf-settings entry { background-color: var(--field); border-radius: 99px; border: 1px solid transparent; padding: 2px 14px; min-height: 34px; color: var(--ink); box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); }
+.bf-settings frame { background-color: var(--panel); border: none; border-radius: 18px; box-shadow: 0 4px 16px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)), inset 0 1px mix(alpha(var(--panel-edge), 0), var(--panel-edge), var(--depth)); }
 .bf-settings frame > label { font-weight: 700; margin: 10px 0 0 14px; }
 .bf-settings button { border-radius: 99px; }
-.bf-settings button.suggested-action, .bf-settings button.wiz-next { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); background-color: transparent; color: #ffffff; font-weight: 700; border: none; padding: 8px 22px; box-shadow: 0 4px 12px alpha(var(--accent), 0.40), inset 0 1px rgba(255, 255, 255, 0.35); }
-.bf-settings dropdown > button { background-color: var(--field); border: none; box-shadow: inset 0 1px 3px var(--shadow); }
+.bf-settings button.suggested-action, .bf-settings button.wiz-next { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); background-color: transparent; color: #ffffff; font-weight: 700; border: none; padding: 8px 22px; box-shadow: 0 4px 12px mix(alpha(var(--accent), 0), alpha(var(--accent), 0.40), var(--depth)), inset 0 1px mix(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35), var(--depth)); }
+.bf-settings dropdown > button { background-color: var(--field); border: none; box-shadow: inset 0 1px 3px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); }
 .bf-settings button:not(.suggested-action):not(.wiz-next):not(.info-tab) { background-image: none; background-color: alpha(currentColor, 0.09); color: var(--ink); box-shadow: none; border: none; padding: 6px 16px; }
 .bf-settings button:not(.suggested-action):not(.wiz-next):not(.info-tab):hover { background-color: alpha(var(--accent), 0.22); }
 .bf-settings dropdown > button { padding: 4px 14px; }
 .bf-tabs button.info-tab { padding: 5px 14px; }
-.bf-settings check, .wizard check { border-radius: 7px; background-image: none; background-color: var(--field); border: 1px solid alpha(var(--accent), 0.55); box-shadow: inset 0 1px 2px var(--shadow); color: #ffffff; }
+.bf-settings check, .wizard check { border-radius: 7px; background-image: none; background-color: var(--field); border: 1px solid alpha(var(--accent), 0.55); box-shadow: inset 0 1px 2px mix(alpha(var(--shadow), 0), var(--shadow), var(--depth)); color: #ffffff; }
 .bf-settings check:checked, .wizard check:checked { background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: transparent; }
 .bf-settings windowcontrols button:not(.suggested-action):not(.wiz-next):not(.info-tab) { background-color: transparent; box-shadow: none; border-radius: 99px; background-image: none; padding: 4px; min-width: 24px; min-height: 24px; color: var(--ink-soft); }
 .bf-settings windowcontrols button:not(.suggested-action):not(.wiz-next):not(.info-tab):hover { background-color: transparent; }
@@ -629,9 +629,9 @@ row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 
 /* the status pill's popover */
 .pop-dot { min-width: 9px; min-height: 9px; border-radius: 99px; }
-.pop-dot.ok { background-color: #2fd27a; box-shadow: 0 0 6px rgba(47, 210, 122, 0.8); }
-.pop-dot.warn { background-color: #ffb340; box-shadow: 0 0 6px rgba(255, 179, 64, 0.8); }
-.pop-dot.bad { background-color: #ff5a73; box-shadow: 0 0 6px rgba(255, 90, 115, 0.8); }
+.pop-dot.ok { background-color: #2fd27a; box-shadow: 0 0 6px mix(rgba(47, 210, 122, 0), rgba(47, 210, 122, 0.8), var(--depth)); }
+.pop-dot.warn { background-color: #ffb340; box-shadow: 0 0 6px mix(rgba(255, 179, 64, 0), rgba(255, 179, 64, 0.8), var(--depth)); }
+.pop-dot.bad { background-color: #ff5a73; box-shadow: 0 0 6px mix(rgba(255, 90, 115, 0), rgba(255, 90, 115, 0.8), var(--depth)); }
 .pop-title { font-weight: 700; }
 .pop-refresh { min-width: 24px; min-height: 24px; padding: 0; -gtk-icon-size: 13px; } /* the rest is .head-btn */
 .pop-refresh:focus-visible { outline: 2px solid alpha(var(--accent), 0.7); outline-offset: -2px; }
@@ -645,4 +645,4 @@ popover.issues > arrow {
 /* the theme sliders */
 .bf-settings scale trough { background-color: alpha(var(--neutral), 0.30); border: none; min-height: 6px; border-radius: 99px; }
 .bf-settings scale highlight { background: none; border: none; }
-.bf-settings scale slider { min-width: 16px; min-height: 16px; margin: -7px; border-radius: 99px; background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); border: 2px solid #ffffff; box-shadow: 0 1px 4px var(--shadow-strong); }
+.bf-settings scale slider { min-width: 16px; min-height: 16px; margin: -7px; border-radius: 99px; background-image: linear-gradient(135deg, var(--accent), var(--accent-2)); border: 2px solid #ffffff; box-shadow: 0 1px 4px mix(alpha(var(--shadow-strong), 0), var(--shadow-strong), var(--depth)); }
