@@ -7,28 +7,31 @@ It's a front end for Messages on your Mac, which still does the actual messaging
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-teknocat-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/teknocat)
 If BubbleFairy is useful to you, you can [buy me a coffee](https://buymeacoffee.com/teknocat).
 
-![BubbleFairy showing a group chat in light mode](docs/screenshots/chat-light.png)
+![BubbleFairy showing a conversation with files and reactions, in light mode](docs/screenshots/chat-light.png)
 
-<details>
-<summary>More screenshots (dark mode, files)</summary>
-
-<img src="docs/screenshots/chat-dark.png" alt="A group chat in dark mode">
-<img src="docs/screenshots/files.png" alt="Files, videos and contacts in a chat">
-
-</details>
-
-All the conversations in those screenshots are invented demo data. BubbleFairy was built with AI assistance, and the [AI disclosure](#ai-disclosure) below explains how.
+All the conversations in the screenshots here are invented demo data. BubbleFairy was built with AI assistance, and the [AI disclosure](#ai-disclosure) below explains how.
 
 Get the latest `.flatpak` from the [Releases](../../releases) page.
 
 ## What you get
 
-- **A proper chat window.** Photos, videos, link previews, files and group chats, with light and dark looks.
+- **A proper chat window.** Photos, videos, link previews, files and group chats.
+- **A look you can change**, in light, dark or whatever your system is set to, with sliders for the colours and for how glossy it all is.
 - **Notifications and sound**, including a tray icon if your desktop has one.
 - **Search** across all your messages, not just the chat you're in.
 - **Pinned and muted chats**, contact cards, and one entry per person even when Messages keeps several chats with them.
 - **Sending files**, by picking them, dragging them in or pasting.
 - **Privacy**, in that anything that would send data to a third party (map and link previews) is off until you turn it on.
+
+## Make it look how you like
+
+I got rather carried away with this part. Settings has sliders for tint, saturation, brightness and what I'm calling bubbliness, which goes from completely flat at one end to a shiny, glassy look at the other, and light and dark mode each remember their own. The blue and green bubbles stay as they are, so you can always tell what you're looking at, and it's entirely possible to come up with some ghastly combinations, which is your business. Here are a few of the nicer ones (click any of them for a bigger look).
+
+| | |
+| --- | --- |
+| ![The default dark look](docs/screenshots/chat-dark.png) | ![A glossy rose theme in light mode](docs/screenshots/theme-rose.png) |
+| ![A very glossy ocean blue theme in dark mode](docs/screenshots/theme-ocean.png) | ![A flat mint theme in light mode](docs/screenshots/theme-mint.png) |
+| ![A plum theme in dark mode](docs/screenshots/theme-plum.png) | ![A very glossy sky blue theme in light mode](docs/screenshots/theme-sky.png) |
 
 ## How it works
 
