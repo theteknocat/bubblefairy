@@ -643,11 +643,11 @@ pub fn open_wizard(app: &gtk::Application, parent: Option<&gtk::Window>, ctx: Ct
     ));
     let (skip_row, skip_cb, skip_label, _) = crate::ui::switch_row("Don't show this again", "");
     // here the toggle sits just before its name: at the far right it would be stranded
-    if let Some(words) = skip_label.parent() {
-        words.set_hexpand(false);
-        words.set_valign(gtk::Align::Center);
-        skip_row.reorder_child_after(&words, Some(&skip_cb));
-    }
+    skip_label.set_hexpand(false);
+    skip_row.remove(&skip_cb);
+    skip_row.remove(&skip_label);
+    skip_row.attach(&skip_cb, 0, 0, 1, 1);
+    skip_row.attach(&skip_label, 1, 0, 1, 1);
     skip_row.set_margin_top(6);
     p0.append(&skip_row);
 

@@ -291,6 +291,9 @@ button.failed-btn.retried:hover { background-color: alpha(#ff453a, 0.18); }
 .bubble .edited, .bubble .unsent { font-size: 0.78em; font-style: italic; opacity: 0.8; }
 .bubble label selection { background-color: rgba(255, 255, 255, 0.35); }
 
+/* one to three emoji on their own: big, no bubble */
+.jumbo { font-size: 3em; margin: 8px 0; }
+
 .pending { opacity: 0.6; }
 
 /* link previews: off-white card with soft dark text, in both colour schemes */

@@ -163,7 +163,7 @@ fn prune_old_dirs(dir: &Path, days: u64, max: u64) {
 }
 
 fn main() -> glib::ExitCode {
-    let _ = gstreamer::init(); // for the video player
+    player::init();
     let config_file = glib::user_config_dir().join("bubblefairy/config");
     let data = glib::user_data_dir().join("bubblefairy");
     let paths = mac::Paths {

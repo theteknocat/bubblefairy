@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 const OPEN_MS: f64 = 240.0;
 /// Room above a YouTube player for the close and full screen buttons while they show.
 const WEB_TOP: i32 = 56;
+const TOP_STEP: i32 = 54; // from one top button to the next: its 34 px and a 20 px gap
 const HIDE_AFTER: Duration = Duration::from_millis(2500);
 
 /// What the viewer needs from the chat.
@@ -47,6 +48,11 @@ fn yt_id(key: &str) -> Option<&str> {
 }
 
 /// A YouTube item's key.
+pub fn is_gif(path: &str) -> bool {
+    path.rsplit_once('.')
+        .is_some_and(|(_, e)| e.eq_ignore_ascii_case("gif"))
+}
+
 pub fn yt_key(id: &str, n: usize) -> String {
     format!("yt:{id}:{n}")
 }
@@ -104,6 +110,8 @@ pub struct Viewer {
     ptr: Cell<(f64, f64)>,
     close: gtk::Button,
     full_btn: gtk::Button,
+    /// "Open on YouTube", shown while a YouTube video is
+    web_btn: gtk::Button,
     fullscreen: Cell<bool>,
     /// the YouTube player, while one is open
     web: RefCell<Option<webkit6::WebView>>,
@@ -154,7 +162,12 @@ impl Viewer {
         let full_btn = nav("bf-fullscreen-symbolic", gtk::Align::End, "Full screen (F)");
         full_btn.set_valign(gtk::Align::Start);
         full_btn.add_css_class("viewer-close");
-        full_btn.set_margin_end(14 + 32 + 8); // beside the close button
+        full_btn.set_margin_end(TOP_STEP); // beside the close button
+        let web_btn = nav("bf-external-symbolic", gtk::Align::End, "Open on YouTube");
+        web_btn.set_valign(gtk::Align::Start);
+        web_btn.add_css_class("viewer-close");
+        web_btn.set_margin_end(2 * TOP_STEP); // beside the full screen button
+        web_btn.set_visible(false);
 
         // video controls along the bottom, and the copy's progress in the middle (both hidden until a video is open)
         let play_btn = icon_btn("bf-play-symbolic", "Play / pause (Space)");
@@ -241,6 +254,7 @@ impl Viewer {
             ptr: Cell::new((f64::NAN, f64::NAN)),
             close: close.clone(),
             full_btn,
+            web_btn,
             fullscreen: Cell::new(false),
             autoplay: Cell::new(false),
             margin_gen: Cell::new(0),
@@ -295,6 +309,12 @@ impl Viewer {
         close.connect_clicked(move |_| w.close());
         let w = v.clone();
         v.full_btn.connect_clicked(move |_| w.toggle_fullscreen());
+        let w = Rc::downgrade(&v);
+        v.web_btn.connect_clicked(move |_| {
+            if let Some(v) = w.upgrade() {
+                v.open_in_browser();
+            }
+        });
 
         // only real pointer movement reveals the controls (GTK also sends motion when content
         // changes under a still pointer, so compare positions); they fade after a pause
@@ -500,6 +520,7 @@ impl Viewer {
         };
         if let Some(j) = found {
             let prev = self.canvas.imp().tex.borrow().clone();
+            let prev_rect = self.canvas.fit_rect();
             self.autoplay.set(false);
             self.idx.set(j);
             self.show_current();
@@ -507,7 +528,7 @@ impl Viewer {
             if let (Some(prev), Some(_)) = (prev, self.canvas.imp().tex.borrow().clone())
                 && self.web.borrow().is_none()
             {
-                self.canvas.slide(prev, d.signum() as f32);
+                self.canvas.slide(prev, prev_rect, d.signum() as f32);
             }
         }
     }
@@ -532,6 +553,7 @@ impl Viewer {
             self.next.set_visible(i + 1 < n);
             return;
         }
+        self.canvas.imp().film.set(b.has_css_class("video"));
         let hooks = self.hooks.borrow();
         let full = self.full.borrow().get(&path).cloned();
         if let Some(t) = full {
@@ -539,7 +561,9 @@ impl Viewer {
             self.canvas.set_loading(false);
         } else if let Some(t) = b.downcast_ref::<Bubble>().and_then(|b| b.texture()) {
             // the chat copy is capped at CHAT_PX; only a copy that hit the cap has a bigger original
-            let bigger = t.width().max(t.height()) as u32 >= crate::mac::CHAT_PX - 10;
+            // (a GIF's original is fetched to play it instead)
+            let bigger =
+                !is_gif(&path) && t.width().max(t.height()) as u32 >= crate::mac::CHAT_PX - 10;
             self.canvas.imp().tex.replace(Some(t));
             self.canvas.set_loading(bigger);
             if bigger && let Some(h) = hooks.as_ref() {
@@ -556,9 +580,11 @@ impl Viewer {
 
     // ---- video ----
 
-    /// The photo on show is a video: copy it from the Mac and play it (once); anything else stops the player.
+    /// The photo on show is a video or a GIF: copy it from the Mac and play it (a video once, a GIF round and
+    /// round without controls); anything else stops the player.
     fn sync_video(&self, path: &str, b: &gtk::Widget) {
-        if !b.has_css_class("video") {
+        let gif = is_gif(path);
+        if !gif && !b.has_css_class("video") {
             self.stop_video();
             return;
         }
@@ -576,16 +602,43 @@ impl Viewer {
         match local {
             Some(l) => self.start_player(path, &l),
             None => {
-                self.busy_label.set_text("Copying from the Mac…");
-                self.busy_bar.set_fraction(0.0);
-                self.busy_bar.set_visible(true);
-                self.busy_btn.set_visible(false);
-                self.busy.set_visible(true);
+                // a GIF's still picture stands in, with no progress shown
+                if !gif {
+                    self.busy_label.set_text("Copying from the Mac…");
+                    self.busy_bar.set_fraction(0.0);
+                    self.busy_bar.set_visible(true);
+                    self.busy_btn.set_visible(false);
+                    self.busy.set_visible(true);
+                }
                 if let Some(h) = self.hooks.borrow().as_ref() {
                     (h.fetch_video)(path);
                 }
             }
         }
+    }
+
+    /// Hand the YouTube video on show to the browser, pausing it here so the two don't play at once.
+    fn open_in_browser(&self) {
+        use webkit6::prelude::*;
+        let key = self.yt_key.borrow().clone();
+        let Some(id) = key.as_deref().and_then(yt_id) else {
+            return;
+        };
+        if let Some(web) = self.web.borrow().as_ref() {
+            web.evaluate_javascript(
+                "window.bfp && window.bfp.pauseVideo()",
+                None,
+                None,
+                gtk::gio::Cancellable::NONE,
+                |_| {},
+            );
+        }
+        let window = self.root.root().and_downcast::<gtk::Window>();
+        gtk::UriLauncher::new(&format!("https://www.youtube.com/watch?v={id}")).launch(
+            window.as_ref(),
+            gtk::gio::Cancellable::NONE,
+            |_| {},
+        );
     }
 
     /// Open the viewer on a lone YouTube video (a dev aid; the app opens it through `open` with the others).
@@ -650,6 +703,7 @@ impl Viewer {
         web.insert_after(&self.root, Some(&self.canvas)); // sibling order = draw order: under the buttons
         *self.web.borrow_mut() = Some(web);
         self.root.add_css_class("yt");
+        self.web_btn.set_visible(true);
     }
 
     /// Stop and forget the playing video (and any copy in progress).
@@ -658,6 +712,7 @@ impl Viewer {
         if let Some(w) = self.web.borrow_mut().take() {
             self.root.remove_overlay(&w);
             self.root.remove_css_class("yt");
+            self.web_btn.set_visible(false);
         }
         self.poll_gen.set(self.poll_gen.get().wrapping_add(1));
         self.player.borrow_mut().take();
@@ -700,7 +755,7 @@ impl Viewer {
     }
 
     pub fn video_failed(&self, path: &str, why: &str) {
-        if self.want_video.borrow().as_deref() == Some(path) {
+        if self.want_video.borrow().as_deref() == Some(path) && !is_gif(path) {
             self.busy_bar.set_visible(false);
             self.busy_btn.set_visible(false);
             self.busy_label
@@ -735,7 +790,13 @@ impl Viewer {
                 }
             }
         };
-        match Player::new(local, msg) {
+        let gif = is_gif(path);
+        let player = if gif {
+            Player::looping(local)
+        } else {
+            Player::new(local, msg)
+        };
+        match player {
             Ok(p) => {
                 let canvas = self.canvas.clone();
                 p.paintable.connect_invalidate_contents(glib::clone!(
@@ -750,6 +811,11 @@ impl Viewer {
                     move |_| canvas.queue_draw()
                 ));
                 self.canvas.imp().video.replace(Some(p.paintable.clone()));
+                if gif {
+                    p.play();
+                    *self.player.borrow_mut() = Some(Rc::new(p));
+                    return;
+                }
                 p.set_volume(self.volume.get());
                 p.set_muted(self.muted.get());
                 if self.autoplay.get() {
@@ -775,6 +841,7 @@ impl Viewer {
                     glib::ControlFlow::Continue
                 });
             }
+            Err(_) if gif => {} // the still picture stays
             Err(e) => {
                 self.busy_bar.set_visible(false);
                 self.busy_label
@@ -783,7 +850,6 @@ impl Viewer {
                 self.busy.set_visible(true);
             }
         }
-        let _ = path;
     }
 
     fn toggle_play(&self) {
@@ -902,6 +968,8 @@ impl Viewer {
             self.prev.upcast_ref::<gtk::Widget>(),
             self.next.upcast_ref(),
             self.close.upcast_ref(),
+            self.full_btn.upcast_ref(),
+            self.web_btn.upcast_ref(),
             self.bar.upcast_ref(),
             self.busy.upcast_ref(),
         ]
@@ -972,22 +1040,28 @@ impl Canvas {
                 (t.width().max(1) as f32, t.height().max(1) as f32)
             }
         };
-        self.fit_size(tw, th)
+        // a video fills the panel, and so does a small copy while the big one is coming
+        if self.imp().film.get() || self.imp().loading.get() {
+            return self.fit_size(tw, th, f32::MAX);
+        }
+        // a picture is shown at up to twice its size, so a small one isn't blown up into a blur
+        self.fit_size(tw, th, 2.0)
     }
 
     /// Where a picture of this size sits when fully open.
-    fn fit_size(&self, tw: f32, th: f32) -> graphene::Rect {
+    fn fit_size(&self, tw: f32, th: f32, most: f32) -> graphene::Rect {
         let (w, h) = (self.width() as f32, self.height() as f32);
-        let k = (w / tw).min(h / th).max(0.01);
+        let k = (w / tw).min(h / th).min(most).max(0.01);
         let (dw, dh) = (tw * k, th * k);
         graphene::Rect::new((w - dw) / 2.0, (h - dh) / 2.0, dw, dh)
     }
 
     /// Slide to the current picture from `prev`: it leaves the way the user is going (`dir` 1 = forwards, to the
     /// left), the new one comes in behind it. Ease in and out, 320 ms.
-    fn slide(&self, prev: gdk::Texture, dir: f32) {
+    fn slide(&self, prev: gdk::Texture, prev_rect: graphene::Rect, dir: f32) {
         let imp = self.imp();
         imp.prev_tex.replace(Some(prev));
+        imp.prev_rect.set(prev_rect);
         imp.dir.set(dir);
         imp.slide.set(0.0);
         let gen_ = imp.slide_gen.get().wrapping_add(1);
@@ -1077,6 +1151,9 @@ mod imp {
         pub video: RefCell<Option<gdk::Paintable>>,
         /// the picture sliding out, how far the slide has got (0..1), which way, and which slide is current
         pub prev_tex: RefCell<Option<gdk::Texture>>,
+        pub prev_rect: Cell<graphene::Rect>,
+        /// the item on show is a video, which may be enlarged
+        pub film: Cell<bool>,
         pub slide: Cell<f64>,
         pub dir: Cell<f32>,
         pub slide_gen: Cell<u32>,
@@ -1115,7 +1192,7 @@ mod imp {
                 (p, e, self.dir.get())
             });
             if let Some((prev, e, dir)) = &slide {
-                let pr = w.fit_size(prev.width().max(1) as f32, prev.height().max(1) as f32);
+                let pr = self.prev_rect.get();
                 s.save();
                 s.translate(&graphene::Point::new(-dir * e * width, 0.0));
                 s.push_rounded_clip(&gtk::gsk::RoundedRect::from_rect(pr, 0.0));

@@ -227,6 +227,15 @@ fn history(id: i64) -> Vec<Value> {
     {
         m["error"] = json!(35);
     }
+    // BF_DEMO_GIF=<file>: a received animated picture at the end of chat 1
+    if id == 1
+        && let Ok(file) = std::env::var("BF_DEMO_GIF")
+    {
+        let mut m = msg(1, 91, false, "+15555550101", "Maya Thompson", 1, "\u{FFFC}");
+        m["attachments"] = json!([{"filename": file, "original_path": file, "transfer_name": "demo.gif",
+            "mime_type": "image/gif", "total_bytes": 0, "missing": false, "uti": "", "is_sticker": false}]);
+        v.push(m);
+    }
     // BF_DEMO_WEBLINK=<url>: a received message in chat 1 that is just this link
     if id == 1
         && let Ok(url) = std::env::var("BF_DEMO_WEBLINK")
@@ -446,8 +455,8 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
             Cmd::Link(id) => ev.send(Event::Link(id, None)),
             Cmd::FileInfo { path, .. } => ev.send(Event::FileInfo(path, None)),
             Cmd::Image { path, full } => {
-                // BF_DEMO_FRAME=<picture file>: stands in for the first frame of the demo video
-                let bytes = if path.ends_with(".MOV") {
+                // BF_DEMO_FRAME=<picture file>: stands in for the still copy of the demo video or GIF
+                let bytes = if path.ends_with(".MOV") || crate::viewer::is_gif(&path) {
                     std::env::var("BF_DEMO_FRAME")
                         .ok()
                         .and_then(|f| std::fs::read(f).ok())
@@ -457,11 +466,16 @@ pub async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, ev: mpsc::UnboundedSend
                 ev.send(Event::Image { path, full, bytes })
             }
             Cmd::Recent(id) => ev.send(Event::Recent(id, Vec::new())),
-            Cmd::Download { path, dest, .. } => ev.send(Event::Downloaded {
-                path,
-                dest,
-                err: Some("demo".into()),
-            }),
+            Cmd::Download { path, dest, .. } => {
+                // a file that exists here (BF_DEMO_GIF) is copied; the invented ones can't be had
+                let err = dest
+                    .parent()
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .and_then(|()| std::fs::copy(&path, &dest))
+                    .err()
+                    .map(|_| "demo".to_string());
+                ev.send(Event::Downloaded { path, dest, err })
+            }
             Cmd::Bulk(path) => ev.send(Event::Image {
                 path,
                 full: false,

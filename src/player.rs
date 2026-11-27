@@ -1,6 +1,9 @@
 //! Local video playback: GStreamer's `playbin` drawing through `gtk4paintablesink` into a `gdk::Paintable`
 //! that the viewer's canvas paints. The file is a local copy (see `Cmd::Download`), so it can seek freely.
 
+use std::cell::OnceCell;
+use std::rc::Rc;
+
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gtk::gdk;
@@ -13,6 +16,16 @@ pub enum Msg {
     Failed(String),
 }
 
+/// Start GStreamer, for videos and GIFs.
+pub fn init() {
+    let _ = gst::init();
+    // `gifdec` shows nothing at all for a GIF with no loop setting (Messages' ones have none), so libav's decoder
+    // takes its place; `Player::looping` does the repeating
+    if let Some(f) = gst::Registry::get().lookup_feature("gifdec") {
+        f.set_rank(gst::Rank::NONE);
+    }
+}
+
 pub struct Player {
     pipeline: gst::Element,
     pub paintable: gdk::Paintable,
@@ -20,6 +33,22 @@ pub struct Player {
 }
 
 impl Player {
+    /// A silent player that starts the file over whenever it ends (an animated GIF). It starts paused.
+    pub fn looping(path: &std::path::Path) -> Result<Self, String> {
+        let slot: Rc<OnceCell<gst::glib::WeakRef<gst::Element>>> = Rc::default();
+        let at_end = slot.clone();
+        let p = Self::new(path, move |m| {
+            // through Ready, not a seek: the GIF decoder needn't be able to seek
+            if let (Msg::Ended, Some(e)) = (m, at_end.get().and_then(|w| w.upgrade())) {
+                let _ = e.set_state(gst::State::Ready);
+                let _ = e.set_state(gst::State::Playing);
+            }
+        })?;
+        let _ = slot.set(p.pipeline.downgrade());
+        p.set_muted(true);
+        Ok(p)
+    }
+
     /// A paused player for the file at `path`; `on_msg` hears about the end and about errors.
     pub fn new(path: &std::path::Path, on_msg: impl Fn(Msg) + 'static) -> Result<Self, String> {
         let uri = gtk::gio::File::for_path(path).uri();

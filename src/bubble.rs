@@ -3,6 +3,9 @@
 //! Padding and text colour still come from CSS (`.bubble` classes); only the background is drawn here.
 
 use crate::theme;
+use std::rc::Rc;
+
+use crate::player::Player;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, glib, graphene, gsk};
@@ -117,6 +120,11 @@ impl Bubble {
         b
     }
 
+    /// The height of a card's picture (0: none, or it couldn't be had).
+    pub fn card_image_height(&self) -> f32 {
+        self.imp().card_h.get()
+    }
+
     pub fn set_photo_size(&self, w: i32, h: i32) {
         self.set_size_request(w + TAIL as i32, h);
     }
@@ -128,6 +136,27 @@ impl Bubble {
 
     pub fn texture(&self) -> Option<gdk::Texture> {
         self.imp().tex.borrow().clone()
+    }
+
+    /// Play an animated picture in place of the still one, while this bubble is on screen.
+    pub fn animate(&self, player: Rc<Player>) {
+        let p = player.paintable.clone();
+        let me = self.downgrade();
+        let redraw = move || {
+            if let Some(b) = me.upgrade() {
+                b.queue_draw();
+            }
+        };
+        let again = redraw.clone();
+        p.connect_invalidate_contents(move |_| again());
+        p.connect_invalidate_size(move |_| redraw());
+        self.imp().anim.replace(Some(p));
+        if self.is_mapped() {
+            player.play();
+        }
+        let on = player.clone();
+        self.connect_map(move |_| on.play());
+        self.connect_unmap(move |_| player.pause());
     }
 
     /// The photo's area without the tail gutter, in this widget's coordinates.
@@ -145,8 +174,12 @@ impl Bubble {
 }
 
 /// Draw `t` so it fills `r` (cropping the overflow), like CSS `object-fit: cover`.
-pub fn draw_cover(s: &gtk::Snapshot, t: &gdk::Texture, r: &graphene::Rect) {
-    let (tw, th) = (t.width().max(1) as f32, t.height().max(1) as f32);
+pub fn draw_cover(s: &gtk::Snapshot, t: &impl IsA<gdk::Paintable>, r: &graphene::Rect) {
+    let t = t.as_ref();
+    let (tw, th) = (
+        t.intrinsic_width().max(1) as f32,
+        t.intrinsic_height().max(1) as f32,
+    );
     let k = (r.width() / tw).max(r.height() / th);
     let (dw, dh) = (tw * k, th * k);
     s.push_clip(r);
@@ -327,6 +360,8 @@ mod imp {
         /// a card's width: it may be narrower (long titles ellipsize) but never wider
         pub card_w: Cell<i32>,
         pub tex: RefCell<Option<gdk::Texture>>,
+        /// an animated picture's frames, drawn instead of `tex` once the first one has arrived
+        pub anim: RefCell<Option<gdk::Paintable>>,
     }
 
     #[glib::object_subclass]
@@ -416,7 +451,13 @@ mod imp {
                     14.0,
                 )]);
                 s.push_fill(&path, gsk::FillRule::Winding);
-                match self.tex.borrow().as_ref() {
+                let anim = self.anim.borrow();
+                let still = self.tex.borrow();
+                let picture = anim
+                    .as_ref()
+                    .filter(|a| a.intrinsic_width() > 0)
+                    .or(still.as_ref().map(|t| t.upcast_ref()));
+                match picture {
                     // cover the whole widget, gutter included, so the tail shows a sliver of the photo
                     Some(t) => draw_cover(s, t, &bounds),
                     None => s.append_color(&themed(theme::PLACEHOLDER, is_dark(&*w)), &bounds),

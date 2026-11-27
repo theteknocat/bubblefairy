@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 
 use crate::mac::{Cmd, Config, Event, Kind, MediaItem};
 use crate::theme::{Adjust, LEVEL_MAX, TINT_MAX};
+use crate::viewer::is_gif;
 use crate::{bubble, viewer};
 
 const SIDEBAR_MIN: i32 = 260; // paned positions and widths below include the panels' side margins
@@ -110,6 +111,9 @@ struct State {
     /// videos the viewer is waiting on (Mac path), and what we need to copy them (name, size)
     video_wait: std::collections::HashSet<String>,
     video_meta: HashMap<String, (String, i64)>,
+    /// GIF bubbles waiting for the original file (Mac path), and the players of those already moving
+    gif_wait: HashMap<String, Vec<glib::WeakRef<bubble::Bubble>>>,
+    gifs: HashMap<String, Rc<crate::player::Player>>,
     /// messages we've already set a "look for its link preview" timer for
     preview_watch: HashSet<String>,
     /// how much the window was widened to fit the info panel (and is narrowed by when it closes)
@@ -2444,6 +2448,18 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                 c.set_opacity(1.0);
                 c.set_tooltip_text(Some("Copy from the Mac and open"));
             }
+            let gif = u.st.borrow_mut().gif_wait.remove(&path);
+            let gif_only = gif.is_some();
+            if let Some(waiting) = gif {
+                if err.is_none() && whole_gif(&dest) {
+                    for b in waiting.iter().filter_map(|w| w.upgrade()) {
+                        play_gif(u, &b, &path, &dest);
+                    }
+                    u.viewer.video_ready(&path, dest.clone());
+                } else {
+                    let _ = std::fs::remove_file(&dest); // the still picture stays
+                }
+            }
             let targets = u.st.borrow_mut().save_to.remove(&path);
             if let Some(targets) = targets {
                 match err {
@@ -2464,7 +2480,7 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                     Some(e) => u.viewer.video_failed(&path, &e),
                     None => u.viewer.video_ready(&path, dest),
                 }
-            } else {
+            } else if !gif_only {
                 match err {
                     Some(e) => show_toast(u, &format!("Couldn't copy the file from the Mac: {e}")),
                     None => open_file(u, &dest),
@@ -3369,6 +3385,7 @@ fn select(u: &Rc<Ui>, id: i64) {
     fold_side(u);
     end_new(u);
     u.viewer.close_now();
+    u.st.borrow_mut().gifs.clear(); // the last chat's players go with its bubbles
     u.st.borrow_mut().sel = Some(id);
     let picked = !u.search.text().trim().is_empty();
     u.st.borrow_mut().search_pick = picked.then_some(id);
@@ -3742,16 +3759,21 @@ fn queue_save(u: &Rc<Ui>, it: &Save, target: PathBuf, done: SaveDone) {
     if src.exists() {
         copy_to(u, src, target, done);
     } else {
-        u.st.borrow_mut()
-            .save_to
-            .entry(it.path.clone())
-            .or_default()
-            .push((target, done));
-        u.send(Cmd::Download {
-            path: it.path.clone(),
-            dest: src,
-            size: it.size,
-        });
+        let copying = {
+            let mut st = u.st.borrow_mut();
+            st.save_to
+                .entry(it.path.clone())
+                .or_default()
+                .push((target, done));
+            st.gif_wait.contains_key(&it.path) // already on its way for the chat
+        };
+        if !copying {
+            u.send(Cmd::Download {
+                path: it.path.clone(),
+                dest: src,
+                size: it.size,
+            });
+        }
     }
 }
 
@@ -6500,6 +6522,8 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         && day(times[i]) == day(times[i + 1]);
     // my messages still on their way continue my last run: no tail on the one above them
     let run_next = run_next || (i + 1 == msgs.len() && me && c.pending_tail);
+    // big emoji have no bubble and don't count: the bubble before them ends with a tail as well
+    let tail = !run_next || msgs.get(i + 1).is_some_and(lone_emoji);
     let mut name_w = 0; // width of the name above the message (0: none), which a reaction pill must clear
     if group && !me && !run_prev {
         let n = gtk::Label::new(Some(&sender_name(m, names)));
@@ -6517,7 +6541,7 @@ fn conv_widgets(u: &Rc<Ui>, c: &ConvCtx, i: usize) -> Vec<gtk::Widget> {
         && m["id"]
             .as_i64()
             .is_some_and(|id| u.st.borrow().resending.contains(&id));
-    let (parts, saves) = message_parts(u, m, me, svc != "iMessage", !run_next);
+    let (parts, saves) = message_parts(u, m, me, svc != "iMessage", tail);
     // a chat open on a search hit: mark the words wherever they show (text, link and file cards)
     let (words, current) = find_words(u, m);
     if !words.is_empty() {
@@ -6902,7 +6926,9 @@ fn render_conv(u: &Rc<Ui>) {
         names,
         group,
         chat_svc,
-        pending_tail: !pending.is_empty(),
+        pending_tail: pending
+            .first()
+            .is_some_and(|p| !matches!(&p.item, PendingItem::Text(t) if is_jumbo(t))),
     });
     // All at once: with the pictures decoded on another thread this takes ~45 ms for 150 messages. Building the
     // newest part first and the rest afterwards was tried; both parts showed up together anyway.
@@ -6977,7 +7003,10 @@ fn append_pending(u: &Ui, pending: &[Pending], sms: bool) {
         spin.set_valign(gtk::Align::Center);
         spin.set_tooltip_text(Some("Sending…"));
         line.append(&spin);
-        line.append(&pending_bubble(p, sms, i + 1 == pending.len()));
+        let tail = pending
+            .get(i + 1)
+            .is_none_or(|n| matches!(&n.item, PendingItem::Text(t) if is_jumbo(t)));
+        line.append(&pending_bubble(p, sms, tail));
         u.msgs.append(&line);
         // a send that's taking long says so under its last bubble
         if pending.get(i + 1).is_none_or(|n| n.token != p.token)
@@ -7028,6 +7057,7 @@ fn pending_bubble(p: &Pending, sms: bool, last: bool) -> gtk::Widget {
         _ => None,
     };
     let w: gtk::Widget = match (&p.item, photo) {
+        (PendingItem::Text(t), _) if is_jumbo(t) => jumbo(t, true).upcast(),
         (_, Some(t)) => {
             let b = bubble::Bubble::photo(look, 160, 120);
             show_texture(&b, &t);
@@ -7214,7 +7244,13 @@ fn message_parts(
             },
         ));
     }
-    if has_bubble {
+    if lone_emoji(m) {
+        let col = jumbo(&text, me);
+        if m["edited_at"].as_str().is_some() {
+            col.append(&edited_label(me));
+        }
+        out.push(col.upcast());
+    } else if has_bubble {
         let b = bubble::Bubble::new(look);
         for l in others {
             b.add(&l);
@@ -7239,10 +7275,7 @@ fn message_parts(
             b.add(&l);
         }
         if m["edited_at"].as_str().is_some() {
-            let l = gtk::Label::new(Some("Edited"));
-            l.add_css_class("edited");
-            l.set_xalign(if me { 1.0 } else { 0.0 });
-            b.add(&l);
+            b.add(&edited_label(me));
         }
         out.push(b.upcast());
     }
@@ -7258,6 +7291,91 @@ fn message_parts(
         });
     }
     (out, saves)
+}
+
+fn edited_label(me: bool) -> gtk::Label {
+    let l = gtk::Label::new(Some("Edited"));
+    l.add_css_class("edited");
+    l.set_xalign(if me { 1.0 } else { 0.0 });
+    l
+}
+
+/// A message that is drawn as big emoji: nothing but one to three of them.
+fn lone_emoji(m: &Value) -> bool {
+    m["attachments"].as_array().is_none_or(Vec::is_empty)
+        && m["unsent_at"].as_str().is_none()
+        && m["type"].as_str() != Some("unsent")
+        && is_jumbo(&clean_text(m))
+}
+
+/// One to three emoji and nothing else: shown big, without a bubble.
+fn is_jumbo(text: &str) -> bool {
+    emoji_count(text).is_some_and(|n| (1..=3).contains(&n))
+}
+
+/// How many emoji `text` is made of, if it holds nothing but emoji and spaces. Joined families, skin tones, flags
+/// and keycaps each count as one.
+// shortcut: goes by Unicode blocks, so a plain symbol such as ★ counts too; use the Emoji_Presentation property if
+// that bothers anyone
+fn emoji_count(text: &str) -> Option<usize> {
+    let flag = |c: char| ('\u{1F1E6}'..='\u{1F1FF}').contains(&c);
+    let picture = |c: char| {
+        matches!(c, '\u{1F000}'..='\u{1FAFF}' | '\u{2300}'..='\u{23FF}' | '\u{25A0}'..='\u{27BF}'
+            | '\u{2900}'..='\u{2BFF}')
+    };
+    // symbols that are only an emoji when U+FE0F follows
+    let dressed = |c: char| {
+        matches!(
+            c,
+            '©' | '®' | '‼' | '⁉' | '™' | 'ℹ' | '\u{2194}'..='\u{21AA}' | '〰' | '〽' | '㊗' | '㊙'
+        )
+    };
+    let mut chars = text.chars().peekable();
+    let (mut n, mut joined) = (0, false);
+    while let Some(c) = chars.next() {
+        if c.is_whitespace() && !joined {
+            continue;
+        }
+        if c.is_ascii_digit() || c == '#' || c == '*' {
+            chars.next_if_eq(&'\u{FE0F}');
+            chars.next_if_eq(&'\u{20E3}')?; // a keycap, or else it's ordinary text
+        } else if flag(c) {
+            chars.next_if(|&d| flag(d));
+        } else if !picture(c) && !(dressed(c) && chars.peek() == Some(&'\u{FE0F}')) {
+            return None;
+        }
+        // variation selector, skin tone and flag tags belong to the emoji before them
+        while chars
+            .next_if(|&d| matches!(d, '\u{FE0F}' | '\u{1F3FB}'..='\u{1F3FF}' | '\u{E0020}'..='\u{E007F}'))
+            .is_some()
+        {}
+        if !joined {
+            n += 1;
+        }
+        joined = chars.next_if_eq(&'\u{200D}').is_some();
+    }
+    Some(n)
+}
+
+/// The big emoji themselves, on the sender's side, lined up with the bubbles' bodies.
+fn jumbo(text: &str, me: bool) -> gtk::Box {
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    col.set_halign(if me {
+        gtk::Align::End
+    } else {
+        gtk::Align::Start
+    });
+    if me {
+        col.set_margin_end(bubble::TAIL as i32);
+    } else {
+        col.set_margin_start(bubble::TAIL as i32);
+    }
+    let l = gtk::Label::new(Some(text.trim()));
+    l.add_css_class("jumbo");
+    l.set_selectable(true);
+    l.set_can_focus(false);
+    col.append(&l);
+    col
 }
 
 /// Our own stand-in for a link's missing picture: a white chain on a solid slate circle, which reads
@@ -7586,6 +7704,7 @@ fn link_for(u: &Ui, row: i64) -> Option<crate::mac::LinkPreview> {
 /// and a landscape photo are equally wide, the height follows the picture.
 const MEDIA_W: i32 = 300;
 const LINK_W: i32 = MEDIA_W;
+const SMALL_W: i32 = 200; // a small photo is shown at least this wide (up to twice its size)
 
 /// A shared link as Apple saved it, as one bubble: the preview image (if any) across the top, then
 /// the title and site. Clicking opens it in the browser.
@@ -7689,14 +7808,46 @@ fn link_card_w(
     } else {
         b.add(&texts);
     }
-    b.set_tooltip_text(Some(&l.url));
+    // a YouTube card with a picture is two targets: the picture plays here, the text under it opens the browser
+    let split = big && crate::mac::youtube_id(&l.url).is_some();
+    if split {
+        b.set_has_tooltip(true);
+        let url = l.url.clone();
+        b.connect_query_tooltip(move |b, _, y, _, tip| {
+            let h = b.card_image_height() as i32;
+            let on_picture = y < h;
+            if on_picture {
+                tip.set_text(Some("Play here"));
+            } else {
+                tip.set_text(Some(&format!("Open on YouTube\n{url}")));
+            }
+            // the tip is asked for again once the pointer leaves this half
+            let (top, height) = if on_picture {
+                (0, h)
+            } else {
+                (h, b.height() - h)
+            };
+            tip.set_tip_area(&gdk::Rectangle::new(0, top, b.width(), height));
+            true
+        });
+    } else {
+        b.set_tooltip_text(Some(&l.url));
+    }
     b.set_cursor_from_name(Some("pointer"));
     let click = gtk::GestureClick::new();
     let key = chat_youtube(u, &l.url, b.upcast_ref());
-    let (u2, url, b2) = (u.clone(), l.url.clone(), b.clone().upcast::<gtk::Widget>());
-    click.connect_released(move |g, _, _, _| {
+    let (u2, url) = (u.clone(), l.url.clone());
+    // weakly: a strong reference from its own handler would keep every redrawn card alive
+    let weak = b.downgrade();
+    click.connect_released(move |g, _, _, y| {
         g.set_state(gtk::EventSequenceState::Claimed);
-        open_link(&u2, &url, &b2, key.as_deref());
+        let Some(b) = weak.upgrade() else { return };
+        let h = b.card_image_height();
+        if split && h > 0.0 && y >= f64::from(h) {
+            open_browser(&u2, &url);
+        } else {
+            open_link(&u2, &url, b.upcast_ref(), key.as_deref());
+        }
     });
     b.add_controller(click);
     b.upcast()
@@ -7905,7 +8056,75 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
         .photos
         .push((path.to_string(), p.clone().upcast()));
     load_texture(u, &p, path);
+    if is_gif(path) {
+        animate_gif(u, &p, path);
+    }
     p
+}
+
+/// A GIF ends with a `;` byte; a copy cut off on the way almost never does.
+fn whole_gif(file: &std::path::Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut last = [0u8];
+    std::fs::File::open(file).is_ok_and(|mut f| {
+        f.seek(SeekFrom::End(-1)).is_ok() && f.read_exact(&mut last).is_ok() && last == *b";"
+    })
+}
+
+/// Make a GIF's bubble move: the still copy the Mac converts shows until the original file is here.
+// shortcut: plays whenever it's in the loaded chat, scrolled out of view too; pause by scroll position if it costs CPU
+fn animate_gif(u: &Rc<Ui>, p: &bubble::Bubble, path: &str) {
+    let playing = u.st.borrow().gifs.get(path).cloned();
+    if let Some(player) = playing {
+        p.animate(player);
+        return;
+    }
+    let dest = gif_dest(u, path);
+    if whole_gif(&dest) {
+        play_gif(u, p, path, &dest);
+    } else {
+        queue_gif(u, path, dest, Some(p));
+    }
+}
+
+fn gif_dest(u: &Ui, path: &str) -> PathBuf {
+    file_dest(u, path, path.rsplit('/').next().unwrap_or("image.gif"))
+}
+
+/// Ask the Mac for a GIF's original file, once, however many are waiting for it.
+fn queue_gif(u: &Ui, path: &str, dest: PathBuf, bubble: Option<&bubble::Bubble>) {
+    let send = {
+        let mut st = u.st.borrow_mut();
+        let busy = st.save_to.contains_key(path) || st.gif_wait.contains_key(path);
+        let waiting = st.gif_wait.entry(path.to_string()).or_default();
+        waiting.extend(bubble.map(|b| b.downgrade()));
+        !busy
+    };
+    if send {
+        u.send(Cmd::Download {
+            path: path.to_string(),
+            dest,
+            size: 0,
+        });
+    }
+}
+
+fn play_gif(u: &Rc<Ui>, p: &bubble::Bubble, path: &str, file: &std::path::Path) {
+    let known = u.st.borrow().gifs.get(path).cloned();
+    let player = match known {
+        Some(player) => player,
+        None => {
+            let Ok(player) = crate::player::Player::looping(file) else {
+                return; // the still picture stays
+            };
+            let player = Rc::new(player);
+            u.st.borrow_mut()
+                .gifs
+                .insert(path.to_string(), player.clone());
+            player
+        }
+    };
+    p.animate(player);
 }
 
 /// Give `p` the chat copy of the image at `path`: from memory, the disk cache, or the Mac.
@@ -8076,13 +8295,19 @@ fn spin_host(p: &bubble::Bubble) -> gtk::Box {
 fn show_texture(p: &bubble::Bubble, t: &gdk::Texture) {
     stop_spin(p);
     if !p.has_css_class("stacked") && !p.has_css_class("fixed") {
-        // a single photo is as wide as every other preview and as tall as its shape makes it (a very tall one is
-        // narrowed instead); stacked cards stay square and crop to fill
+        // stacked cards stay square and crop to fill
         let (w, h) = (t.width().max(1) as f64, t.height().max(1) as f64);
-        let s = (f64::from(MEDIA_W) / w).min(2.2 * f64::from(MEDIA_W) / h);
+        let s = photo_scale(w, h);
         p.set_photo_size((w * s) as i32, (h * s) as i32);
     }
     p.set_texture(Some(t));
+}
+
+/// How much a single photo of `w` x `h` pixels is scaled in the chat: as wide as every other preview, but a small
+/// one only to between `SMALL_W` and that, and never past twice its size; a very tall one is narrowed instead.
+fn photo_scale(w: f64, h: f64) -> f64 {
+    let wide = w.clamp(f64::from(SMALL_W), f64::from(MEDIA_W));
+    (wide / w).min(2.0).min(2.2 * f64::from(MEDIA_W) / h)
 }
 
 /// `full`: the viewer's big copy (mac::FULL_PX) rather than the chat's.
@@ -8090,8 +8315,10 @@ fn cache_path(u: &Ui, path: &str, full: bool) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut h);
+    // "-2": the Mac's copies from before it stopped enlarging small pictures are left to age out
+    let made = if path.starts_with("web:") { "" } else { "-2" };
     u.store.image_cache.join(format!(
-        "{:016x}{}.jpg",
+        "{:016x}{}{made}.jpg",
         h.finish(),
         if full { "-full" } else { "" }
     ))
@@ -8567,10 +8794,12 @@ fn open_link(u: &Rc<Ui>, url: &str, from: &gtk::Widget, key: Option<&str>) {
     match (key, crate::mac::youtube_id(url)) {
         (Some(k), _) => open_media(u, k, from),
         (None, Some(id)) => open_media(u, &crate::viewer::yt_key(&id, 0), from), // alone: not in any list
-        (None, None) => {
-            gtk::UriLauncher::new(url).launch(Some(&u.win), gio::Cancellable::NONE, |_| {})
-        }
+        (None, None) => open_browser(u, url),
     }
+}
+
+fn open_browser(u: &Ui, url: &str) {
+    gtk::UriLauncher::new(url).launch(Some(&u.win), gio::Cancellable::NONE, |_| {});
 }
 
 /// A YouTube link card in the chat joins the viewer's sequence of the chat's pictures and videos; returns its key.
@@ -9233,6 +9462,15 @@ fn safe_name(name: &str, fallback: &str) -> String {
 
 /// The viewer wants a video: use our copy, or copy it from the Mac (progress comes back as events).
 fn fetch_video(u: &Rc<Ui>, path: &str) {
+    if is_gif(path) {
+        let dest = gif_dest(u, path);
+        if whole_gif(&dest) {
+            u.viewer.video_ready(path, dest);
+        } else {
+            queue_gif(u, path, dest, None);
+        }
+        return;
+    }
     let (name, size) =
         u.st.borrow()
             .video_meta
@@ -9878,7 +10116,12 @@ fn settings(u: &Rc<Ui>) {
     let notify_help = help_label(
         "Notifications follow your desktop's own settings (do not disturb, per-app controls). The sound is played by BubbleFairy itself, and stays quiet while the desktop is in do-not-disturb. A message in the chat you are looking at makes neither.",
     );
-    for row in [&notify_on_row, &sound_on_row, &sound_row, &text_row] {
+    for row in [
+        notify_on_row.upcast_ref::<gtk::Widget>(),
+        sound_on_row.upcast_ref(),
+        sound_row.upcast_ref(),
+        text_row.upcast_ref(),
+    ] {
         add_row(&nb, row);
     }
     let notify_frame = titled_frame("bf-notifications-symbolic", "Notifications");
@@ -10125,28 +10368,31 @@ fn add_row(list: &gtk::Box, row: &impl IsA<gtk::Widget>) {
     list.append(row);
 }
 
-/// An on/off setting: its name (and what it does, if `help` says) with a slide toggle at the right end.
+/// An on/off setting: its name with a slide toggle at the right end, level with it, and what it does
+/// underneath if `help` says.
 /// Clicking anywhere on the row toggles it. Returns the row, the toggle, the name and the help.
 pub(crate) fn switch_row(
     text: &str,
     help: &str,
-) -> (gtk::Box, gtk::Switch, gtk::Label, gtk::Label) {
+) -> (gtk::Grid, gtk::Switch, gtk::Label, gtk::Label) {
     let label = gtk::Label::new(Some(text));
     label.set_xalign(0.0);
     label.set_wrap(true);
     let more = help_label(help);
     more.set_visible(!help.is_empty());
-    let words = gtk::Box::new(gtk::Orientation::Vertical, 3);
-    words.set_hexpand(true);
-    words.append(&label);
-    words.append(&more);
+    label.set_hexpand(true);
     let switch = gtk::Switch::new();
     switch.set_valign(gtk::Align::Center);
     switch.update_relation(&[gtk::accessible::Relation::LabelledBy(&[label.upcast_ref()])]);
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    // the toggle shares the name's line only, so it stays at the top however long the help runs
+    let row = gtk::Grid::builder()
+        .column_spacing(16)
+        .row_spacing(3)
+        .build();
     row.add_css_class("toggle-row");
-    row.append(&words);
-    row.append(&switch);
+    row.attach(&label, 0, 0, 1, 1);
+    row.attach(&switch, 1, 0, 1, 1);
+    row.attach(&more, 0, 1, 1, 1);
     let click = gtk::GestureClick::new();
     let (s, r) = (switch.downgrade(), row.downgrade());
     click.connect_released(move |_, _, x, y| {
@@ -11822,6 +12068,41 @@ fn schedule_midnight(u: &Rc<Ui>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_few_lone_emoji_go_big() {
+        use super::{emoji_count, is_jumbo};
+        assert_eq!(emoji_count("😂"), Some(1));
+        assert_eq!(emoji_count("👨\u{200D}👩\u{200D}👧 👍🏽 🇨🇦"), Some(3));
+        assert_eq!(emoji_count("❤\u{FE0F}1\u{FE0F}\u{20E3}"), Some(2));
+        assert_eq!(emoji_count("😂😂😂😂"), Some(4));
+        for text in ["ok 👍", "123", "#", "©", ":)", "é"] {
+            assert_eq!(emoji_count(text), None, "{text}");
+        }
+        assert!(is_jumbo("🎉🎉🎉") && !is_jumbo("🎉🎉🎉🎉") && !is_jumbo("  "));
+    }
+
+    #[test]
+    fn small_photos_grow_only_so_far() {
+        let shown = |w: f64, h: f64| (w * super::photo_scale(w, h)).round();
+        assert_eq!(shown(1200.0, 900.0), 300.0);
+        assert_eq!(shown(250.0, 200.0), 250.0);
+        assert_eq!(shown(147.0, 110.0), 200.0);
+        assert_eq!(shown(60.0, 60.0), 120.0);
+        assert_eq!(shown(300.0, 1320.0), 150.0); // very tall: narrowed to fit the height limit
+    }
+
+    #[test]
+    fn a_cut_off_gif_is_not_played() {
+        let f = std::env::temp_dir().join(format!("bf-gif-{}", std::process::id()));
+        std::fs::write(&f, b"GIF89a...;").expect("write");
+        assert!(super::whole_gif(&f));
+        std::fs::write(&f, b"GIF89a..").expect("write");
+        assert!(!super::whole_gif(&f));
+        let _ = std::fs::remove_file(&f);
+        assert!(!super::whole_gif(&f));
+        assert!(is_gif("a/b.GIF") && !is_gif("a/gif") && !is_gif("b.png"));
+    }
 
     #[test]
     fn status_times_read_well_at_their_boundaries() {

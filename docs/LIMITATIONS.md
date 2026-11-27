@@ -60,6 +60,10 @@ copy on this computer, so it **doesn't sync** with your Apple devices:
   Mac, BubbleFairy shows a dimmed placeholder. It can't ask the Mac to download it.
 - **No previews for some files.** Photos, PDFs and video first frames get previews. Audio files and contact cards
   show an icon and details, not a picture.
+- **Animated GIFs only move in the chat and the viewer.** The info panel's grid shows them as a still, and so does
+  the chat until the whole file has been copied over from the Mac.
+- **Small pictures can look a bit soft.** They're shown at up to twice their size so they aren't tiny, both in the
+  chat and in the viewer.
 - **Photos shown in chats are reduced to 900 px**, for speed. Opening one in the viewer fetches a larger copy (up to
   4096 px).
 

@@ -675,7 +675,7 @@ async fn exec(session: &client::Handle<Handler>, cmd: String) -> Option<Vec<u8>>
 
 /// Fetch an image from the Mac, shrunk and converted to JPEG there (handles HEIC, saves bandwidth).
 async fn fetch_image(session: &client::Handle<Handler>, path: &str, max: u32) -> Option<Vec<u8>> {
-    // ponytail: animated GIFs arrive as a still frame; keep them as-is when animation matters
+    // a GIF comes out as a still here; the chat then plays the original file (`ui::animate_gif`)
     // link-preview payloads are plain PNG/JPEG/ICO, and Quick Look hangs on their unknown extension
     let ql = !path.ends_with(".pluginPayloadAttachment");
     let path = remote_path(path);
@@ -689,12 +689,18 @@ async fn fetch_image(session: &client::Handle<Handler>, path: &str, max: u32) ->
     } else {
         String::new()
     };
+    // `sips -Z` enlarges too, so it's only passed for a picture that's over the limit
+    let shrink = format!(
+        "n=$(sips -g pixelWidth -g pixelHeight \"$f\" 2>/dev/null | awk '/pixel/ && $2+0>m {{m=$2+0}} END {{print m+0}}'); \
+         if [ \"$n\" -gt {max} ]; then set -- -Z {max}; else set --; fi"
+    );
     exec(
         session,
         format!(
             "d=$(mktemp -d) || exit 1; {ql} \
              f=$(ls \"$d\"/*.png 2>/dev/null | head -n 1); [ -n \"$f\" ] || f={path}; \
-             sips -s format jpeg -s formatOptions 85 -Z {max} \"$f\" --out \"$d/i.jpg\" >/dev/null 2>&1 && cat \"$d/i.jpg\"; rm -rf \"$d\""
+             {shrink}; \
+             sips -s format jpeg -s formatOptions 85 \"$@\" \"$f\" --out \"$d/i.jpg\" >/dev/null 2>&1 && cat \"$d/i.jpg\"; rm -rf \"$d\""
         ),
     )
     .await
