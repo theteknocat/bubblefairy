@@ -169,6 +169,8 @@ pub enum Kind {
     Videos,
     Files,
     Links,
+    /// links to YouTube only (listed with the videos)
+    YouTube,
 }
 
 /// The video id of a YouTube link (watch, youtu.be, shorts, embed, live), if it is one.
@@ -226,7 +228,6 @@ pub struct MediaItem {
 }
 
 pub const MEDIA_PAGE: usize = 60;
-const PHOTO_PAGE: usize = 30;
 static BULK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// What chat.db knows about the newest message I sent in a chat: delivery and read receipts.
@@ -1649,16 +1650,19 @@ async fn chat_media(
 ) -> Option<(Vec<MediaItem>, usize, bool)> {
     let join = "join chat_message_join c on c.message_id=m.ROWID";
     let chat_ids = id_list(chat_id);
-    let page = if kind == Kind::Photos {
-        PHOTO_PAGE
+    let page = MEDIA_PAGE;
+    let links = matches!(kind, Kind::Links | Kind::YouTube);
+    // "youtu" in a message's text, or in the blob it's kept in instead
+    let only = if kind == Kind::YouTube {
+        " and (m.text like '%youtu%' or hex(coalesce(m.attributedBody,'')) like '%796F757475%')"
     } else {
-        MEDIA_PAGE
+        ""
     };
     let sql = match kind {
-        Kind::Links => format!(
+        Kind::Links | Kind::YouTube => format!(
             "select m.ROWID, m.date/1000000000+978307200, hex(coalesce(m.text,'')), coalesce(m.balloon_bundle_id,''), \
              case when coalesce(m.text,'')='' then hex(coalesce(m.attributedBody,'')) else '' end \
-             from message m {join} where c.chat_id in ({chat_ids}) and (m.text like '%http%' or hex(coalesce(m.attributedBody,'')) like '%68747470%') \
+             from message m {join} where c.chat_id in ({chat_ids}) and (m.text like '%http%' or hex(coalesce(m.attributedBody,'')) like '%68747470%'){only} \
              order by m.date desc limit {} offset {offset}",
             page + 1
         ),
@@ -1686,7 +1690,7 @@ async fn chat_media(
     let more = rows.len() > page;
     let mut items = vec![];
     for r in rows.iter().take(page) {
-        if kind == Kind::Links {
+        if links {
             let row = r.first().and_then(|d| d.parse().ok()).unwrap_or(0);
             let date = r.get(1).and_then(|d| d.parse().ok()).unwrap_or(0);
             let mut text = hex_text(r.get(2).copied().unwrap_or(""));
@@ -1732,7 +1736,10 @@ async fn chat_media(
             });
         }
     }
-    if kind == Kind::Links {
+    if kind == Kind::YouTube {
+        items.retain(|i| youtube_id(&i.url).is_some());
+    }
+    if links {
         // a link with a preview card shouldn't also be listed as plain text
         let cards: std::collections::HashSet<String> = items
             .iter()

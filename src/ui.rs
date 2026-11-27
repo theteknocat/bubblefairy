@@ -99,7 +99,17 @@ struct State {
     /// preview pictures the Mac couldn't give us: drawn as if the preview had none
     bad_images: HashSet<String>,
     /// the info panel's links so far (the Links tab is rebuilt from these when its width changes)
+    info_photos: Vec<MediaItem>,
     info_links: Vec<MediaItem>,
+    /// links to YouTube, for the Videos tab
+    info_youtube: Vec<MediaItem>,
+    /// per tab of the panel (photos, videos, files, links): how many tiles it may show, how many it has drawn, and
+    /// whether scrolling to the end should bring more
+    info_shown: [usize; 4],
+    info_drawn: [usize; 4],
+    info_more: [bool; 4],
+    /// the chat the panel last showed: another one starts on the first tab
+    info_last: Option<i64>,
     info_files: Vec<MediaItem>,
     info_videos: Vec<MediaItem>,
     /// what the Mac said about a file (recording length, contact card); `None` while asked or when it couldn't say
@@ -122,7 +132,7 @@ struct State {
     /// the chat the info panel shows (None: panel closed)
     info_chat: Option<i64>,
     /// per chat and kind: where the next page starts, and whether there is one
-    media: HashMap<(i64, Kind), (usize, bool)>,
+    media: HashMap<(i64, Kind), Paging>,
     /// the info panel's photo thumbnails, for the viewer
     /// the viewer was opened from the info panel (so a conversation redraw mustn't swap its photos)
     viewer_panel: bool,
@@ -1758,10 +1768,11 @@ pub fn build(
         let u = ui.clone();
         glib::timeout_add_local_once(Duration::from_millis(ms), move || {
             open_info(&u);
-            // BF_TAB=files|links: show that tab
+            // BF_TAB=videos|files|links: show that tab
             let n = match std::env::var("BF_TAB").as_deref() {
-                Ok("files") => 1,
-                Ok("links") => 2,
+                Ok("videos") => 1,
+                Ok("files") => 2,
+                Ok("links") => 3,
                 _ => 0,
             };
             let mut tab = u.info.switcher.first_child();
@@ -2600,13 +2611,10 @@ fn image_done(u: &Rc<Ui>, path: String, full: bool, tex: Option<gdk::Texture>) {
             glib::idle_add_local_once(move || {
                 u2.render_queued.set(false);
                 render_conv(&u2);
-                if !u2.st.borrow().info_links.is_empty() {
-                    render_links(&u2);
+                u2.st.borrow_mut().info_drawn = [0; 4]; // from scratch
+                for tab in [Kind::Photos, Kind::Videos, Kind::Files, Kind::Links] {
+                    update_tab(&u2, tab);
                 }
-                if !u2.st.borrow().info_files.is_empty() {
-                    render_files(&u2);
-                }
-                render_videos(&u2);
             });
         }
     }
@@ -3590,6 +3598,19 @@ fn save_name(m: &Value, path: &str) -> String {
         .to_string()
 }
 
+/// The file name at the end of a picture's path or web address.
+fn web_name(path: &str) -> String {
+    let path = if path.starts_with("web:") {
+        path.split(['?', '#']).next().unwrap_or("")
+    } else {
+        path
+    };
+    match path.rsplit('/').next() {
+        Some(n) if !n.is_empty() => n.to_string(),
+        _ => "photo".to_string(),
+    }
+}
+
 /// The small download button beside a photo, video or file.
 fn save_button(u: &Rc<Ui>, items: Vec<Save>) -> gtk::Button {
     let b = gtk::Button::from_icon_name("bf-download-symbolic");
@@ -3755,8 +3776,13 @@ fn save_items(u: &Rc<Ui>, items: Vec<Save>, ask: bool, done: SaveDone) {
 
 /// Put the Mac's file at `target`: from our copy if there is one, else fetch it first.
 fn queue_save(u: &Rc<Ui>, it: &Save, target: PathBuf, done: SaveDone) {
-    let src = file_dest(u, &it.path, &it.name);
-    if src.exists() {
+    // a picture off the web is already here, in the image cache
+    let src = if it.path.starts_with("web:") {
+        cache_path(u, &it.path, false)
+    } else {
+        file_dest(u, &it.path, &it.name)
+    };
+    if src.exists() || it.path.starts_with("web:") {
         copy_to(u, src, target, done);
     } else {
         let copying = {
@@ -6423,10 +6449,19 @@ fn redraw_message(u: &Rc<Ui>, i: usize) -> bool {
     };
     let first = old[0].clone();
     // (a link message's own attachment is just its preview's payload: no picture for the viewer's list)
-    let pictures = preview_row(&ctx.msgs[i]).is_none()
-        && ctx.msgs[i]["attachments"]
-            .as_array()
-            .is_some_and(|a| !a.is_empty());
+    // (a link to a picture may be drawn as that picture, which is in the viewer's list too)
+    let text = clean_text(&ctx.msgs[i]);
+    let known_picture = text.split_whitespace().last().is_some_and(|url| {
+        let st = u.st.borrow();
+        let known = st.web_links.get(url).and_then(Option::as_ref);
+        known.and_then(direct_image).is_some()
+    });
+    let pictures = known_picture
+        || crate::webpreview::is_image_url(text.trim_end())
+        || preview_row(&ctx.msgs[i]).is_none()
+            && ctx.msgs[i]["attachments"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty());
     if first.parent().as_ref() != Some(u.msgs.upcast_ref()) || pictures {
         return false;
     }
@@ -7234,15 +7269,23 @@ fn message_parts(
         });
     }
     if let Some(l) = &link {
-        out.push(link_card(
-            u,
-            l,
-            bubble::Look {
-                me,
-                sms,
-                tail: end_of_run && !has_bubble,
-            },
-        ));
+        let look = bubble::Look {
+            me,
+            sms,
+            tail: end_of_run && !has_bubble,
+        };
+        // a link that looks to lead to a picture is looked at ourselves too (only with our previews switched on): by
+        // its ending, or by Messages having a picture for it but no real title
+        let may_be_picture = crate::webpreview::is_image_url(&l.url)
+            || l.image.is_some() && crate::webpreview::titled_like_a_file(&l.url, &l.title);
+        let ours = may_be_picture.then(|| web_preview(u, &l.url)).flatten();
+        match ours.as_ref().and_then(|lp| shown_picture(u, lp)) {
+            Some(key) => {
+                saves.push((out.len(), vec![Save::new(key, &web_name(key), 0, true)]));
+                out.push(image(u, key, None, look).upcast());
+            }
+            None => out.push(link_card(u, l, look)),
+        }
     }
     if lone_emoji(m) {
         let col = jumbo(&text, me);
@@ -7285,9 +7328,17 @@ fn message_parts(
             sms,
             tail: end_of_run,
         };
-        out.push(match web_preview(u, &url) {
-            Some(lp) => link_card(u, &lp, look),
-            None => plain_link_card(u, &url, look),
+        let lp = web_preview(u, &url);
+        let picture = lp.as_ref().and_then(|lp| shown_picture(u, lp));
+        // a picture link whose picture couldn't be read is a plain card again
+        let page = lp.as_ref().filter(|lp| direct_image(lp).is_none());
+        out.push(match (page, picture) {
+            (_, Some(key)) => {
+                saves.push((out.len(), vec![Save::new(key, &web_name(key), 0, true)]));
+                image(u, key, None, look).upcast()
+            }
+            (Some(lp), None) => link_card(u, lp, look),
+            (None, None) => plain_link_card(u, &url, look),
         });
     }
     (out, saves)
@@ -7465,6 +7516,11 @@ fn web_preview(u: &Rc<Ui>, url: &str) -> Option<crate::mac::LinkPreview> {
                 ..lp
             })
         }
+        // a picture's address saved as a failure may date from before pictures were shown: ask again (once a run)
+        Some(None) if crate::webpreview::is_image_url(url) => {
+            request_web_preview(u, url);
+            None
+        }
         Some(lp) => lp,
         None => {
             request_web_preview(u, url);
@@ -7553,7 +7609,16 @@ async fn web_get(
 
 async fn fetch_web_preview(u: &Rc<Ui>, url: &str) -> Option<crate::mac::LinkPreview> {
     // relative picture and icon addresses are relative to the page we ended on, not the link as sent
-    let (body, reached) = web_get(&u.web, url, 3_000_000, true).await?;
+    let Some((body, reached)) = web_get(&u.web, url, 3_000_000, true).await else {
+        // not a page: perhaps the link is a picture itself
+        let (key, size) = fetch_web_picture(u, Some(url.to_string()), 15_000_000).await?;
+        return Some(crate::mac::LinkPreview {
+            url: url.to_string(),
+            image: Some(key),
+            image_size: Some(size),
+            ..Default::default()
+        });
+    };
     let page = crate::webpreview::parse(&String::from_utf8_lossy(&body), &reached);
     if page.title.is_empty() && page.image.is_none() {
         return None;
@@ -7588,6 +7653,18 @@ async fn fetch_web_picture(
     let _ = std::fs::create_dir_all(&u.store.image_cache);
     std::fs::write(cache_path(u, &key, false), bytes).ok()?;
     Some((key, size))
+}
+
+/// The picture a link leads straight to, if that's what our own look at it found: its key in the image cache.
+fn direct_image(lp: &crate::mac::LinkPreview) -> Option<&str> {
+    lp.image
+        .as_deref()
+        .filter(|k| k.strip_prefix("web:") == Some(lp.url.as_str()))
+}
+
+/// `direct_image`, unless that picture turned out to be unreadable.
+fn shown_picture<'a>(u: &Ui, lp: &'a crate::mac::LinkPreview) -> Option<&'a str> {
+    direct_image(lp).filter(|k| !u.st.borrow().bad_images.contains(*k))
 }
 
 /// A link with no preview from Messages, drawn like a card whose picture is just a small icon: the
@@ -7996,6 +8073,9 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
         p.add_css_class("stacked");
     }
     p.set_cursor_from_name(Some("pointer"));
+    if let Some(url) = path.strip_prefix("web:") {
+        p.set_tooltip_text(Some(url));
+    }
     let click = gtk::GestureClick::new();
     let (u2, path2, p2) = (
         u.clone(),
@@ -8020,6 +8100,13 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
         let col = gtk::Box::new(gtk::Orientation::Vertical, 2);
         col.append(&copy);
         col.append(&save);
+        if let Some(url) = path2.strip_prefix("web:") {
+            let open = gtk::Button::with_label("Open in browser");
+            open.add_css_class("flat");
+            let (u3, url) = (u2.clone(), url.to_string());
+            open.connect_clicked(move |_| open_browser(&u3, &url));
+            col.append(&open);
+        }
         let pop = gtk::Popover::new();
         pop.set_child(Some(&col));
         pop.set_parent(&p2);
@@ -8035,7 +8122,7 @@ fn image(u: &Rc<Ui>, path: &str, card: Option<i32>, look: bubble::Look) -> bubbl
         let (u3, path3, p3, photo) = (u2.clone(), path2.clone(), pop.clone(), p2.clone());
         save.connect_clicked(move |_| {
             p3.popdown();
-            let name = path3.rsplit('/').next().unwrap_or("photo").to_string();
+            let name = web_name(&path3);
             let near = save_button_near(photo.upcast_ref());
             save_items(
                 &u3,
@@ -8088,11 +8175,17 @@ fn animate_gif(u: &Rc<Ui>, p: &bubble::Bubble, path: &str) {
 }
 
 fn gif_dest(u: &Ui, path: &str) -> PathBuf {
+    if path.starts_with("web:") {
+        return cache_path(u, path, false); // fetched whole already
+    }
     file_dest(u, path, path.rsplit('/').next().unwrap_or("image.gif"))
 }
 
 /// Ask the Mac for a GIF's original file, once, however many are waiting for it.
 fn queue_gif(u: &Ui, path: &str, dest: PathBuf, bubble: Option<&bubble::Bubble>) {
+    if path.starts_with("web:") {
+        return; // not on the Mac; if our copy isn't whole, the still picture stays
+    }
     let send = {
         let mut st = u.st.borrow_mut();
         let busy = st.save_to.contains_key(path) || st.gif_wait.contains_key(path);
@@ -8152,6 +8245,8 @@ fn load_texture_in(u: &Rc<Ui>, p: &bubble::Bubble, path: &str, bulk: bool) {
                     move || decode_file(&f3),
                     move |tex| match tex {
                         Some(_) => image_done(&u2, path2, false, tex),
+                        // a picture off the web isn't the Mac's to give again
+                        None if path2.starts_with("web:") => image_done(&u2, path2, false, None),
                         None => {
                             // unreadable copy: forget it and fetch it again
                             let _ = std::fs::remove_file(&f2);
@@ -8329,7 +8424,9 @@ fn fetch_full(u: &Rc<Ui>, path: &str) {
     if !u.st.borrow_mut().waiting_full.insert(path.to_string()) {
         return; // already on its way
     }
-    let file = cache_path(u, path, true);
+    // a picture off the web is cached whole: that copy is the big one
+    let web = path.starts_with("web:");
+    let file = cache_path(u, path, !web);
     if file.exists() {
         let (u2, path2) = (u.clone(), path.to_string());
         bg(
@@ -8368,22 +8465,60 @@ struct Info {
     btn: gtk::Button,
     refresh: gtk::Button,
     close: gtk::Button,
-    /// the three tabs side by side, when there's room for them...
     switcher: gtk::Box,
-    /// ...else the current tab's name with carets to move between them
-    carets: gtk::Box,
     photos: gtk::FlowBox,
     videos: gtk::FlowBox,
     files: gtk::FlowBox,
     links: gtk::FlowBox,
-    /// "Show more" under photos, videos, files, links
-    more: [gtk::Button; 4],
+    stack: gtk::Stack,
+    scroll: gtk::ScrolledWindow,
+}
+
+/// Where the loading of one kind of item has got to.
+#[derive(Clone, Copy)]
+struct Paging {
+    offset: usize,
+    /// the Mac has older ones
+    more: bool,
+    loading: bool,
+}
+
+const TILES: usize = 24; // shown at first, and added each time the end is scrolled to
+const COLS: usize = 4;
+const INFO_KINDS: [Kind; 5] = [
+    Kind::Photos,
+    Kind::Videos,
+    Kind::Files,
+    Kind::Links,
+    Kind::YouTube,
+];
+
+/// What a tab (named by its first kind) is filled from.
+fn sources(tab: Kind) -> &'static [Kind] {
+    match tab {
+        Kind::Photos => &[Kind::Photos],
+        Kind::Videos | Kind::YouTube => &[Kind::Videos, Kind::YouTube],
+        Kind::Files => &[Kind::Files],
+        Kind::Links => &[Kind::Links],
+    }
+}
+
+/// How many tiles a tab shows now, and whether older pages are needed to make up the number. `ready` items are in
+/// their final order; `more`: the Mac has older ones. A part-filled row only ever shows at the very end.
+fn tiles_to_show(ready: usize, allowed: usize, more: bool) -> (usize, bool) {
+    if ready >= allowed {
+        (allowed, false)
+    } else if more {
+        (ready - ready % COLS, true)
+    } else {
+        (ready, false)
+    }
 }
 
 fn kind_idx(k: Kind) -> usize {
     match k {
         Kind::Photos => 0,
-        Kind::Videos => 1,
+        Kind::Videos | Kind::YouTube => 1,
         Kind::Files => 2,
         Kind::Links => 3,
     }
@@ -8403,59 +8538,29 @@ fn build_info() -> Info {
     let close = gtk::Button::from_icon_name("bf-close-symbolic");
     close.add_css_class("head-btn");
     close.set_valign(gtk::Align::Center);
-    let photos = gtk::FlowBox::new();
-    photos.set_selection_mode(gtk::SelectionMode::None);
-    photos.set_min_children_per_line(1);
-    photos.set_max_children_per_line(4); // the panel's width decides how many fit (see relayout)
-    photos.set_row_spacing(4);
-    photos.set_column_spacing(4);
-    photos.set_homogeneous(true);
-    let videos = gtk::FlowBox::new();
-    videos.set_selection_mode(gtk::SelectionMode::None);
-    videos.set_min_children_per_line(1);
-    videos.set_max_children_per_line(3);
-    videos.set_row_spacing(4);
-    videos.set_column_spacing(4);
-    videos.set_homogeneous(true);
-    let files = gtk::FlowBox::new();
-    files.set_selection_mode(gtk::SelectionMode::None);
-    files.set_min_children_per_line(1);
-    files.set_max_children_per_line(3);
-    files.set_row_spacing(4);
-    files.set_column_spacing(4);
-    files.set_homogeneous(true);
-    let links = gtk::FlowBox::new();
-    links.set_selection_mode(gtk::SelectionMode::None);
-    links.set_min_children_per_line(1);
-    links.set_max_children_per_line(3);
-    links.set_row_spacing(4);
-    links.set_column_spacing(4);
-    links.set_homogeneous(true);
-    let more = [(); 4].map(|_| gtk::Button::with_label("Show more"));
-    for m in &more {
-        m.add_css_class("flat");
-        m.set_visible(false);
-    }
-    let tab = |child: &gtk::Widget, more: &gtk::Button| {
-        let b = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        b.append(child);
-        b.append(more);
-        b
-    };
+    let [photos, videos, files, links] = [(); 4].map(|_| {
+        let f = gtk::FlowBox::new();
+        f.set_selection_mode(gtk::SelectionMode::None);
+        f.set_min_children_per_line(1);
+        f.set_max_children_per_line(COLS as u32);
+        f.set_row_spacing(4);
+        f.set_column_spacing(4);
+        f.set_homogeneous(true);
+        f
+    });
     let stack = gtk::Stack::new();
     stack.set_vhomogeneous(false); // else a short tab scrolls as far as the tallest one
-    stack.add_titled(
-        &tab(photos.upcast_ref(), &more[0]),
-        Some("photos"),
-        "Photos",
-    );
-    stack.add_titled(
-        &tab(videos.upcast_ref(), &more[1]),
-        Some("videos"),
-        "Videos",
-    );
-    stack.add_titled(&tab(files.upcast_ref(), &more[2]), Some("files"), "Files");
-    stack.add_titled(&tab(links.upcast_ref(), &more[3]), Some("links"), "Links");
+    for (grid, name, title) in [
+        (&photos, "photos", "Photos"),
+        (&videos, "videos", "Videos"),
+        (&files, "files", "Files"),
+        (&links, "links", "Links"),
+    ] {
+        // in a box of its own, so a short tab's tiles stay at the top
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        page.append(grid);
+        stack.add_titled(&page, Some(name), title);
+    }
     let switcher = tab_switcher(
         &stack,
         &[
@@ -8465,76 +8570,13 @@ fn build_info() -> Info {
             ("links", "Links"),
         ],
     );
-    // narrow panel: "‹ Photos ›". Both carets take the same room even when one is hidden, so the name stays centred.
-    let prev = gtk::Button::from_icon_name("bf-left-symbolic");
-    let next = gtk::Button::from_icon_name("bf-right-symbolic");
-    let name = gtk::Label::new(Some("Photos"));
-    name.add_css_class("tab-name");
-    name.set_hexpand(true);
-    name.set_xalign(0.5);
-    let carets = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    for b in [&prev, &next] {
-        b.add_css_class("head-btn");
-        b.set_valign(gtk::Align::Center);
-    }
-    carets.append(&prev);
-    carets.append(&name);
-    carets.append(&next);
-    carets.set_hexpand(true);
-    carets.set_visible(false);
-    const TABS: [&str; 4] = ["photos", "videos", "files", "links"];
-    let show = {
-        let (stack, prev, next, name) = (stack.clone(), prev.clone(), next.clone(), name.clone());
-        move || {
-            let i = stack
-                .visible_child_name()
-                .and_then(|n| TABS.iter().position(|t| *t == n))
-                .unwrap_or(0);
-            let names = ["Photos", "Videos", "Files", "Links"];
-            name.set_text(names[i]);
-            prev.set_tooltip_text(i.checked_sub(1).map(|j| names[j]));
-            next.set_tooltip_text(names.get(i + 1).copied());
-            for (b, on) in [(&prev, i > 0), (&next, i + 1 < TABS.len())] {
-                b.set_opacity(if on { 1.0 } else { 0.0 });
-                b.set_can_target(on);
-                b.set_can_focus(on);
-            }
-        }
-    };
-    show();
-    stack.connect_visible_child_name_notify(move |_| show());
-    for (b, step) in [(&prev, -1i32), (&next, 1)] {
-        let stack = stack.clone();
-        b.connect_clicked(move |_| {
-            let i = stack
-                .visible_child_name()
-                .and_then(|n| TABS.iter().position(|t| *t == n))
-                .unwrap_or(0) as i32;
-            if let Some(t) = TABS.get((i + step).max(0) as usize) {
-                stack.set_visible_child_name(t);
-            }
-        });
-    }
     // one row: the tabs, and the close button
     let head = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     head.set_margin_top(12);
     head.set_margin_bottom(8);
     head.set_margin_start(14);
     head.set_margin_end(14);
-    // an invisible twin of the close button on the left, so the carets' label is centred on the whole row
-    let twin = gtk::Button::from_icon_name("bf-close-symbolic");
-    twin.add_css_class("head-btn");
-    twin.set_opacity(0.0);
-    twin.set_can_target(false);
-    twin.set_can_focus(false);
-    twin.set_focusable(false);
-    carets
-        .bind_property("visible", &twin, "visible")
-        .sync_create()
-        .build();
-    head.append(&twin);
     head.append(&switcher);
-    head.append(&carets);
     head.append(&close);
     // only the tab's content scrolls
     stack.set_margin_start(14);
@@ -8548,7 +8590,7 @@ fn build_info() -> Info {
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
     panel.append(&head);
     panel.append(&scroll);
-    panel.set_size_request(info_w(4), -1);
+    panel.set_size_request(INFO_W, -1); // the CSS margin counts inside it
     panel.set_hexpand(false);
     panel.set_overflow(gtk::Overflow::Hidden); // the rounded corners clip it
     panel.add_css_class("info-panel");
@@ -8566,28 +8608,23 @@ fn build_info() -> Info {
         refresh,
         close,
         switcher,
-        carets,
         photos,
         videos,
         files,
         links,
-        more,
+        stack,
+        scroll,
     }
 }
 
 const THUMB: i32 = 92;
-
-/// Width the panel takes beside the chat for `n` columns of photos (4 at most), margin included.
-fn info_w(n: i32) -> i32 {
-    // each grid cell measures THUMB + 6; the header needs room too (measured: three tabs + close = 263, caret row = 223, margins included)
-    (n * (THUMB + 6) + (n - 1) * 4 + 28 + 14).max(if n >= 3 { 340 } else { 223 } + 14) // ponytail: 340 = four tabs + close, estimated; measure
-}
+/// The panel's width: four tiles (each cell measures THUMB + 6) with their gaps and the margins. It slides over the
+/// chat, and over the sidebar if it has to: even the narrowest window is wider.
+const INFO_W: i32 = COLS as i32 * (THUMB + 6) + (COLS as i32 - 1) * 4 + 28 + 14;
 
 /// Share the window between sidebar, chat and info panel.
 /// - Too narrow for the full sidebar beside the chat (`SIDEBAR_MIN` + `CHAT_MIN`): the sidebar shows avatars
 ///   only (`COLLAPSED_W`), or fills the window when expanded with its caret.
-/// - The info panel is an overlay of constant width (4 photo columns): it covers the chat's right side, and the
-///   sidebar too when the chat is narrower than it.
 fn relayout(u: &Rc<Ui>, total: i32) {
     if total <= 0 {
         return;
@@ -8615,9 +8652,6 @@ fn relayout(u: &Rc<Ui>, total: i32) {
     } else {
         pref.clamp(SIDEBAR_MIN, total - CHAT_MIN)
     };
-    // the info panel keeps its full width (4 photo columns) and slides over the chat, and over the sidebar if it has to:
-    // it fits even in the narrowest window (INFO_COLS = 4: info_w(4) is 446, the window's minimum 536)
-    let cols = 4;
     // crossing the line slides the sidebar to its new width (not on the first layout)
     let animate = u.animate.replace(false) || (crossed && u.last_pos.get() != 0);
     move_side(u, side, animate);
@@ -8648,13 +8682,6 @@ fn relayout(u: &Rc<Ui>, total: i32) {
     if u.slide_to.get() == NO_SLIDE {
         settle(u);
     }
-    // info panel
-    let info = &u.info;
-    info.panel.set_size_request(info_w(cols), -1); // the CSS margin counts inside it
-    // four tabs in a row fit from 3 photo columns up (measuring StackSwitcher gave nonsense widths)
-    let wide = cols >= 3;
-    info.switcher.set_visible(wide);
-    info.carets.set_visible(!wide);
 }
 
 /// Avatars only, or names too: the CSS classes (circle round the avatar, unread tint) and the tooltips.
@@ -8758,22 +8785,53 @@ fn wire_info(u: &Rc<Ui>) {
     });
     let u2 = u.clone();
     u.info.close.connect_clicked(move |_| close_info(&u2));
-    for kind in [Kind::Photos, Kind::Videos, Kind::Files, Kind::Links] {
-        let u2 = u.clone();
-        u.info.more[kind_idx(kind)].connect_clicked(move |b| {
-            b.set_visible(false);
-            let (chat, off) = {
-                let st = u2.st.borrow();
-                let Some(chat) = st.info_chat else { return };
-                (chat, st.media.get(&(chat, kind)).map_or(0, |m| m.0))
-            };
-            u2.send(Cmd::Media {
-                chat_id: chat,
-                kind,
-                offset: off,
+    // near the end of a tab (or a tab that doesn't fill the panel) brings more; after the layout that told us
+    let queued = Rc::new(Cell::new(false));
+    let w = Rc::downgrade(u);
+    let near_end = Rc::new(move || {
+        if !queued.replace(true) {
+            let (w, queued) = (w.clone(), queued.clone());
+            glib::idle_add_local_once(move || {
+                queued.set(false);
+                if let Some(u) = w.upgrade() {
+                    more_if_near_end(&u);
+                }
             });
-        });
+        }
+    });
+    let adj = u.info.scroll.vadjustment();
+    let f = near_end.clone();
+    adj.connect_value_changed(move |_| f());
+    let f = near_end.clone();
+    adj.connect_changed(move |_| f());
+    u.info
+        .stack
+        .connect_visible_child_name_notify(move |_| near_end());
+}
+
+fn more_if_near_end(u: &Rc<Ui>) {
+    let adj = u.info.scroll.vadjustment();
+    // once scrolling, two rows ahead of the end; before that only if the panel isn't filled
+    let ahead = if adj.value() > 0.0 { 200.0 } else { 0.0 };
+    // (a page size of 0: not laid out yet)
+    if adj.page_size() <= 0.0 || adj.upper() - adj.value() - adj.page_size() > ahead {
+        return;
     }
+    let tab = match u.info.stack.visible_child_name().as_deref() {
+        Some("videos") => Kind::Videos,
+        Some("files") => Kind::Files,
+        Some("links") => Kind::Links,
+        _ => Kind::Photos,
+    };
+    {
+        let mut st = u.st.borrow_mut();
+        if st.info_chat.is_none() || !st.info_more[kind_idx(tab)] {
+            return;
+        }
+        st.info_more[kind_idx(tab)] = false;
+        st.info_shown[kind_idx(tab)] += TILES;
+    }
+    update_tab(u, tab);
 }
 
 /// The panel slides over the chat from the right; a click anywhere outside it closes it.
@@ -8875,7 +8933,12 @@ fn refresh_info(u: &Rc<Ui>) {
     {
         let mut st = u.st.borrow_mut();
         st.info_chat = Some(id);
+        st.info_photos.clear();
         st.info_links.clear();
+        st.info_youtube.clear();
+        st.info_shown = [TILES; 4];
+        st.info_drawn = [0; 4];
+        st.info_more = [false; 4];
         st.info_files.clear();
         st.info_videos.clear();
         st.link_waiters.clear();
@@ -8885,15 +8948,40 @@ fn refresh_info(u: &Rc<Ui>) {
     u.info.videos.remove_all();
     u.info.files.remove_all();
     u.info.links.remove_all();
-    for kind in [Kind::Photos, Kind::Videos, Kind::Files, Kind::Links] {
-        u.info.more[kind_idx(kind)].set_visible(false);
-        u.st.borrow_mut().media.insert((id, kind), (0, false));
-        u.send(Cmd::Media {
-            chat_id: id,
-            kind,
-            offset: 0,
-        });
+    if u.st.borrow_mut().info_last.replace(id) != Some(id) {
+        u.info.stack.set_visible_child_name("photos");
+        u.info.scroll.vadjustment().set_value(0.0);
     }
+    for kind in INFO_KINDS {
+        let waiting = Paging {
+            offset: 0,
+            more: true,
+            loading: false,
+        };
+        u.st.borrow_mut().media.insert((id, kind), waiting);
+        fetch_media(u, kind);
+    }
+}
+
+/// Ask the Mac for the next page of one kind of item, unless it's on its way or there is none.
+fn fetch_media(u: &Rc<Ui>, kind: Kind) {
+    let (chat_id, offset) = {
+        let mut st = u.st.borrow_mut();
+        let Some(chat) = st.info_chat else { return };
+        let Some(p) = st.media.get_mut(&(chat, kind)) else {
+            return;
+        };
+        if p.loading || !p.more {
+            return;
+        }
+        p.loading = true;
+        (chat, p.offset)
+    };
+    u.send(Cmd::Media {
+        chat_id,
+        kind,
+        offset,
+    });
 }
 
 fn fmt_date(unix: i64) -> String {
@@ -8926,96 +9014,146 @@ fn on_media(
     {
         let mut st = u.st.borrow_mut();
         // for another chat (the panel moved on) or an out-of-date page: drop it
-        if st.info_chat != Some(chat_id)
-            || st.media.get(&(chat_id, kind)).map(|m| m.0) != Some(offset)
-        {
+        let wanted = st
+            .media
+            .get(&(chat_id, kind))
+            .is_some_and(|p| p.offset == offset);
+        if st.info_chat != Some(chat_id) || !wanted {
             return;
         }
-        st.media.insert((chat_id, kind), (next, more));
+        let paging = Paging {
+            offset: next,
+            more,
+            loading: false,
+        };
+        st.media.insert((chat_id, kind), paging);
+        match kind {
+            Kind::Photos => st.info_photos.extend(items),
+            Kind::Videos => st.info_videos.extend(items),
+            Kind::Files => st.info_files.extend(items),
+            Kind::Links => st.info_links.extend(items),
+            Kind::YouTube => st.info_youtube.extend(items),
+        }
     }
-    u.info.more[kind_idx(kind)].set_visible(more);
-    let empty = |text: &str| {
-        let l = gtk::Label::new(Some(text));
-        l.add_css_class("dim");
-        l
+    update_tab(u, kind);
+}
+
+/// Redraw the tab that `kind` belongs to, and ask for older pages if it has fewer tiles than it may show.
+fn update_tab(u: &Rc<Ui>, kind: Kind) {
+    let tab = match kind {
+        Kind::YouTube => Kind::Videos,
+        k => k,
     };
-    match kind {
-        Kind::Photos => {
-            for it in items {
-                if it.missing {
-                    // not on the Mac (Messages hasn't downloaded it from iCloud, or it's gone): nothing to fetch
-                    let tile = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                    tile.add_css_class("info-missing");
-                    tile.set_size_request(THUMB, THUMB);
-                    let l = gtk::Label::new(Some("Not on your Mac"));
-                    l.add_css_class("dim");
-                    l.set_wrap(true);
-                    l.set_justify(gtk::Justification::Center);
-                    l.set_max_width_chars(10);
-                    l.set_valign(gtk::Align::Center);
-                    l.set_vexpand(true);
-                    tile.append(&l);
-                    tile.set_tooltip_text(Some(
-                        "Messages hasn't downloaded this photo to your Mac",
-                    ));
-                    u.info.photos.append(&tile);
-                    continue;
+    // the tab's items newest first, how far back all its sources are loaded, and the sources that have older ones
+    let (items, allowed, older) = {
+        let st = u.st.borrow();
+        let Some(chat) = st.info_chat else { return };
+        let list = |k: Kind| match k {
+            Kind::Photos => &st.info_photos,
+            Kind::Videos => &st.info_videos,
+            Kind::Files => &st.info_files,
+            Kind::Links => &st.info_links,
+            Kind::YouTube => &st.info_youtube,
+        };
+        let mut items: Vec<MediaItem> = sources(tab)
+            .iter()
+            .flat_map(|&k| list(k).iter().cloned())
+            // YouTube links are in the Videos tab, not with the other links
+            .filter(|i| tab != Kind::Links || crate::mac::youtube_id(&i.url).is_none())
+            .collect();
+        items.sort_by_key(|i| std::cmp::Reverse(i.date));
+        let older: Vec<(Kind, i64)> = sources(tab)
+            .iter()
+            .filter(|&&k| st.media.get(&(chat, k)).is_some_and(|p| p.more))
+            .map(|&k| (k, list(k).last().map_or(i64::MAX, |i| i.date)))
+            .collect();
+        (items, st.info_shown[kind_idx(tab)], older)
+    };
+    // an item older than what a source is loaded to isn't in its final place yet: a newer one may still come
+    let horizon = older.iter().map(|&(_, d)| d).max();
+    let ready = items
+        .iter()
+        .filter(|i| horizon.is_none_or(|h| i.date >= h))
+        .count();
+    let (n, short) = tiles_to_show(ready, allowed, horizon.is_some());
+    if short {
+        for &(k, date) in &older {
+            if Some(date) == horizon {
+                fetch_media(u, k);
+            }
+        }
+    }
+    let (grid, none) = match tab {
+        Kind::Photos => (&u.info.photos, "No photos in this conversation"),
+        Kind::Videos | Kind::YouTube => (&u.info.videos, "No videos in this conversation"),
+        Kind::Files => (&u.info.files, "No files in this conversation"),
+        Kind::Links => (&u.info.links, "No links in this conversation"),
+    };
+    // only the new tiles are added: rebuilding hundreds on every page would stutter the scrolling
+    let drawn = {
+        let mut st = u.st.borrow_mut();
+        st.info_more[kind_idx(tab)] = !short && (items.len() > n || horizon.is_some());
+        std::mem::replace(&mut st.info_drawn[kind_idx(tab)], n)
+    };
+    if drawn == 0 {
+        grid.remove_all();
+    }
+    for it in items.iter().take(n).skip(drawn) {
+        match tab {
+            Kind::Photos => grid.append(&photo_tile(u, it)),
+            Kind::Links => grid.append(&link_slot(u, it)),
+            _ if it.url.is_empty() => grid.append(&file_tile(u, it)),
+            _ => {
+                let slot = link_slot(u, it);
+                if let Some(id) = crate::mac::youtube_id(&it.url) {
+                    let key = crate::viewer::yt_key(&id, it.row as usize);
+                    slot.set_widget_name(&format!("{}|{key}", it.date));
                 }
-                let b = bubble::Bubble::tile(THUMB);
-                b.add_css_class("fixed");
-                b.set_cursor_from_name(Some("pointer"));
-                let (u2, path, b2) = (
-                    u.clone(),
-                    it.path.clone(),
-                    b.clone().upcast::<gtk::Widget>(),
-                );
-                let g = gtk::GestureClick::new();
-                g.connect_released(move |g, _, _, _| {
-                    g.set_state(gtk::EventSequenceState::Claimed);
-                    open_media(&u2, &path, &b2);
-                });
-                b.add_controller(g);
-                b.set_widget_name(&format!("{}|{}", it.date, it.path)); // read back by `info_sequence`
-                load_texture_in(u, &b, &it.path, true);
-                u.info.photos.append(&b);
-            }
-            if offset == 0 && u.info.photos.first_child().is_none() {
-                u.info
-                    .photos
-                    .insert(&empty("No photos in this conversation"), -1);
+                grid.append(&slot);
             }
         }
-        Kind::Videos => {
-            u.st.borrow_mut().info_videos.extend(items);
-            render_videos(u);
-        }
-        Kind::Files => {
-            u.st.borrow_mut().info_files.extend(items);
-            render_files(u);
-            if offset == 0 && u.st.borrow().info_files.is_empty() {
-                u.info
-                    .files
-                    .insert(&empty("No files in this conversation"), -1);
-            }
-        }
-        Kind::Links => {
-            u.st.borrow_mut().info_links.extend(items);
-            render_links(u);
-            render_videos(u); // YouTube links live there
-            if offset == 0 && u.info.links.first_child().is_none() {
-                u.info.links.append(&empty("No links in this conversation"));
-            }
-        }
+    }
+    if items.is_empty() && horizon.is_none() {
+        let l = gtk::Label::new(Some(none));
+        l.add_css_class("dim");
+        grid.append(&l);
     }
 }
 
-/// Rebuild the Files tab from `info_files`: a tile per file, like the Links tab's.
-fn render_files(u: &Rc<Ui>) {
-    u.info.files.remove_all();
-    let items = u.st.borrow().info_files.clone();
-    for it in &items {
-        u.info.files.append(&file_tile(u, it));
+/// A photo as a square tile; one that isn't on the Mac says so.
+fn photo_tile(u: &Rc<Ui>, it: &MediaItem) -> gtk::Widget {
+    if it.missing {
+        // Messages hasn't downloaded it from iCloud, or it's gone: nothing to fetch
+        let tile = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        tile.add_css_class("info-missing");
+        tile.set_size_request(THUMB, THUMB);
+        let l = gtk::Label::new(Some("Not on your Mac"));
+        l.add_css_class("dim");
+        l.set_wrap(true);
+        l.set_justify(gtk::Justification::Center);
+        l.set_max_width_chars(10);
+        l.set_valign(gtk::Align::Center);
+        l.set_vexpand(true);
+        tile.append(&l);
+        tile.set_tooltip_text(Some("Messages hasn't downloaded this photo to your Mac"));
+        return tile.upcast();
     }
+    let b = bubble::Bubble::tile(THUMB);
+    b.add_css_class("fixed");
+    b.set_cursor_from_name(Some("pointer"));
+    let (u2, path) = (u.clone(), it.path.clone());
+    let weak = b.downgrade();
+    let g = gtk::GestureClick::new();
+    g.connect_released(move |g, _, _, _| {
+        g.set_state(gtk::EventSequenceState::Claimed);
+        if let Some(b) = weak.upgrade() {
+            open_media(&u2, &path, b.upcast_ref());
+        }
+    });
+    b.add_controller(g);
+    b.set_widget_name(&format!("{}|{}", it.date, it.path)); // read back by `info_sequence`
+    load_texture_in(u, &b, &it.path, true);
+    b.upcast()
 }
 
 /// A file as a square tile like the links': the first page or frame where the Mac can draw one, else our
@@ -9055,6 +9193,7 @@ fn file_tile(u: &Rc<Ui>, it: &MediaItem) -> gtk::Widget {
     caption.set_halign(gtk::Align::Fill);
     caption.set_valign(gtk::Align::End);
     caption.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    caption.set_max_width_chars(1); // a long name must not widen the tile
     caption.set_xalign(0.0);
     frame.add_overlay(&caption);
     let detail: Vec<String> = [
@@ -9571,6 +9710,7 @@ fn link_tile(u: &Rc<Ui>, url: &str, l: Option<&crate::mac::LinkPreview>) -> gtk:
     caption.set_halign(gtk::Align::Fill);
     caption.set_valign(gtk::Align::End);
     caption.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    caption.set_max_width_chars(1); // a long name must not widen the tile
     caption.set_xalign(0.0);
     frame.add_overlay(&caption);
     frame.set_tooltip_text(Some(
@@ -9632,56 +9772,6 @@ fn link_slot(u: &Rc<Ui>, it: &MediaItem) -> gtk::Box {
         }
     }
     slot
-}
-
-/// Rebuild the Links tab from `info_links` (YouTube links go to the Videos tab).
-fn render_links(u: &Rc<Ui>) {
-    u.info.links.remove_all();
-    let items = u.st.borrow().info_links.clone();
-    for it in items
-        .iter()
-        .filter(|i| crate::mac::youtube_id(&i.url).is_none())
-    {
-        u.info.links.append(&link_slot(u, it));
-    }
-}
-
-/// Rebuild the Videos tab: video files and YouTube links, newest first.
-fn render_videos(u: &Rc<Ui>) {
-    u.info.videos.remove_all();
-    let (files, links) = {
-        let st = u.st.borrow();
-        (st.info_videos.clone(), st.info_links.clone())
-    };
-    let mut all: Vec<MediaItem> = files
-        .into_iter()
-        .chain(
-            links
-                .into_iter()
-                .filter(|i| crate::mac::youtube_id(&i.url).is_some()),
-        )
-        .collect();
-    all.sort_by_key(|i| std::cmp::Reverse(i.date));
-    for it in &all {
-        if it.url.is_empty() {
-            u.info.videos.append(&file_tile(u, it));
-        } else {
-            let slot = link_slot(u, it);
-            if let Some(id) = crate::mac::youtube_id(&it.url) {
-                slot.set_widget_name(&format!(
-                    "{}|{}",
-                    it.date,
-                    crate::viewer::yt_key(&id, it.row as usize)
-                ));
-            }
-            u.info.videos.append(&slot);
-        }
-    }
-    if all.is_empty() && !u.info.more[1].is_visible() {
-        let l = gtk::Label::new(Some("No videos in this conversation"));
-        l.add_css_class("dim");
-        u.info.videos.append(&l);
-    }
 }
 
 // ---------- settings ----------
@@ -9900,7 +9990,7 @@ fn settings(u: &Rc<Ui>) {
     previews.set_active(cfg.map_previews);
     let (links_row, links, ..) = switch_row(
         "Make previews for links Messages didn't",
-        "A link with no preview shows its title and picture, read from the page itself. This computer fetches the page, so the linked site sees your internet address. Off: such links stay a plain card with the site's name.",
+        "A link with no preview shows its title and picture, read from the page itself, and a link straight to a picture shows that picture. This computer fetches the page, so the linked site sees your internet address. Off: such links stay a plain card with the site's name.",
     );
     links.set_active(cfg.link_previews);
     let pbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -12080,6 +12170,16 @@ mod tests {
             assert_eq!(emoji_count(text), None, "{text}");
         }
         assert!(is_jumbo("🎉🎉🎉") && !is_jumbo("🎉🎉🎉🎉") && !is_jumbo("  "));
+    }
+
+    #[test]
+    fn info_tabs_only_end_on_full_rows() {
+        use super::tiles_to_show;
+        assert_eq!(tiles_to_show(60, 24, true), (24, false));
+        assert_eq!(tiles_to_show(11, 24, true), (8, true)); // wait for older ones
+        assert_eq!(tiles_to_show(0, 24, true), (0, true));
+        assert_eq!(tiles_to_show(11, 24, false), (11, false)); // the very end may be short
+        assert_eq!(tiles_to_show(30, 24, false), (24, false));
     }
 
     #[test]

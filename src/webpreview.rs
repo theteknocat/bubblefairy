@@ -140,6 +140,26 @@ fn header_size(b: &[u8]) -> Option<(i32, i32)> {
     None
 }
 
+/// Does the address name a picture file (whatever follows after `?` or `#`)?
+pub fn is_image_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    path.rsplit_once('.').is_some_and(|(_, e)| {
+        ["jpg", "jpeg", "png", "gif", "webp"]
+            .iter()
+            .any(|x| e.eq_ignore_ascii_case(x))
+    })
+}
+
+/// Is a preview's title just the end of its address (or missing)? That's what Messages saves for a link to a bare
+/// file, having found no page to take a title from.
+pub fn titled_like_a_file(url: &str, title: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    let path = path.split_once("://").map_or(path, |(_, rest)| rest);
+    path.trim_end_matches('/')
+        .split_once('/')
+        .is_some_and(|(_, p)| title.is_empty() || p.rsplit('/').next() == Some(title))
+}
+
 /// The host of a URL without "www.".
 pub fn host(url: &str) -> String {
     url.split('/')
@@ -338,6 +358,24 @@ fn decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_that_is_the_address_end_marks_a_bare_file() {
+        use super::titled_like_a_file as file;
+        assert!(file("https://a.com/media/poster-jpg.31/full", "full"));
+        assert!(file("https://a.com/x/abc?size=2", ""));
+        assert!(!file("https://a.com/news/story", "A Story"));
+        assert!(!file("https://a.com/", "a.com"));
+        assert!(!file("https://a.com", ""));
+    }
+
+    #[test]
+    fn picture_addresses_are_told_by_their_ending() {
+        assert!(super::is_image_url("https://a.com/b/c.JPG?w=2#x"));
+        assert!(super::is_image_url("https://a.com/c.webp"));
+        assert!(!super::is_image_url("https://a.com/c.html?f=x.png"));
+        assert!(!super::is_image_url("https://a.png.com/page"));
+    }
 
     #[test]
     fn reads_open_graph_and_falls_back() {

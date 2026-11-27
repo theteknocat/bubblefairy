@@ -81,6 +81,8 @@ copy on this computer, so it **doesn't sync** with your Apple devices:
   automation never get one) shows a plain link card.
 - **BubbleFairy's own previews for plain links are off by default.** Turning them on in Settings makes this
   computer fetch the page, which tells the website your IP address. They are only fetched for public addresses.
+- **A link straight to a picture only shows as the picture with those previews on**, since this computer has to fetch
+  it. It takes JPEG, PNG, GIF and WebP up to 15 MB, and stays under Links in the info panel.
 - **Links in the middle of a message, or several links in one message, get no preview card** (Messages doesn't make
   them either). They stay clickable in the text.
 

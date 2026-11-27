@@ -49,6 +49,10 @@ fn yt_id(key: &str) -> Option<&str> {
 
 /// A YouTube item's key.
 pub fn is_gif(path: &str) -> bool {
+    let path = match path.strip_prefix("web:") {
+        Some(url) => url.split(['?', '#']).next().unwrap_or(""),
+        None => path,
+    };
     path.rsplit_once('.')
         .is_some_and(|(_, e)| e.eq_ignore_ascii_case("gif"))
 }
