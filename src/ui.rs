@@ -44,6 +44,8 @@ pub struct Store {
     pub resent_file: PathBuf,
     /// pinned chats, one chat identifier per line, in pin order (our own: Messages' pins aren't readable)
     pub pins_file: PathBuf,
+    /// the identifier of the chat opened last, which the next start opens again
+    pub last_file: PathBuf,
     /// muted chats (no notification, no sound), one chat identifier per line (our own: Messages' list is hashed)
     pub muted_file: PathBuf,
     /// previews we made ourselves for plain links (see webpreview.rs), one JSON line per link
@@ -2095,7 +2097,8 @@ fn on_event(u: &Rc<Ui>, e: Event) {
                     .ok()
                     .and_then(|v| v.parse::<i64>().ok());
                 if st.sel.is_none() && !u.new_mode.get() {
-                    want.or_else(|| st.chats.first().and_then(|c| c["id"].as_i64()))
+                    let last = std::fs::read_to_string(&u.store.last_file).unwrap_or_default();
+                    want.or_else(|| start_chat(&st.chats, last.trim()))
                 } else {
                     None
                 }
@@ -3395,6 +3398,7 @@ fn select(u: &Rc<Ui>, id: i64) {
     u.viewer.close_now();
     u.st.borrow_mut().gifs.clear(); // the last chat's players go with its bubbles
     u.st.borrow_mut().sel = Some(id);
+    remember_chat(u, id);
     let picked = !u.search.text().trim().is_empty();
     u.st.borrow_mut().search_pick = picked.then_some(id);
     select_in_list(u, id);
@@ -4583,6 +4587,32 @@ fn reorder_pins(u: &Rc<Ui>, order: Vec<gtk::Widget>) {
         }
     }
     // the list's hidden rows follow the order of `chats`, not the pins: nothing else to redraw
+}
+
+/// Note the open chat for the next start. Demo runs share the data folder, so they leave it alone.
+fn remember_chat(u: &Ui, id: i64) {
+    if std::env::var_os("BF_DEMO").is_some() {
+        return;
+    }
+    let key =
+        u.st.borrow()
+            .chats
+            .iter()
+            .find(|c| c["id"].as_i64() == Some(id))
+            .map(pin_key);
+    if let Some(key) = key {
+        crate::write_state(&u.store.last_file, format!("{key}\n"));
+    }
+}
+
+/// The chat to open at start: the one open last (by identifier, which survives merging), else the newest.
+// shortcut: one that isn't among the loaded chats (older than the first page) falls back to the newest
+fn start_chat(chats: &[Value], last: &str) -> Option<i64> {
+    chats
+        .iter()
+        .find(|c| keys_of(c).iter().any(|k| k == last))
+        .or(chats.first())
+        .and_then(|c| c["id"].as_i64())
 }
 
 fn insert_chat(chats: &mut Vec<Value>, chat: Value) {
@@ -12170,6 +12200,20 @@ mod tests {
             assert_eq!(emoji_count(text), None, "{text}");
         }
         assert!(is_jumbo("🎉🎉🎉") && !is_jumbo("🎉🎉🎉🎉") && !is_jumbo("  "));
+    }
+
+    #[test]
+    fn starts_on_the_chat_open_last() {
+        use super::start_chat;
+        let chats = [
+            serde_json::json!({"id": 1, "identifier": "a"}),
+            serde_json::json!({"id": 2, "identifier": "b", "merged_keys": ["b", "old-b"]}),
+        ];
+        assert_eq!(start_chat(&chats, "b"), Some(2));
+        assert_eq!(start_chat(&chats, "old-b"), Some(2));
+        assert_eq!(start_chat(&chats, "gone"), Some(1));
+        assert_eq!(start_chat(&chats, ""), Some(1));
+        assert_eq!(start_chat(&[], "a"), None);
     }
 
     #[test]
