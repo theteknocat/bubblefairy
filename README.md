@@ -27,9 +27,8 @@ Get the latest `.flatpak` from the [Releases](../../releases) page.
 
 I got rather carried away with this part. Settings has sliders for tint, saturation, brightness and what I'm calling bubbliness, which goes from completely flat at one end to a shiny, glassy look at the other, and light and dark mode each remember their own. The blue and green bubbles stay as they are, so you can always tell what you're looking at, and it's entirely possible to come up with some ghastly combinations, which is your business. Here are a few of the nicer ones (click any of them for a bigger look).
 
-| | |
-| --- | --- |
 | ![The default dark look](docs/screenshots/chat-dark.png) | ![A glossy rose theme in light mode](docs/screenshots/theme-rose.png) |
+| --- | --- |
 | ![A very glossy ocean blue theme in dark mode](docs/screenshots/theme-ocean.png) | ![A flat mint theme in light mode](docs/screenshots/theme-mint.png) |
 | ![A plum theme in dark mode](docs/screenshots/theme-plum.png) | ![A very glossy sky blue theme in light mode](docs/screenshots/theme-sky.png) |
 
