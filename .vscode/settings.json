@@ -1,0 +1,4 @@
+{
+    "rust-analyzer.server.path": "${workspaceFolder}/scripts/rust-analyzer.sh",
+    "rust-analyzer.cargo.targetDir": true
+}

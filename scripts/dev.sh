@@ -11,4 +11,4 @@ mkdir -p "$app/data" "$app/config" "$app/cache"
 exec flatpak run --user --share=network --socket=wayland --socket=fallback-x11 --socket=session-bus --socket=pulseaudio --device=dri \
   --filesystem="$PWD" --filesystem="$app" --env=XDG_DATA_HOME="$app/data" --env=XDG_CONFIG_HOME="$app/config" --env=XDG_CACHE_HOME="$app/cache" --filesystem="$HOME/.cargo" --env=CARGO_HOME="$HOME/.cargo" \
   --env=CARGO_TARGET_DIR="$PWD/target/sdk" \
-  --command=sh org.gnome.Sdk//51 -c '. /usr/lib/sdk/rust-stable/enable.sh && cd "$0" && cargo "$@"' "$PWD" "$@"
+  --command=sh org.gnome.Sdk//51 -c '. /usr/lib/sdk/rust-stable/enable.sh && cd "$0" && exec "$@"' "$PWD" "${BF_TOOL:-cargo}" "$@"
